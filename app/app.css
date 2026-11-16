@@ -2456,6 +2456,14 @@ html[data-density='small'] .cs-sub-fold { font-size: 8.5px; }
 .bgtasks-bar.sched .bgtasks-headline { color: var(--info); }
 .bgtasks-bar.sched.paused { opacity: 0.7; }
 .bgtasks-bar.sched.paused .bgtasks-headline { color: var(--text-muted); }
+/* The session's goal (§14.119): green while worked on / reached, red when
+   judged impossible, amber when paused by a limit. */
+.bgtasks-bar.goal { border-color: color-mix(in srgb, var(--success) 22%, transparent); }
+.bgtasks-bar.goal:hover { border-color: color-mix(in srgb, var(--success) 50%, transparent); }
+.bgtasks-bar.goal .bgtasks-headline { color: var(--success); }
+.bgtasks-bar.goal.failed .bgtasks-headline { color: var(--danger-strong); }
+.bgtasks-bar.goal.due .bgtasks-headline { color: var(--warning); }
+.bgtasks-bar.goal.completed { opacity: 0.85; }
 .bgtasks-ico { display: inline-flex; flex-shrink: 0; color: var(--info); }
 .bgtasks-ico svg { width: 11px; height: 11px; }
 
@@ -2486,6 +2494,27 @@ html[data-density='small'] .cs-sub-fold { font-size: 8.5px; }
 }
 .tm-ico svg { width: 17px; height: 17px; display: block; }
 .tm-ico .bgtasks-dot { width: 10px; height: 10px; }
+.task-modal.tone-goal .tm-ico {
+  color: var(--success);
+  background: color-mix(in srgb, var(--success) 12%, transparent);
+  border-color: color-mix(in srgb, var(--success) 40%, transparent);
+}
+.goal-objective { white-space: pre-wrap; overflow-wrap: anywhere; }
+.goal-reason { margin-top: 8px; }
+.goal-reason h5 { margin: 0 0 3px; font: 600 11px/1.4 var(--body); color: var(--text-muted); text-transform: uppercase; letter-spacing: .04em; }
+.goal-reason p { margin: 0; font: 12px/1.5 var(--body); color: var(--text); white-space: pre-wrap; overflow-wrap: anywhere; }
+.goal-editor { display: flex; flex-direction: column; gap: 10px; }
+.goal-editor label { display: flex; flex-direction: column; gap: 4px; font: 12px/1.4 var(--body); color: var(--text-muted); }
+.goal-editor textarea, .goal-editor input {
+  width: 100%; box-sizing: border-box; padding: 8px 10px; border: 1px solid var(--border);
+  border-radius: var(--radius-md); background: var(--bg-inset); color: var(--text); font: 13px/1.5 var(--body); resize: vertical;
+}
+.goal-editor .goal-budget input { max-width: 220px; }
+.goal-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 10px; }
+.goal-actions button { padding: 6px 14px; border-radius: var(--radius-md); border: 1px solid var(--border); background: transparent; color: var(--text); font: 500 12px/1.3 var(--body); cursor: pointer; }
+.goal-actions button.primary { border-color: color-mix(in srgb, var(--success) 50%, transparent); background: color-mix(in srgb, var(--success) 14%, transparent); color: var(--success); }
+.goal-actions button:disabled { opacity: .5; cursor: default; }
+.goal-error { margin: 6px 0 0; color: var(--danger-strong); font: 12px/1.4 var(--body); }
 .task-modal.tone-scheduled .tm-ico {
   color: var(--info);
   background: color-mix(in srgb, var(--info) 12%, transparent);
@@ -2693,6 +2722,25 @@ html[data-density='small'] .cs-sub-fold { font-size: 8.5px; }
 .bubble.role-scheduled_fire .sf-ico svg { width: 12px; height: 12px; }
 .bubble.role-scheduled_fire .sf-when { font-family: var(--mono); font-size: 10px; color: var(--text-muted); white-space: nowrap; }
 .bubble.role-scheduled_fire .sf-id { font-family: var(--mono); font-size: 10px; color: var(--text-faint); }
+/* A question beside the conversation and its answer (app/Message.tsx §
+   SideBubble, §14.119): pulled to the left and narrower than the thread,
+   dashed, in its own colour — it is not part of what the model remembers. */
+.bubble.role-side {
+  --fold-edge: var(--lavender);
+  margin-left: -14px; margin-right: 18%;
+  border-style: dashed; border-color: color-mix(in srgb, var(--lavender) 55%, transparent);
+  background: color-mix(in srgb, var(--lavender) calc(7% * var(--bubble-tint)), transparent);
+}
+.bubble.role-side .bubble-h { flex-wrap: wrap; row-gap: 2px; }
+.bubble.role-side .tag { color: var(--lavender); white-space: nowrap; }
+.bubble.role-side .side-ico { display: inline-flex; color: var(--lavender); }
+.bubble.role-side .side-ico svg { width: 12px; height: 12px; }
+.bubble.role-side .side-note { font-family: var(--mono); font-size: 10px; color: var(--text-faint); white-space: nowrap; }
+.bubble.role-side .side-q { font-weight: 600; line-height: 1.45; white-space: pre-wrap; overflow-wrap: anywhere; }
+.bubble.role-side .side-a { margin-top: 6px; padding-top: 6px; border-top: 1px dashed color-mix(in srgb, var(--lavender) 30%, transparent); }
+.bubble.role-side .side-wait { color: var(--text-muted); font-style: italic; animation: bgtasks-pulse 1.6s ease-in-out infinite; }
+.bubble.role-side .side-err { color: var(--danger-strong); }
+@media (max-width: 820px) { .bubble.role-side { margin-left: -6px; margin-right: 8%; } }
 .sf-title { font-weight: 600; line-height: 1.45; overflow-wrap: anywhere; }
 .sf-prompt { margin-top: 6px; }
 .sf-prompt summary { cursor: pointer; font-family: var(--mono); font-size: 10.5px; color: var(--text-muted); }
@@ -3410,6 +3458,49 @@ html[data-density='small'] .cs-sub-fold { font-size: 8.5px; }
   min-height: 40px;
 }
 .app-input-bar .send:hover:not(:disabled) { background: color-mix(in srgb, var(--accent) 10%, transparent); }
+/* Ask aside (§14.119): beside send while a turn runs, in the aside colour. */
+.app-input-bar .aside {
+  display: flex; align-items: center; justify-content: center; gap: 6px;
+  background: var(--bg-inset); border: 1px dashed color-mix(in srgb, var(--lavender) 70%, transparent);
+  color: var(--lavender); cursor: pointer; min-height: 32px; padding: 0 12px;
+  font-family: var(--display); font-size: 10px; letter-spacing: 0.14em; text-transform: uppercase;
+}
+.app-input-bar .aside svg { width: 13px; height: 13px; }
+.app-input-bar .aside:hover:not(:disabled) { background: color-mix(in srgb, var(--lavender) 12%, transparent); }
+.app-input-bar .aside:disabled { opacity: 0.35; cursor: not-allowed; }
+/* The cache is cold: what the next message costs (§14.119). */
+.cold-resume-note {
+  display: flex; align-items: baseline; gap: 8px; padding: 5px 12px;
+  color: var(--info); font: 12px/1.45 var(--body);
+  border-top: 1px dashed color-mix(in srgb, var(--info) 35%, transparent);
+}
+.cold-resume-note b { color: var(--text-strong); font-weight: 600; }
+.cold-resume-note .crn-ico { flex: none; }
+
+/* What drives usage (Tools › session, app/SessionInsight.tsx, §14.119). */
+.ud-cold { margin: 0 0 8px; font: 12px/1.45 var(--body); color: var(--text-muted); }
+.ud-cold.worth { color: var(--info); }
+.ud-cold b { color: var(--text-strong); }
+.ud-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 10px; }
+.ud-row { display: flex; flex-direction: column; gap: 3px; }
+.ud-head { display: flex; align-items: center; gap: 6px; font: 12px/1.4 var(--body); color: var(--text); }
+.ud-dot { width: 7px; height: 7px; border-radius: 50%; flex: none; background: var(--text-faint); }
+.ud-row.hot .ud-dot { background: var(--danger-strong); }
+.ud-row.warm .ud-dot { background: var(--warning); }
+.ud-row.calm .ud-dot { background: var(--success); }
+.ud-tokens { margin-left: auto; font: 11px/1 var(--mono); color: var(--text-muted); }
+.ud-bar { display: block; height: 4px; border-radius: 999px; background: color-mix(in srgb, var(--text-faint) 18%, transparent); overflow: hidden; }
+.ud-bar > span { display: block; height: 100%; border-radius: 999px; background: var(--text-faint); }
+.ud-row.hot .ud-bar > span { background: var(--danger-strong); }
+.ud-row.warm .ud-bar > span { background: var(--warning); }
+.ud-row.calm .ud-bar > span { background: var(--success); }
+.ud-detail { margin: 0; font: 11.5px/1.45 var(--body); color: var(--text); overflow-wrap: anywhere; }
+.ud-advice { margin: 0; font: 11px/1.45 var(--body); color: var(--text-muted); }
+.aside-error {
+  display: flex; align-items: center; gap: 8px; padding: 4px 12px;
+  color: var(--danger-strong); font: 12px/1.4 var(--body);
+}
+.aside-error button { margin-left: auto; background: transparent; border: 0; color: inherit; cursor: pointer; font-size: 14px; }
 .app-input-bar .send:disabled { opacity: 0.35; cursor: not-allowed; }
 /* Phone-only pieces (the ≤820px block shows them): the one-chip mode picker
    and the send icon. */
@@ -5658,12 +5749,13 @@ html[data-density='small'] .cs-sub-fold { font-size: 8.5px; }
   .app-input-bar .ci-grip { height: 10px; }   /* = the top padding above */
   .app-input-bar .ci-send-col { order: 2; flex: 0 0 auto; flex-direction: row; gap: 8px; }
   .app-input-bar .ci-attach,
+  .app-input-bar .aside,
   .app-input-bar .send {
     flex: 0 0 auto;
     width: 44px; padding: 0;
     display: flex; align-items: center; justify-content: center;
   }
-  .app-input-bar .send-label { display: none; }
+  .app-input-bar .send-label, .app-input-bar .aside-label { display: none; }
   .app-input-bar .send-icon { display: block; }
   /* On touch there IS no drag & drop — the paperclip is the only way in, so it
      must never be the cramped button. */
@@ -8704,6 +8796,7 @@ html:not([data-file-icons='mono']) .tt-row:not(.ignored) > .tt-ico.fi { opacity:
 .app-bar .session-action { display: grid; place-items: center; width: 30px; height: 30px; padding: 6px; border-radius: var(--radius-md); letter-spacing: 0; background: transparent; border-color: transparent; color: var(--text-muted); }
 .app-bar .session-action svg { width: 16px; height: 16px; }
 .app-bar .session-action:hover:not(:disabled) { background: color-mix(in srgb, var(--accent) 12%, transparent); color: var(--text); }
+.app-bar .session-action.has-goal { color: var(--success); }
 .app-bar .session-action:focus-visible { outline: 2px solid var(--accent-strong); outline-offset: 2px; }
 .app-bar .session-action-stop, .app-bar .session-action-stop:hover:not(:disabled) { color: var(--danger-strong); }
 .app-bar .session-action[aria-busy="true"] { opacity: .5; }
@@ -9089,6 +9182,15 @@ html:not([data-file-icons='mono']) .tt-row:not(.ignored) > .tt-ico.fi { opacity:
   font: 500 11px/1.3 var(--body); text-transform: none; letter-spacing: 0;
 }
 .pop-kit button.runtime-apply:hover:not(:disabled) { background: color-mix(in srgb, var(--warning) 22%, transparent); color: var(--warning); }
+/* Ultracode: a switch beside effort (§14.56), and its tag in the cell. */
+.pop-kit .runtime-ultracode { display: flex; align-items: flex-start; gap: 8px; cursor: pointer; }
+.pop-kit .runtime-ultracode input { margin: 2px 0 0; accent-color: var(--violet); flex: none; }
+.pop-kit .runtime-ultracode > span { display: flex; flex-direction: column; gap: 2px; font: 12px/1.4 var(--body); color: var(--text); }
+.pop-kit .runtime-ultracode small { color: var(--text-faint); font-size: 11px; }
+.runtime-value > span.runtime-ultracode-tag {
+  flex: none; padding: 0 6px; border-radius: 999px; font: 500 10px/16px var(--body);
+  color: var(--violet); background: color-mix(in srgb, var(--violet) 14%, transparent);
+}
 
 /* Shared select triggers; popup lives above scrolling modals via a workspace portal. */
 button.picker-trigger { display: inline-flex; align-items: center; justify-content: space-between; gap: 10px; min-width: 0; max-width: 100%; padding: 8px 10px; border: 1px solid var(--border); border-radius: var(--radius-md); background: var(--bg-elevated); color: var(--text); font: 12px/1.45 var(--body); text-align: left; text-transform: none; letter-spacing: 0; cursor: pointer; }

@@ -1595,6 +1595,7 @@ class Server:
         effort = self._spawn_text(params, "effort")
         mode = self._spawn_text(params, "mode")
         cwd = self._spawn_text(params, "cwd")
+        unattended = params.get("unattended") is True
         if cwd is not None and not cwd.startswith("/"):
             raise RpcError(ERR_INVALID_PARAMS, "cwd must be an absolute path")
         if cwd is not None:
@@ -1638,7 +1639,7 @@ class Server:
                 "event": "peer_spawn_request", "session_id": source_id,
                 "request_id": request_id, "task": task, "name": name,
                 "provider": provider, "model": model, "effort": effort,
-                "mode": mode, "cwd": cwd,
+                "mode": mode, "cwd": cwd, **({"unattended": True} if unattended else {}),
             })
             try:
                 outcome = await asyncio.wait_for(fut, _SPAWN_HUB_TIMEOUT_S)
@@ -1729,6 +1730,7 @@ class Server:
     _SESSION_METHODS = frozenset({
         "start_session", "subscribe", "unsubscribe", "send_input", "interrupt",
         "set_permission_mode", "set_model", "set_effort", "set_session_name",
+        "side_question", "set_goal",
         "set_session_handle",
         "fork_session", "compact_session", "rollback_session", "review_session",
         "codex_fork_points",

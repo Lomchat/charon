@@ -407,6 +407,13 @@
       "when": 1794305746293,
       "tag": "0057_hidden_sessions",
       "breakpoints": true
+    },
+    {
+      "idx": 58,
+      "version": "6",
+      "when": 1794818652960,
+      "tag": "0058_session_goal_unattended",
+      "breakpoints": true
     }
   ]
 }

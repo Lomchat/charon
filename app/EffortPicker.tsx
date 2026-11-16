@@ -64,20 +64,12 @@ export default function EffortPicker({
   // The model is known and explicitly supports NO effort level.
   const unsupported = perModel !== null && perModel.length === 0;
 
-  // ultracode (xhigh + dynamic-workflow orchestration, §14.56) is a Charon
-  // pseudo-level, not a catalog capability — offer it wherever the model can do
-  // xhigh (or when we have no per-model data). Needs the Workflows feature on
-  // the account; if unavailable the CLI just runs without it.
-  const supportsXhigh = perModel === null || baseOptions.includes('xhigh');
-  const withUltra = supportsXhigh && !baseOptions.includes('ultracode')
-    ? [...baseOptions, 'ultracode']
-    : baseOptions;
-
+  // Ultracode is no level of this list: it is a switch beside it (§14.56).
   // Faithfully show a current value that isn't in the computed list (e.g. an
   // effort set earlier, then the model switched to one that doesn't offer it).
-  const options = value && !withUltra.includes(value)
-    ? [...withUltra, value]
-    : withUltra;
+  const options = value && !baseOptions.includes(value)
+    ? [...baseOptions, value]
+    : baseOptions;
 
   return (
     <PickerControl
@@ -99,8 +91,8 @@ export default function EffortPicker({
       )}
       {options.map((lvl) => (
         <option key={lvl} value={lvl}>
-          {lvl === 'ultracode' ? 'ultracode — xhigh + workflows' : lvl}
-          {value === lvl && perModel !== null && !perModel.includes(lvl) && lvl !== 'ultracode' ? ' (unsupported)' : ''}
+          {lvl}
+          {value === lvl && perModel !== null && !perModel.includes(lvl) ? ' (unsupported)' : ''}
         </option>
       ))}
     </PickerControl>

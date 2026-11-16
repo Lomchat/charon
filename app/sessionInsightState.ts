@@ -29,6 +29,11 @@ export type SessionContextUsage = {
   model?: string;
   status?: { type?: string; activeFlags?: string[]; active_flags?: string[] };
   categories?: Array<{ name?: string | null; tokens?: number | null }>;
+  /** Claude (agent >= 0.134.0, §14.119): the messages' make-up, the load
+   *  re-sent every turn, and the 5-hour price of a cold resume. */
+  breakdown?: import('@/lib/usageDrivers').ContextBreakdown;
+  fixed?: import('@/lib/usageDrivers').ContextFixed;
+  cold_resume_quota?: import('@/lib/usageDrivers').ColdResumeQuota;
   identity?: { name?: string | null; cli_title?: string | null; cli_error?: string };
   recorded_usage?: {
     turns: number;

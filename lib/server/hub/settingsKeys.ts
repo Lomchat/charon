@@ -43,6 +43,7 @@ export const SETTINGS_WRITE_ALLOWLIST = [
     providerSettingKey(p, 'default_permission_mode'),
   ]),
   'claude.default_fallback_model',
+  'claude.default_ultracode',
   // Fleet default for the Claude settings scope (§14.100). A VPS and a session
   // may each override it; validated below through the shared parser so 'none'
   // and an unknown token can't be confused.

@@ -60,6 +60,8 @@ import {
 } from '@/lib/server/hub/bgTaskState';
 import { withBgTaskLaunchers } from '@/lib/server/hub/conversationSources';
 import { readScheduledTasks, recordScheduledTasks } from '@/lib/server/hub/scheduledTaskState';
+import { readGoal, recordGoal } from '@/lib/server/hub/goalState';
+import { ultracodeOf } from '@/lib/providerConfigFlags';
 import { dueScheduledTask, fireKey, matchFiredTask, type ScheduledTask } from '@/lib/scheduledTasks';
 import { readCodexBgState } from '@/lib/server/hub/codexBgState';
 import { codexTerminalProcessId, type BgTask } from '@/app/bgTasks';
@@ -140,6 +142,52 @@ export function resolveConfiguredSessionMode(kind: AgentKind): SessionMode {
   return (isSessionMode(kind, configured)
     ? configured
     : defaultSessionMode(kind, 'create')) as SessionMode;
+}
+
+/** A side question's row content (role 'side', §14.119). */
+export type SideRow = { question: string; status: 'pending' | 'answered' | 'failed'; answer?: string; error?: string };
+
+/** One `side_question` RPC: the agent's own deadline (240 s) plus slack. */
+const SIDE_QUESTION_RPC_MS = 270_000;
+
+/** This session's earlier ANSWERED side exchanges, oldest first (the last 10),
+ *  for the CLI's `history`: a follow-up question needs the previous ones. */
+function sideHistory(sessionId: string): Array<{ question: string; response: string }> {
+  const rows = db.select({ content: sessionMessages.content }).from(sessionMessages)
+    .where(and(eq(sessionMessages.sessionId, sessionId), eq(sessionMessages.role, 'side')))
+    .orderBy(desc(sessionMessages.id)).limit(10).all();
+  const out: Array<{ question: string; response: string }> = [];
+  for (const r of rows.reverse()) {
+    try {
+      const v = JSON.parse(r.content) as SideRow;
+      if (v?.status === 'answered' && typeof v.question === 'string' && typeof v.answer === 'string') {
+        out.push({ question: v.question, response: v.answer });
+      }
+    } catch {}
+  }
+  return out;
+}
+
+/** What the model reads when an unattended session's gate is refused
+ *  (§14.119): carry on, never wait. */
+export const UNATTENDED_PERMISSION_REASON =
+  'Nobody is watching this session (unattended mode), so this action was not approved and did not run. '
+  + 'Do not retry it as is: continue without it, or take another way that needs no approval, and say what you skipped.';
+export const UNATTENDED_QUESTION_REASON =
+  'Nobody is watching this session (unattended mode), so no one can answer this question. '
+  + 'Make the most reasonable choice yourself, state the assumption you made, and continue.';
+
+/** Write Claude's ultracode switch into the session's construction JSON:
+ *  the next start/resume sends it (§14.56). */
+export function setUltracode(sessionId: string, on: boolean): void {
+  const row = db.select({ providerConfig: agentSessions.providerConfig }).from(agentSessions)
+    .where(eq(agentSessions.id, sessionId)).get();
+  if (!row) return;
+  const cfg = (parseProviderConfig(row.providerConfig) ?? {}) as Record<string, unknown>;
+  if ((cfg.ultracode === true) === on) return;
+  if (on) cfg.ultracode = true; else delete cfg.ultracode;
+  db.update(agentSessions).set({ providerConfig: JSON.stringify(cfg) })
+    .where(eq(agentSessions.id, sessionId)).run();
 }
 
 export function parseProviderConfig(value: string | null | undefined): ProviderSessionConfig | null {
@@ -235,8 +283,13 @@ function resolveClaudeConfig(
   value: ClaudeSessionConfig | null | undefined,
   vpsRow: { claudeSettingSources?: string | null } | null,
 ): ClaudeSessionConfig {
+  // Ultracode (§14.56): the caller's choice, else the fleet default; stored
+  // only when on, like every flag of this JSON.
+  const { ultracode, ...rest } = value ?? {};
+  const on = typeof ultracode === 'boolean' ? ultracode : getSetting('claude.default_ultracode') === 'true';
   return {
-    ...(value ?? {}),
+    ...rest,
+    ...(on ? { ultracode: true } : {}),
     settingSources: resolveSettingSources(
       value?.settingSources,
       safeParseSettingSources(vpsRow?.claudeSettingSources),
@@ -620,6 +673,8 @@ export class SessionStream {
   model: string | null = null;
   fallbackModel: string | null = null;
   effort: AnyEffort | null = null;
+  /** Claude's ultracode switch (§14.56), mirrored from provider_config. */
+  ultracode = false;
   customEndpoint = false;
   // The model Anthropic actually used on the last AssistantMessage. Captured
   // from the `effective_model` event (agent >= 0.6.0), persisted in
@@ -948,6 +1003,7 @@ export class SessionStream {
     model?: string | null;
     fallbackModel?: string | null;
     effort?: string | null;
+    ultracode?: boolean;
     effectiveModel?: string | null;
     customEndpoint?: boolean;
   }) {
@@ -971,6 +1027,7 @@ export class SessionStream {
     this.fallbackModel = opts.fallbackModel ?? null;
     this.customEndpoint = !!opts.customEndpoint;
     this.effort = isValidEffortForKind(opts.effort, this.kind, this.customEndpoint) ? (opts.effort as AnyEffort) : null;
+    this.ultracode = opts.ultracode === true;
     this.effectiveModel = opts.effectiveModel ?? null;
     // Delta providers' reasoning coalesces hub-side (one row per block).
     this.coalesceThinking = PROVIDERS[this.kind]?.thinkingDelivery === 'delta';
@@ -2018,6 +2075,13 @@ export class SessionStream {
           this._log('warn', 'sdk_error', { msg: 'pending perm insert failed', err: (e as Error)?.message });
           break;
         }
+        // Unattended (§14.119): nobody will answer — refuse at once, with
+        // a reason the model reads, and surface nothing.
+        if (this._unattended()) {
+          void this._declineUnattended('permission', ev.id)
+            .then((ok) => { if (!ok) this._surfacePermissionRequest(ev.id, ev.tool, ev.input, expiresAt, gate); });
+          break;
+        }
         this._surfacePermissionRequest(ev.id, ev.tool, ev.input, expiresAt, gate);
         break;
       case 'user_question': {
@@ -2053,6 +2117,16 @@ export class SessionStream {
         const questionRow = this._persist(asynchronous ? 'async_question' : 'user_question', {
           type: 'user_question', id: ev.id, questions: ev.questions, delivery: ev.delivery,
         });
+        if (!pendingKnown && !asynchronous && this._unattended()) {
+          // Unattended (§14.119): a blocking question nobody answers is
+          // declined at once; the model is told to decide for itself.
+          const surface = () => this._broadcast(withRowId({
+            type: 'user_question' as const, id: ev.id, questions: ev.questions, expiresAt,
+            delivery: ev.delivery, createdAt: Math.floor(Date.now() / 1000),
+          }, questionRow));
+          void this._declineUnattended('question', ev.id).then((ok) => { if (!ok) surface(); });
+          break;
+        }
         if (!pendingKnown) {
           this._broadcast(withRowId({
             type: 'user_question' as const, id: ev.id, questions: ev.questions,
@@ -2163,6 +2237,7 @@ export class SessionStream {
           // the row so a rebuild-from-history gets the same answer the live
           // path did — the whole point of §14.91's "one oracle".
           ...(ev.terminal !== undefined ? { terminal: ev.terminal } : {}),
+          ...(ev.stop_cause === 'time_limit' ? { stopCause: 'time_limit' as const } : {}),
         };
         this._broadcast(withRowId(payload, this._persist('event', payload)));
         // …and keep the running-task registry current: it decides whether the
@@ -2249,13 +2324,18 @@ export class SessionStream {
             .where(eq(agentSessions.id, this.id)).run();
         } catch {}
         this.pendingApply.effort = !!ev.applied_at_next_start;
-        this._broadcast({
+        if (typeof ev.ultracode === 'boolean' && this.kind === 'claude' && ev.ultracode !== this.ultracode) {
+          try { setUltracode(this.id, ev.ultracode); this.ultracode = ev.ultracode; markSummaryDirty(this.id); } catch {}
+        }
+        const effortFrame: Extract<WorkerEvent, { type: 'effort_changed' }> = {
           type: 'effort_changed',
           // BridgeEvent.effort_changed (locked) types effort as EffortLevel|null;
           // a Codex effort passes through at runtime.
           effort: this.effort as EffortLevel | null,
           appliedAtNextStart: !!ev.applied_at_next_start,
-        });
+        };
+        if (this.kind === 'claude') effortFrame.ultracode = this.ultracode;
+        this._broadcast(effortFrame);
         break;
       case 'effective_model':
         // Agent emits this on change only. Cache + persist + broadcast. The
@@ -2480,6 +2560,16 @@ export class SessionStream {
         }
         break;
       }
+      case 'goal': {
+        // The session's goal (§14.119): state, not history — the row holds
+        // the latest, the summary carries it to every tab.
+        try {
+          if (recordGoal(this.id, ev.goal, this.currentEventTs ?? Date.now())) markSummaryDirty(this.id);
+        } catch (e) {
+          console.warn(`[session ${this.id}] goal not recorded:`, e);
+        }
+        break;
+      }
       case 'unprompted_turn': {
         if (this._replayAlreadyPersisted(ev)) { this._dropReplayedAssistantBuffer(); break; }
         // A turn the CLI opened by itself, not a background wake-up: a
@@ -2496,6 +2586,16 @@ export class SessionStream {
           opened = !!task;
           task ??= dueScheduledTask(tasks, at, this.firedScheduledTasks);
         } catch {}
+        if (!task && ev.goal_active) {
+          // No scheduled task explains it, and a /goal is active: the CLI's
+          // goal check-in re-opened the session (§14.119). Say so in the
+          // user's place, like a scheduled fire.
+          const goal = readGoal(this.id);
+          if (!goal || !this._flushAssistant()) break;
+          const payload = { type: 'scheduled_fire' as const, source: 'goal', prompt: goal.objective };
+          this._broadcast(withRowId(payload, this._persist('event', payload)));
+          break;
+        }
         if (!task) break;
         if (!this._flushAssistant()) break; // order-preserving stop (16.3)
         // A failed turn sends no turn_end, so the list keeps this fire's
@@ -2994,9 +3094,18 @@ export class SessionStream {
    * as setModel — effort is also part of ClaudeAgentOptions. Pass null to
    * clear back to the global default. Invalid values are dropped agent-side.
    */
-  async setEffort(effort: AnyEffort | null): Promise<void> {
+  async setEffort(effort: AnyEffort | null, ultracode?: boolean): Promise<void> {
+    // Ultracode (Claude, §14.56) is construction config: the row is its
+    // truth for the next start/resume, written first so an agent too old to
+    // echo it still gets it at the restart.
+    if (typeof ultracode === 'boolean' && this.kind === 'claude') {
+      setUltracode(this.id, ultracode);
+      this.ultracode = ultracode;
+    }
     const client = getAgentClientForVpsId(this.vpsId);
-    await client.call('set_effort', { session_id: this.id, effort: effort ?? null });
+    const params: Record<string, unknown> = { session_id: this.id, effort: effort ?? null };
+    if (typeof ultracode === 'boolean' && this.kind === 'claude') params.ultracode = ultracode;
+    await client.call('set_effort', params);
   }
 
   /**
@@ -4701,6 +4810,83 @@ export class SessionStream {
   /** Hidden sessions (§14.118) never reach Telegram; their browser pushes
    *  go only to devices showing hidden sessions (webPush). Read per event:
    *  a hide silences the very next one. */
+  /** A question beside the conversation (Claude `side_question`, §14.119):
+   *  answered on a no-tool fork of the context, never written into it — even
+   *  mid-turn. ONE row (role 'side', a conversation slot) holds the question
+   *  and, once it lands, the answer; the frames carry both. The session's
+   *  earlier side exchanges ride along so a follow-up has its context. */
+  async askSideQuestion(question: string): Promise<{ rowId: number }> {
+    const history = sideHistory(this.id);
+    const at = Date.now();
+    const row = this._persist('side', { question, status: 'pending' } satisfies SideRow, { seq: null, tsMs: at });
+    if (row === false) throw new Error('The question could not be recorded.');
+    this._broadcast({ type: 'side_question', question, rowId: row });
+    void (async () => {
+      let done: SideRow;
+      try {
+        const r = await getAgentClientForVpsId(this.vpsId).call<{ ok?: boolean; answer?: string; error?: string; reason?: string }>(
+          'side_question', { session_id: this.id, question, history }, { timeoutMs: SIDE_QUESTION_RPC_MS },
+        );
+        done = r?.ok && typeof r.answer === 'string'
+          ? { question, status: 'answered', answer: r.answer }
+          : { question, status: 'failed', error: r?.reason === 'unsupported' || r?.reason === 'unavailable'
+            ? 'This session cannot answer side questions (update its agent).' : (r?.error || 'No answer.') };
+      } catch (e) {
+        done = { question, status: 'failed', error: (e as Error)?.message || 'No answer.' };
+      }
+      try {
+        db.update(sessionMessages).set({ content: JSON.stringify(done) })
+          .where(and(eq(sessionMessages.id, row), eq(sessionMessages.sessionId, this.id))).run();
+      } catch (e) {
+        console.warn(`[session ${this.id}] side answer not stored:`, (e as Error)?.message ?? e);
+      }
+      this._broadcast({
+        type: 'side_answer', questionRowId: row,
+        ...(done.status === 'answered' ? { answer: done.answer } : { error: done.error }),
+      });
+    })();
+    return { rowId: row };
+  }
+
+  private _unattended(): boolean {
+    try {
+      return db.select({ unattended: agentSessions.unattended }).from(agentSessions)
+        .where(eq(agentSessions.id, this.id)).get()?.unattended === 1;
+    } catch { return false; }
+  }
+
+  /** Refuse one pending gate of an unattended session (§14.119): the agent
+   *  hands the model `UNATTENDED_*` as the refusal's reason. False = the
+   *  agent could not take it (offline, gone): the caller shows the card. */
+  async _declineUnattended(kind: 'permission' | 'question', id: string): Promise<boolean> {
+    try {
+      const client = getAgentClientForVpsId(this.vpsId);
+      const response = kind === 'permission'
+        ? await client.call('respond_permission', {
+          session_id: this.id, perm_id: id, allow: false, message: UNATTENDED_PERMISSION_REASON,
+        })
+        : await client.call('respond_question', {
+          session_id: this.id, q_id: id, answers: null, decline: UNATTENDED_QUESTION_REASON,
+        });
+      if ((response as { resolved?: boolean } | undefined)?.resolved === false) return false;
+    } catch (e) {
+      console.warn(`[session ${this.id}] unattended ${kind} not declined: ${(e as Error)?.message ?? e}`);
+      return false;
+    }
+    const at = Math.floor(Date.now() / 1000);
+    try {
+      if (kind === 'permission') {
+        db.update(sessionPendingPermissions).set({ status: 'denied', respondedAt: at })
+          .where(and(eq(sessionPendingPermissions.id, id), eq(sessionPendingPermissions.sessionId, this.id))).run();
+      } else {
+        db.update(sessionPendingQuestions).set({ status: 'cancelled', respondedAt: at })
+          .where(and(eq(sessionPendingQuestions.id, id), eq(sessionPendingQuestions.sessionId, this.id))).run();
+      }
+    } catch {}
+    this.publishResolution(kind, id, kind === 'permission' ? 'denied' : 'cancelled');
+    return true;
+  }
+
   private _hidden(): boolean {
     try {
       return db.select({ hidden: agentSessions.hidden }).from(agentSessions)
@@ -4792,6 +4978,7 @@ export function getOrCreateStream(sessionId: string): SessionStream | null {
     model: row.model ?? null,
     fallbackModel: row.fallbackModel ?? null,
     effort: row.effort ?? null,
+    ultracode: ultracodeOf(row.providerConfig),
     customEndpoint: !!connectionConfig(row.providerConfig).customEndpoint,
     // Last API-confirmed model — needed right after a Charon restart so the
     // very next assistant flush is stamped correctly (the agent won't re-emit
@@ -4972,6 +5159,8 @@ export async function startNewSession(opts: {
   parentSessionId?: string | null;
   /** Born hidden (§14.118). */
   hidden?: boolean;
+  /** Nobody answers its cards (§14.119). */
+  unattended?: boolean;
   /** Born strict (§14.118): no fallback model; another model stops the turn. */
   strictModel?: boolean;
 }): Promise<SessionStream> {
@@ -5032,6 +5221,12 @@ export async function startNewSession(opts: {
     }
     requestedConfig = { ...requestedConfig, accountProfile: profile.id, accountProfileNumber: profile.number };
   }
+  // The legacy pseudo-effort 'ultracode' (an API caller, an old default):
+  // xhigh + the switch beside it (§14.56).
+  if (kind === 'claude' && cfg.effort === 'ultracode') {
+    cfg.effort = 'xhigh';
+    requestedConfig = { ...(requestedConfig ?? {}), ultracode: true } as ProviderSessionConfig;
+  }
   const providerConfig = resolveProviderConfig(kind, requestedConfig, vps);
   const customEndpoint = !!(providerConfig as any)?.customEndpoint;
   // An endpoint session runs the ENDPOINT's model: the provider's fallback
@@ -5077,6 +5272,7 @@ export async function startNewSession(opts: {
     position: nextSessionPosition(opts.vpsId),
     parentSessionId: opts.parentSessionId ?? null,
     hidden: opts.hidden ? 1 : 0,
+    unattended: opts.unattended ? 1 : 0,
     strictModel: opts.strictModel ? 1 : 0,
   }).run();
   // Out of other agents' `list_sessions` before it can answer anyone.

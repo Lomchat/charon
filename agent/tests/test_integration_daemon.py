@@ -15,6 +15,7 @@ Runs in CI (python 3.11) and locally.
 import json
 import os
 import shutil
+import signal
 import socket
 import subprocess
 import sys
@@ -25,6 +26,29 @@ import unittest
 HERE = os.path.dirname(__file__)
 PYZ = os.path.normpath(os.path.join(HERE, "..", "dist", "charon-agent.pyz"))
 MARKER = "HELLO_CHARON_INTEGRATION_42"
+
+
+def _kill_processes_with_home(home):
+    """SIGKILL every process started with HOME=<home>: shell holders are
+    detached (start_new_session) and outlive the daemon ON PURPOSE, so a test
+    that starts a shell (even `shell_start {}` in the dispatch sweep) leaks one
+    holder + its bash per run unless reaped here. Linux only (/proc)."""
+    if not os.path.isdir("/proc"):
+        return
+    marker = ("HOME=" + home).encode()
+    for entry in os.listdir("/proc"):
+        if not entry.isdigit():
+            continue
+        try:
+            with open("/proc/%s/environ" % entry, "rb") as fh:
+                env = fh.read().split(b"\0")
+        except OSError:
+            continue
+        if marker in env:
+            try:
+                os.kill(int(entry), signal.SIGKILL)
+            except OSError:
+                pass
 
 
 def _find_py310():
@@ -161,6 +185,7 @@ class TestDaemonIntegration(unittest.TestCase):
                 self.proc.kill()
             except Exception:
                 pass
+        _kill_processes_with_home(self.home)
         shutil.rmtree(self.home, ignore_errors=True)
 
     def test_ping(self):
@@ -307,11 +332,8 @@ class TestDaemonIntegration(unittest.TestCase):
             )
             self.assertIn(MARKER, replayed, "output was not replayed to the reconnecting client")
         finally:
-            # KILL the shell before closing: the holder is a DETACHED process
-            # (start_new_session — survives the daemon on purpose), so the
-            # tearDown's proc.terminate() does NOT reap it. Without this,
-            # every test run leaked one `--shell-holder` process + its bash
-            # forever (observed: 11 leaked holders on the dev machine).
+            # The holder is DETACHED (survives the daemon on purpose): kill it
+            # through the protocol; tearDown also reaps anything left by HOME.
             try:
                 c2.call("shell_kill", {"shell_id": shell_id})
             except Exception:

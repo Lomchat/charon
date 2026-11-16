@@ -9,6 +9,8 @@ import { bgWorkCount, pruneStaleBgTasks, runningBgTasksIfWarm } from '@/lib/serv
 import { listVpsRuntimeSnapshots } from '@/lib/server/agent/vpsRuntimeSnapshot';
 import { compareVersions } from '@/lib/version';
 import { parseScheduledTasks } from '@/lib/scheduledTasks';
+import { parseSessionGoal } from '@/lib/sessionGoal';
+import { ultracodeOf } from '@/lib/providerConfigFlags';
 import { SESSION_PEER_AGENT_VERSION } from '@/lib/sessionHandle';
 import type { SessionListItem, VpsRuntimeSnapshot } from '@/lib/types/api';
 
@@ -138,6 +140,9 @@ export function annotateSessionRows(
       scheduledTasks: parseScheduledTasks(r.scheduledTasksJson),
       promptCacheJson: undefined as unknown as AgentSession['promptCacheJson'],
       promptCache: parsePromptCache(r.promptCacheJson),
+      goalJson: undefined as unknown as AgentSession['goalJson'],
+      goal: parseSessionGoal(r.goalJson),
+      ultracode: ultracodeOf(r.providerConfig),
       accountProfile: accountProfileId(r.providerConfig), accountProfileNumber: accountProfileNumber(r.providerConfig),
       endpoint: publicConnection(r.providerConfig),
       liveStatus,

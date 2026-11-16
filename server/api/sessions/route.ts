@@ -164,7 +164,10 @@ function normalizeProviderConfig(kind: AgentKind, raw: unknown): ProviderSession
       // isolation. parseSettingSources throws on an unknown token, which the
       // POST handler already turns into a 400.
       const settingSources = parseSettingSources(r.settingSources);
-      return { ...shared, skills, ...(settingSources === null ? {} : { settingSources }) };
+      return {
+        ...shared, skills, ...(settingSources === null ? {} : { settingSources }),
+        ...(typeof r.ultracode === 'boolean' ? { ultracode: r.ultracode } : {}),
+      };
     }
     case 'codex': {
       const codex: CodexSessionConfig = {
@@ -207,7 +210,7 @@ function normalizeProviderConfig(kind: AgentKind, raw: unknown): ProviderSession
 
 // POST /api/sessions
 // Body: { vpsId, cwd, name?, kind?, permissionMode?, model?, fallbackModel?, effort?,
-//         sessionConfig?, endpoint?: { savedId, model? }, hidden?, strictModel? }
+//         sessionConfig?, endpoint?: { savedId, model? }, hidden?, strictModel?, unattended? }
 export async function POST(req: Request) {
   const s = await requireApiSession();
   if (s instanceof Response) return s;
@@ -298,7 +301,7 @@ export async function POST(req: Request) {
       kind,
       permissionMode,
       model: endpointModel ?? model, fallbackModel, effort, sessionConfig,
-      hidden: body.hidden === true, strictModel: body.strictModel === true,
+      hidden: body.hidden === true, strictModel: body.strictModel === true, unattended: body.unattended === true,
     });
     const stored = db.select({ config: agentSessions.providerConfig }).from(agentSessions).where(eq(agentSessions.id, stream.id)).get();
     return NextResponse.json({
@@ -306,7 +309,7 @@ export async function POST(req: Request) {
       id: stream.id, kind: stream.kind, status: stream.status, nativeSessionId: stream.nativeSessionId,
       vpsId, cwd, name: stream.name, permissionMode: stream.permissionMode,
       model: stream.model, fallbackModel: stream.fallbackModel, effort: stream.effort,
-      hidden: body.hidden === true, strictModel: body.strictModel === true,
+      hidden: body.hidden === true, strictModel: body.strictModel === true, unattended: body.unattended === true,
     });
   } catch (e: any) {
     return NextResponse.json({ error: e?.message ?? String(e) }, { status: 500 });

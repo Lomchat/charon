@@ -115,6 +115,8 @@ export type SessionStreamState = {
   model: string | null;
   fallbackModel: string | null;
   effort: string | null;
+  /** Claude's ultracode switch (§14.56); applies at the next start, like effort. */
+  ultracode: boolean;
   modelPendingApply: boolean;
   effortPendingApply: boolean;
   effectiveModel: string | null;
@@ -155,6 +157,7 @@ export type SessionStreamActions = {
   setMode(mode: SessionMode): Promise<void>;
   setModel(model: string | null, fallbackModel?: string | null): Promise<void>;
   setEffort(effort: string | null): Promise<void>;
+  setUltracode(on: boolean): Promise<void>;
   doSleep(): Promise<void>;
   doResume(): Promise<void>;
   doRestart(): Promise<void>;
@@ -721,6 +724,13 @@ export function useSessionStream(
     catch (e) { setError({ msg: errorText(e) }); throw e; }
   }, [sessionId, overlays, watchOverlays, settle]);
 
+  // No overlay: the switch shows the agent's echo (`effort_changed`), which
+  // lands within the request's round trip.
+  const setUltracode = useCallback(async (on: boolean) => {
+    try { await sessionApi.setEffort(sessionId, effort, on); }
+    catch (e) { setError({ msg: errorText(e) }); throw e; }
+  }, [sessionId, effort]);
+
   const doSleep = useCallback(async () => {
     const h = overlays.status.set('sleeping');
     watchOverlays();
@@ -800,7 +810,7 @@ export function useSessionStream(
     currentAssistant: state.buf.assistant,
     streamingInto: state.buf.streamingInto,
     status, compacting: state.compacting && status === 'thinking', runtimeOutdated: state.runtimeOutdated, runtimeVersions: state.runtimeVersions, permissionMode,
-    model: modelPair.model, fallbackModel: modelPair.fallbackModel, effort,
+    model: modelPair.model, fallbackModel: modelPair.fallbackModel, effort, ultracode: state.meta.ultracode,
     modelPendingApply: state.meta.modelPendingApply, effortPendingApply: state.meta.effortPendingApply,
     effectiveModel: state.meta.effectiveModel,
     liveUsage: state.liveUsage, tokenUsage: state.tokenUsage, responseSpeed,
@@ -810,7 +820,7 @@ export function useSessionStream(
     isLoadingHistory: !state.loaded && !loadFailed,
     isSyncing, historyReady,
     hasMore: state.hasMore, isLoadingMore, view, windowInFlight,
-    send, interrupt, forceStop, setMode, setModel, setEffort,
+    send, interrupt, forceStop, setMode, setModel, setEffort, setUltracode,
     doSleep, doResume, doRestart, doDelete,
     respondPermission, respondQuestion, respondExitPlan,
     clearPrefillInput, refetchHistory, requestWindow, loadMoreHistory, setHistoryHold, clearError,
@@ -818,7 +828,7 @@ export function useSessionStream(
     state, status, permissionMode, modelPair.model, modelPair.fallbackModel, effort, responseSpeed,
     toolCallCount, bgTasks, prefillInput, error, loadFailed, isSyncing, historyReady, isLoadingMore, view,
     windowInFlight,
-    send, interrupt, forceStop, setMode, setModel, setEffort,
+    send, interrupt, forceStop, setMode, setModel, setEffort, setUltracode,
     doSleep, doResume, doRestart, doDelete,
     respondPermission, respondQuestion, respondExitPlan,
     clearPrefillInput, refetchHistory, requestWindow, loadMoreHistory, setHistoryHold, clearError,

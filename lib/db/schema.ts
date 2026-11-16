@@ -332,6 +332,13 @@ export const agentSessions = sqliteTable('agent_sessions', {
   // Strict model (0/1, API-only, §14.118): born without a fallback model, and a
   // turn answered by any other model is stopped and recorded as an error.
   strictModel: integer('strict_model').notNull().default(0),
+  // Unattended (0/1): nobody answers this session's cards. The hub denies a
+  // permission request and declines a blocking question the moment it
+  // arrives, telling the model to carry on without (§14.119).
+  unattended: integer('unattended').notNull().default(0),
+  // The session's goal (Claude `/goal`, Codex `thread/goal/*`): JSON
+  // `SessionGoal` (lib/sessionGoal.ts). NULL = none ever set. Read as `goal`.
+  goalJson: text('goal'),
   createdAt: integer('created_at').notNull().default(sql`(unixepoch())`),
   lastUsedAt: integer('last_used_at')
 }, (t) => [

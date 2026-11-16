@@ -68,6 +68,10 @@ export type SessionCapability =
   | 'backgroundWork' | 'fallbackModel' | 'exitPlan' | 'safeFileRevert'
   | 'autoReviewer' | 'permissionProfiles' | 'apps' | 'slashCommands'
   | 'mcpToggle' | 'mcpOauth'
+  // A goal the session keeps working toward (Claude `/goal`, Codex
+  // thread/goal/*), and a question beside the conversation (Claude's
+  // `side_question`). §14.119.
+  | 'goal' | 'sideQuestion'
   // The provider's CLI ships its own "don't ask again" options with each
   // permission card (Claude's rule suggestions); the answer picks one. Without
   // it, "always" is the provider's native session grant (Codex). Broad
@@ -310,6 +314,16 @@ export type ProviderDescriptor = {
   };
 };
 
+/** A Claude cache read's price as a fraction of the model's input price (the
+ *  CLI's own table): $0.20/$4 Opus 5.5 and $0.10/$2 Sonnet 5.5 are 0.05×,
+ *  $0.25/$10 Fable 5.1 and $0.20/$8 Fable 5.2 are 0.025×, older models 0.1×. */
+export function claudeCacheReadMultiplier(model: string | null | undefined): number {
+  const m = model ?? '';
+  if (/(opus|sonnet)-5-5/.test(m)) return 0.05;
+  if (/(fable|mythos)-5-[1-9]/.test(m)) return 0.025;
+  return 0.1;
+}
+
 export const PROVIDERS: Readonly<Record<SessionProvider, ProviderDescriptor>> = {
   claude: {
     id: 'claude',
@@ -323,11 +337,11 @@ export const PROVIDERS: Readonly<Record<SessionProvider, ProviderDescriptor>> = 
     // quota — the gauges (§14.58) are what that costs, not this.
     turnCost: 'equivalent',
     // TTL per turn from `cache_creation.ephemeral_1h/5m`; reads are 0.1× input
-    // (0.05× Opus 5.5, 0.025× Fable/Mythos 5.1), writes 1.25× (5 min) / 2× (1 h).
+    // (0.05× Opus/Sonnet 5.5, 0.025× Fable/Mythos 5.1+), writes 1.25× (5 min) / 2× (1 h).
     promptCache: {
       ttlS: null, defaultTtlS: 300, approx: false, inputExcludesCache: true,
       multipliers: (model, ttlS) => ({
-        read: /opus-5-5/.test(model ?? '') ? 0.05 : /(fable|mythos)-5-1/.test(model ?? '') ? 0.025 : 0.1,
+        read: claudeCacheReadMultiplier(model),
         write: ttlS >= 3600 ? 2 : 1.25,
       }),
     },
@@ -345,6 +359,7 @@ export const PROVIDERS: Readonly<Record<SessionProvider, ProviderDescriptor>> = 
       safeFileRevert: 'adapted', autoReviewer: 'none', permissionProfiles: 'none',
       apps: 'none', slashCommands: 'native', mcpToggle: 'native', mcpOauth: 'none',
       permissionSuggestions: 'native',
+      goal: 'native', sideQuestion: 'native',
     },
     // Claude's archive is Charon-side only (capability `adapted`) and its fork
     // anchors are the `cliUuid`s already in our rows — no RPC to name.
@@ -414,6 +429,7 @@ export const PROVIDERS: Readonly<Record<SessionProvider, ProviderDescriptor>> = 
       // Codex grants are native and scoped to the exact request
       // (acceptForSession / scope:session) — never a hub-side tool-name set.
       permissionSuggestions: 'none',
+      goal: 'native', sideQuestion: 'none',
     },
     nativeRpc: {
       archive: 'codex_archive_thread',
@@ -517,6 +533,7 @@ export const PROVIDERS: Readonly<Record<SessionProvider, ProviderDescriptor>> = 
       safeFileRevert: 'none', permissionProfiles: 'none', apps: 'none',
       slashCommands: 'none', mcpToggle: 'none', mcpOauth: 'none',
       permissionSuggestions: 'none',
+      goal: 'none', sideQuestion: 'none',
     },
     nativeRpc: {
       archive: 'cursor_archive_agent',

@@ -179,6 +179,8 @@ export default function NewSessionWizard({
   const [model, setModel] = useState('');
   const [fallbackModel, setFallbackModel] = useState('');
   const [effort, setEffort] = useState('');
+  // null = the fleet default (`claude.default_ultracode`), resolved server-side.
+  const [ultracode, setUltracode] = useState<boolean | null>(null);
   // The selected backend's permission/sandbox/freedom mode. ONE state for
   // every provider — filled from `sessionModes(selKind)` — because the picker
   // it feeds is the same control; it used to be Codex-only, which left the
@@ -201,7 +203,7 @@ export default function NewSessionWizard({
   // the VPS's scope (or the hub default). Claude only; Codex has no equivalent.
   const [settingSources, setSettingSources] = useState<ClaudeSettingSource[] | null>(null);
   const [globalDefaults, setGlobalDefaults] = useState<{
-    model: string; fallbackModel: string; effort: string;
+    model: string; fallbackModel: string; effort: string; ultracode: boolean;
     /** Fleet default mode, per provider — labels the picker's "default" row. */
     modes: Partial<Record<AgentKind, string>>;
     settingSources: ClaudeSettingSource[];
@@ -246,6 +248,7 @@ export default function NewSessionWizard({
         model: s['claude.default_model'] ?? '',
         fallbackModel: s['claude.default_fallback_model'] ?? '',
         effort: s['claude.default_effort'] ?? '',
+        ultracode: s['claude.default_ultracode'] === 'true',
         modes: Object.fromEntries(SESSION_PROVIDERS.map((p) => [
           p,
           s[providerSettingKey(p, 'default_permission_mode')] || defaultSessionMode(p, 'create'),
@@ -259,7 +262,7 @@ export default function NewSessionWizard({
   // Reset per-backend config when the backend switches (model ids / efforts
   // aren't comparable across Claude and Codex).
   useEffect(() => {
-    setModel(''); setFallbackModel(''); setEffort(''); setSessionMode('');
+    setModel(''); setFallbackModel(''); setEffort(''); setUltracode(null); setSessionMode('');
     setEndpointId(''); setEndpointModel(''); setConnectionTouched(false);
   }, [selKind]);
 
@@ -540,6 +543,7 @@ export default function NewSessionWizard({
             // Omitted (not null) when inheriting: the server fills it from the
             // VPS → hub chain and persists the result (§14.100).
             ...(settingSources ? { settingSources } : {}),
+            ...(ultracode !== null && !selectedEndpoint ? { ultracode } : {}),
           };
         } else {
           // Cursor: no instruction/schema/env surface at all. The mode carries
@@ -990,6 +994,13 @@ export default function NewSessionWizard({
                             <label className="wiz-adv-field">effort
                               <Effort accountProfile={selProfile} vpsId={vps.id} value={effort} onChange={setEffort} modelId={model}
                                 inheritPlaceholder={globalDefaults?.effort || inherit} />
+                            </label>
+                          )}
+                          {selKind === 'claude' && !selectedEndpoint && (
+                            <label className="wiz-adv-check" title={providerText.ultracodeHint(selKind)}>
+                              <input type="checkbox" checked={ultracode ?? globalDefaults?.ultracode ?? false}
+                                onChange={(e) => setUltracode(e.target.checked)} />
+                              ultracode (dynamic workflows)
                             </label>
                           )}
                         </>

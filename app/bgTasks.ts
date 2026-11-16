@@ -43,6 +43,8 @@ export type BgTaskEventLike = {
   terminal?: boolean;
   /** A command a SUB-AGENT runs itself (agent >= 0.98.3; see bgWorkItems). */
   ownedBySubagent?: boolean;
+  /** The CLI stopped it itself (agent >= 0.134.0): its background time limit. */
+  stopCause?: 'time_limit';
 };
 
 // Transient bg_task_progress payload (broadcast-only; never persisted).
@@ -185,6 +187,7 @@ export function applyBgTaskEvent(
   if (ev.workflowName) t.workflowName = ev.workflowName;
   if (ev.outputFile) t.outputFile = ev.outputFile;
   if (ev.summary) t.summary = ev.summary;
+  if (ev.stopCause) t.stopCause = ev.stopCause;
   if (t.toolUseId && !t.command && launchCandidates) {
     const cand = launchCandidates.get(t.toolUseId);
     if (cand) {
@@ -221,6 +224,7 @@ export function applyBgTaskEvent(
       t.status = 'running';
       t.endedAt = null;
       t.summary = null;
+      t.stopCause = null;
       t.usage = null;
       t.lastToolName = null;
       t.agents = null;

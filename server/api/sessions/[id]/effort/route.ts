@@ -22,7 +22,7 @@ function isEffortAcceptable(kind: SessionProvider, raw: string): boolean {
 }
 
 // POST /api/sessions/[id]/effort
-// Body: { effort: 'low' | 'medium' | 'high' | 'xhigh' | 'max' | null }
+// Body: { effort: 'low' | 'medium' | 'high' | 'xhigh' | 'max' | null, ultracode?: boolean }
 //
 // Mirrors claude_agent_sdk.EffortLevel. Invalid values are rejected here
 // (400) so the UI can surface the error immediately; the agent also drops
@@ -53,9 +53,16 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
   // Codex efforts are a different set (none/minimal/low/medium/high/xhigh/max/
   // ultra), catalog-gated per model; Claude uses isKnownEffort. The agent is
   // the final gate for both (drops a level its SDK/model doesn't know).
+  // Claude's ultracode switch rides with effort (§14.56): both are read at
+  // client construction, so both apply at the next start. Absent = unchanged.
+  let ultracode = typeof body?.ultracode === 'boolean' ? body.ultracode as boolean : undefined;
   let effort: string | null;
   if (raw == null || raw === '') {
     effort = null;
+  } else if (kind === 'claude' && raw === 'ultracode') {
+    // The legacy pseudo-effort: xhigh + the switch.
+    effort = 'xhigh';
+    ultracode = true;
   } else if (typeof raw === 'string' && isEffortAcceptable(kind, raw)) {
     effort = raw;
   } else {
@@ -65,7 +72,7 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
     );
   }
   try {
-    await stream.setEffort(effort as any);
+    await stream.setEffort(effort as any, kind === 'claude' ? ultracode : undefined);
     return NextResponse.json({ ok: true, sync: syncAfter([id]) });
   } catch (e: any) {
     return NextResponse.json({ error: e?.message ?? String(e) }, { status: 500 });

@@ -10,7 +10,7 @@ import { TurnLedgerLine } from './PromptCacheMarks';
 import { providerName, providerText } from '@/lib/providerText';
 import { apiErrorText, providerAccountLabel, type ProviderAccount } from '@/lib/providerAccounts';
 import { useAccounts } from './accountsStore';
-import { IconAlarm, IconClipboard } from './icons';
+import { IconAlarm, IconBullseye, IconChatSide, IconClipboard } from './icons';
 import { hastText, hastCodeLanguage } from './hastText';
 import { isClaudeAuthExpired } from '@/lib/authExpired';
 import { isTurnInterrupted } from '@/lib/turnInterrupted';
@@ -137,6 +137,7 @@ function Message({ m, vpsId, cwd, streaming = false, attachedResult, kind = 'cla
   if (m.role === 'thinking') return <ThinkingBubble m={m} />;
   if (m.role === 'compaction') return <CompactionMarker m={m} kind={kind} />;
   if (m.role === 'scheduled_fire') return <ScheduledFireBubble m={m} />;
+  if (m.role === 'side') return <SideBubble m={m} vpsId={vpsId} cwd={cwd} />;
   if (m.role === 'forkpoint') return <ForkMarker m={m} />;
   if (m.role === 'plan') return <PlanCard m={m} />;
   if (m.role === 'scheduled_resume') {
@@ -628,17 +629,19 @@ function ScheduledFireBubble({ m }: { m: Msg }) {
   const isFolded = useBubbleFold(m.id);
   const fire = parseScheduledFire(m.content);
   if (!fire) return null;
-  const title = scheduledTaskTitle({ prompt: fire.prompt, id: fire.taskId ?? '' });
-  const body = scheduledTaskBody(fire);
-  const when = fire.schedule ? describeSchedule(fire.schedule, fire.recurring ?? true)
+  // An active goal re-opened the session (§14.119): its objective, not a task.
+  const goal = fire.source === 'goal';
+  const title = goal ? fire.prompt : scheduledTaskTitle({ prompt: fire.prompt, id: fire.taskId ?? '' });
+  const body = goal ? '' : scheduledTaskBody(fire);
+  const when = goal ? 'checking back on its goal' : fire.schedule ? describeSchedule(fire.schedule, fire.recurring ?? true)
     : fire.source === 'loop_wakeup' ? 'loop wake-up' : null;
   return (
     <div className={`bubble role-scheduled_fire${isFolded ? ' is-folded' : ''}`} data-msg-role="scheduled_fire"
       {...foldRootProps(m.id)}>
       <FoldEdge isFolded={isFolded} />
       <header className="bubble-h">
-        <span className="sf-ico" aria-hidden><IconAlarm /></span>
-        <span className="tag">scheduled task</span>
+        <span className="sf-ico" aria-hidden>{goal ? <IconBullseye /> : <IconAlarm />}</span>
+        <span className="tag">{goal ? 'goal check-in' : 'scheduled task'}</span>
         {when && <span className="sf-when">{when}</span>}
         {fire.taskId && <span className="sf-id">{fire.taskId}</span>}
         {isFolded && <FoldLine foldKey={m.id} text={title} />}
@@ -651,6 +654,37 @@ function ScheduledFireBubble({ m }: { m: Msg }) {
           <div className="content">{body}</div>
         </details>
       )}
+    </div>
+  );
+}
+
+/** A question asked beside the conversation (§14.119) and its answer: set
+ *  off to the left, because neither is in the model's context. */
+function SideBubble({ m, vpsId, cwd }: { m: Msg; vpsId?: string; cwd?: string | null }) {
+  const isFolded = useBubbleFold(m.id);
+  let v: { question?: string; status?: string; answer?: string; error?: string } = {};
+  try { v = JSON.parse(m.content); } catch {}
+  const question = typeof v.question === 'string' ? v.question : '';
+  return (
+    <div className={`bubble role-side${isFolded ? ' is-folded' : ''}`} data-msg-role="side" {...foldRootProps(m.id)}>
+      <FoldEdge isFolded={isFolded} />
+      <header className="bubble-h">
+        <span className="side-ico" aria-hidden><IconChatSide /></span>
+        <span className="tag">aside</span>
+        <span className="side-note" title="Answered on a copy of the context: neither the question nor the answer enters the conversation">
+          not in the conversation
+        </span>
+        {isFolded && <FoldLine foldKey={m.id} text={question} />}
+        {m.createdAt > 0 && <MessageTime ts={m.createdAt} />}
+      </header>
+      <div className="side-q">{question}</div>
+      <div className={`side-a ${v.status ?? 'pending'}`}>
+        {v.status === 'answered'
+          ? <MessageMarkdown content={v.answer ?? ''} vpsId={vpsId} cwd={cwd} />
+          : v.status === 'failed'
+            ? <span className="side-err">{v.error || 'No answer.'}</span>
+            : <span className="side-wait">answering…</span>}
+      </div>
     </div>
   );
 }

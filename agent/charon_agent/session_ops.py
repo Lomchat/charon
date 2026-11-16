@@ -175,6 +175,8 @@ OPS = frozenset({
     "set_permission_mode",
     "set_session_handle",
     "set_session_name",
+    "set_goal",
+    "side_question",
     "sleep_session",
     "stop_background_terminal",
     "stop_bg_task",
@@ -706,12 +708,44 @@ async def run(method: str, params: dict[str, Any], session: Any, host: Any) -> A
         host.schedule_save()
         return {"ok": True, "handle": handle, "addressable": True}
 
+    if method == "side_question":
+        question = params.get("question")
+        if not isinstance(question, str) or not question.strip():
+            raise RpcError(ERR_INVALID_PARAMS, "question must be a non-empty string")
+        raw = params.get("history")
+        history = [
+            {"question": str(h.get("question"))[:20000], "response": str(h.get("response"))[:20000]}
+            for h in (raw if isinstance(raw, list) else [])[-20:]
+            if isinstance(h, dict) and isinstance(h.get("question"), str)
+            and isinstance(h.get("response"), str)
+        ]
+        fn = getattr(session, "side_question", None)
+        if not callable(fn):
+            return {"ok": False, "reason": "unavailable"}
+        return await fn(question[:20000], history)
+
+    if method == "set_goal":
+        objective = params.get("objective")
+        if objective is not None and (not isinstance(objective, str) or not objective.strip()):
+            raise RpcError(ERR_INVALID_PARAMS, "objective must be a non-empty string or null")
+        budget = params.get("token_budget")
+        if budget is not None and (not isinstance(budget, int) or isinstance(budget, bool) or budget <= 0):
+            raise RpcError(ERR_INVALID_PARAMS, "token_budget must be a positive integer or null")
+        fn = getattr(session, "set_goal", None)
+        if not callable(fn):
+            return {"ok": False, "reason": "unavailable"}
+        return await fn(objective.strip() if objective else None, budget)
+
     if method == "set_effort":
         s = session
         effort = params.get("effort")
         if effort is not None and not isinstance(effort, str):
             raise RpcError(ERR_INVALID_PARAMS, "effort must be a string or null")
-        await s.set_effort(effort)
+        ultracode = params.get("ultracode")
+        if isinstance(ultracode, bool) and getattr(s, "kind", "claude") == "claude":
+            await s.set_effort(effort, ultracode=ultracode)
+        else:
+            await s.set_effort(effort)
         deferred = (getattr(s, "kind", "claude") != "codex") and s._client is not None
         return {
             "ok": True,
@@ -732,8 +766,14 @@ async def run(method: str, params: dict[str, Any], session: Any, host: Any) -> A
                 not isinstance(suggestion, int) or isinstance(suggestion, bool)
                 or suggestion < 0):
             raise RpcError(ERR_INVALID_PARAMS, "suggestion must be a non-negative integer")
+        # A refusal's reason, for the model (unattended sessions, §14.119).
+        message = params.get("message")
+        message = message[:2000] if isinstance(message, str) and message.strip() else None
         try:
-            if suggestion is not None:
+            if message is not None and getattr(s, "kind", "claude") == "claude":
+                resolved = s.respond_permission(
+                    perm_id, bool(params.get("allow")), always, suggestion=suggestion, message=message)
+            elif suggestion is not None:
                 resolved = s.respond_permission(
                     perm_id, bool(params.get("allow")), always, suggestion=suggestion)
             else:
@@ -750,7 +790,12 @@ async def run(method: str, params: dict[str, Any], session: Any, host: Any) -> A
         if not isinstance(q_id, str):
             raise RpcError(ERR_INVALID_PARAMS, "q_id required")
         answers = params.get("answers")
-        resolved = s.respond_question(q_id, answers if isinstance(answers, dict) else None)
+        # Declined with a reason the model reads (unattended, §14.119).
+        decline = params.get("decline")
+        if isinstance(decline, str) and decline.strip() and getattr(s, "kind", "claude") == "claude":
+            resolved = s.respond_question(q_id, None, decline=decline[:2000])
+        else:
+            resolved = s.respond_question(q_id, answers if isinstance(answers, dict) else None)
         return {"ok": True, "resolved": resolved is not False}
 
     if method == "respond_exit_plan":

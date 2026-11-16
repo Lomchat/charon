@@ -7,6 +7,7 @@ import type {
   SessionEffort, SessionMode as ProviderSessionMode, SessionProvider,
 } from '@/lib/sessionCapabilities';
 import type { WireScheduledTask, WireScheduleTz } from '@/lib/scheduledTasks';
+import type { WireSessionGoal } from '@/lib/sessionGoal';
 
 // Agent-type discriminator (multi-agent support). 'claude' = Claude Agent SDK
 // (ClaudeSDKClient), 'codex' = OpenAI Codex (openai-codex → codex app-server).
@@ -231,7 +232,8 @@ export type AgentEvent = (
   // false when there's no live client (= takes effect on the next start).
   // null fields mean "cleared back to default".
   | { event: 'model_changed'; session_id: string; model: string | null; fallback_model: string | null; applied_at_next_start?: boolean }
-  | { event: 'effort_changed'; session_id: string; effort: AnyEffort | null; applied_at_next_start?: boolean }
+  // ultracode (agent >= 0.134.0, Claude): the switch beside effort (§14.56).
+  | { event: 'effort_changed'; session_id: string; effort: AnyEffort | null; ultracode?: boolean; applied_at_next_start?: boolean }
   // effective_model (agent >= 0.6.0): the model id Anthropic actually used on
   // the last AssistantMessage. Emitted on CHANGE only (= once per turn at
   // most). Useful when the configured `model` is an alias ('opus' → real id)
@@ -265,6 +267,9 @@ export type AgentEvent = (
       // hub falls back to its word-list normaliser. Prefer this when present:
       // the two hand-written lists drifted in opposite directions (§14.91).
       terminal?: boolean;
+      // agent >= 0.134.0: the CLI stopped it itself; 'time_limit' = an
+      // unattended session's background command reached its `timeout`.
+      stop_cause?: 'time_limit';
     }
   // bg_task_progress (agent >= 0.13.1): high-frequency progress for a running
   // background task. TRANSIENT (broadcast-only, no seq, not replayed — like
@@ -366,7 +371,12 @@ export type AgentEvent = (
   // no background task woke it. The hub names the scheduled task that was due
   // and persists a `scheduled_fire` row; anything else leaves no row.
   // `prompt` only when the opening stream message carried one.
-  | { event: 'unprompted_turn'; session_id: string; prompt?: string }
+  // goal_active (agent >= 0.134.0): an active /goal may be what re-opened it.
+  | { event: 'unprompted_turn'; session_id: string; prompt?: string; goal_active?: boolean }
+  // goal (agent >= 0.134.0, §14.119): the session's goal changed. Claude: read
+  // from its transcript's goal_status records; Codex: thread/goal/*. null =
+  // none (cleared, or the transcript holds none).
+  | { event: 'goal'; session_id: string; goal: WireSessionGoal | null }
   // rate_limit (agent >= 0.37.0): from the SDK's RateLimitEvent. ⚠ The
   // top-level `utilization` is NULL on subscription accounts (measured); the
   // percentages ride `windows` (agent >= 0.98.0, the CLI's `unifiedWindows`):
@@ -404,6 +414,8 @@ export type AgentEvent = (
       event: 'peer_spawn_request'; session_id: string; request_id: string; task: string;
       name?: string | null; provider?: AgentKind | null; model?: string | null;
       effort?: string | null; mode?: string | null; cwd?: string | null;
+      // agent >= 0.134.0: nobody will watch the child (§14.119).
+      unattended?: boolean;
     }
   // turn_error (agent >= 0.36.0): typed failure off AssistantMessage.error
   // (authentication_failed, billing_error, …) — the same fact §14.65 infers by
@@ -576,6 +588,8 @@ export type AgentMethodName =
   | 'set_permission_mode'
   | 'set_model'
   | 'set_effort'
+  | 'side_question'
+  | 'set_goal'
   // Mirror Charon's display name into the provider transcript (agent >=
   // 0.38.0). Peer routing has its own stable handle.
   | 'set_session_name'

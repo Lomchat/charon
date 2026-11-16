@@ -1,8 +1,12 @@
-"""Entry point — selects between daemon mode and --connect mode."""
+"""Entry point — selects between daemon mode and --connect mode.
+
+Imports stay light here: every mode starts through this file, and asyncio
+alone doubles a Python process (~10 MB). The one-shot and per-session helper
+modes (--peer-mcp, one per live session; --connect; streams) never load it;
+the modes that need it import it themselves."""
 from __future__ import annotations
 
 import argparse
-import asyncio
 import base64
 import binascii
 import os
@@ -171,6 +175,7 @@ def main(argv: list[str] | None = None) -> int:
         return peer_mcp_main(args.peer_mcp, str(socket_path))
 
     # Daemon mode
+    import asyncio
     from .server import AlreadyRunning, EXIT_ALREADY_RUNNING, Server
     server = Server(socket_path=socket_path, state_path=state_path)
     try:

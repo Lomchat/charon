@@ -418,6 +418,8 @@ export type TranscriptMeta = {
   model: string | null;
   fallbackModel: string | null;
   effort: string | null;
+  /** Claude's ultracode switch, beside effort (§14.56). */
+  ultracode: boolean;
   /** A config change queued behind a live SDK client (`appliedAtNextStart`):
    *  carried across snapshots (no row holds it), cleared by the next start. */
   modelPendingApply: boolean;
@@ -509,7 +511,7 @@ export function createTranscriptState(sessionId: string, provider?: SessionProvi
     snapshotRev: null, toolCallBase: null, toolCallIdsSince: new Set(), afterId: 0, hubBoundaries: false, hasMore: false, oldestChatId: null,
     provider: p, session: null,
     meta: {
-      permissionMode: defaultSessionMode(p), model: null, fallbackModel: null, effort: null,
+      permissionMode: defaultSessionMode(p), model: null, fallbackModel: null, effort: null, ultracode: false,
       modelPendingApply: false, effortPendingApply: false, effectiveModel: null,
     },
     tokenUsage: null, liveUsage: null, loaded: false, seq: 0, retryBanner: false,
@@ -929,6 +931,30 @@ export function applyFrame(s: TranscriptState, ev: SessionFrame, ctx: Transcript
       }) };
       break;
     }
+    // A question beside the conversation (§14.119): its own row, which the
+    // answer later fills in. No boundary — the live answer keeps streaming.
+    case 'side_question': {
+      if (ev.rowId == null) break;
+      st = { ...st, messages: upsertRow(st.messages, {
+        id: rowKey(ev.rowId), role: 'side', createdAt: nowS,
+        content: JSON.stringify({ question: ev.question, status: 'pending' }),
+      }) };
+      break;
+    }
+    case 'side_answer': {
+      const id = rowKey(ev.questionRowId);
+      const at = st.messages.findIndex((m) => m.id === id);
+      if (at < 0) break;
+      let question = '';
+      try { question = String((JSON.parse(st.messages[at].content) as { question?: unknown }).question ?? ''); } catch {}
+      const content = JSON.stringify(ev.answer != null
+        ? { question, status: 'answered', answer: ev.answer }
+        : { question, status: 'failed', error: ev.error ?? 'No answer.' });
+      const messages = st.messages.slice();
+      messages[at] = { ...messages[at], content };
+      st = { ...st, messages };
+      break;
+    }
     case 'external_message': {
       st = legacyBoundary(st, nowMs);
       let id: string;
@@ -965,7 +991,9 @@ export function applyFrame(s: TranscriptState, ev: SessionFrame, ctx: Transcript
         modelPendingApply: !!ev.appliedAtNextStart } };
       break;
     case 'effort_changed':
-      st = { ...st, meta: { ...st.meta, effort: (ev.effort as string | null) || null, effortPendingApply: !!ev.appliedAtNextStart } };
+      st = { ...st, meta: { ...st.meta, effort: (ev.effort as string | null) || null,
+        ...(typeof ev.ultracode === 'boolean' ? { ultracode: ev.ultracode } : {}),
+        effortPendingApply: !!ev.appliedAtNextStart } };
       break;
     case 'effective_model':
       if (typeof ev.model === 'string' && ev.model.length > 0) {
@@ -1143,7 +1171,7 @@ export function applySnapshot(s: TranscriptState, r: SessionWindowResponse,
   messages = reconciled.messages;
 
   const bg = bgTasksAfterWindowAnswer(rebuilt.bgTasks, r, s.bgTasks.values());
-  const sess = r.session as (SessionWindowResponse['session'] & { model?: string | null; fallbackModel?: string | null; effort?: string | null }) | undefined;
+  const sess = r.session as (SessionWindowResponse['session'] & { model?: string | null; fallbackModel?: string | null; effort?: string | null; ultracode?: boolean }) | undefined;
   const pm = sess?.permissionMode as SessionMode | undefined;
   const tailKeepsPaging = kept.length > 0;
   return {
@@ -1178,6 +1206,7 @@ export function applySnapshot(s: TranscriptState, r: SessionWindowResponse,
       model: sess?.model ?? null,
       fallbackModel: sess?.fallbackModel ?? null,
       effort: sess?.effort || null,
+      ultracode: sess?.ultracode === true,
       effectiveModel: r.effectiveModel ?? null,
       // The hub's known flags win (a `starting` lost in a resync gap must not
       // leave a stale "apply now"); unknown ones keep the view's value.

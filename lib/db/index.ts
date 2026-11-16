@@ -1,4 +1,5 @@
 import 'server-only';
+import os from 'node:os';
 import Database from 'better-sqlite3';
 import { drizzle } from 'drizzle-orm/better-sqlite3';
 import * as schema from './schema';
@@ -47,11 +48,16 @@ if (!globalForDb._sqlite) {
     ? requestedSync
     : 'NORMAL';
   sqlite.pragma(`synchronous = ${sync}`);
-  // Keep hot B-tree pages and temporary sorts off disk. mmap is a ceiling,
-  // not an upfront allocation; SQLite only maps pages it actually reads.
-  sqlite.pragma('cache_size = -65536');
+  // Every read runs ON the event loop: a page the OS dropped from its page
+  // cache is a disk read inside a request (a cold session fold stalled the
+  // hub 0.3–1 s; the same read from memory takes ~20 ms). mmap'd pages live
+  // in that evictable OS cache, so mmap stays OFF and the hub keeps what it
+  // read in its PRIVATE cache, which nothing else on the box can evict. It
+  // only fills with pages actually read: up to 1/16 of RAM, 64–512 MB.
+  const cacheKiB = Math.round(Math.min(512 * 1024, Math.max(64 * 1024, os.totalmem() / 1024 / 16)));
+  sqlite.pragma(`cache_size = -${cacheKiB}`);
   sqlite.pragma('temp_store = MEMORY');
-  sqlite.pragma('mmap_size = 268435456');
+  sqlite.pragma('mmap_size = 0');
   sqlite.pragma('wal_autocheckpoint = 2000');
   sqlite.pragma('journal_size_limit = 67108864');
   if (!isBuildPhase) {

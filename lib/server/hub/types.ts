@@ -61,7 +61,7 @@ export type BridgeEvent =
   // the change takes effect on the next sleep+resume. null values mean
   // "cleared back to the global default".
   | { type: 'model_changed'; model: string | null; fallbackModel: string | null; appliedAtNextStart: boolean }
-  | { type: 'effort_changed'; effort: EffortLevel | null; appliedAtNextStart: boolean }
+  | { type: 'effort_changed'; effort: EffortLevel | null; ultracode?: boolean; appliedAtNextStart: boolean }
   // effective_model = what Anthropic ACTUALLY billed for the last
   // AssistantMessage. Differs from `model` (= configured value) when the
   // user picked an alias, or when fallback_model kicked in. Emitted on
@@ -84,6 +84,9 @@ export type BridgeEvent =
       // read from its exported TERMINAL_TASK_STATUSES. Outranks the hub's
       // word-list normaliser when present (§14.91).
       terminal?: boolean;
+      // agent >= 0.134.0: why the CLI itself stopped it. 'time_limit' = an
+      // unattended session's background command hit its `timeout`.
+      stopCause?: 'time_limit';
       rowId?: number;
     }
   // bg_task_progress = transient (broadcast-only, focused conn) per-task
@@ -135,6 +138,11 @@ export type BridgeEvent =
       type: 'scheduled_fire'; source: string; prompt: string;
       taskId?: string; schedule?: string; recurring?: boolean; rowId?: number;
     }
+  // side_question / side_answer = a question beside the conversation (Claude
+  // `side_question`, §14.119): never part of the model's context. Two
+  // role='event' rows; the answer names its question's row.
+  | { type: 'side_question'; question: string; rowId?: number }
+  | { type: 'side_answer'; questionRowId: number; answer?: string; error?: string; rowId?: number }
   // session_info (agent >= 0.36.0) = the CLI's init frame. `capabilities` is
   // the sanctioned feature-detection channel (CLI >= 2.1.205). Broadcast-only:
   // it describes the running CLI process, so it must not outlive it.

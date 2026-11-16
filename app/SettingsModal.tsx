@@ -483,6 +483,19 @@ export default function SettingsModal({ onClose, vpsList, initialCat, modelNotic
                         inheritPlaceholder="SDK default"
                       />
                     </label>
+                    <div className="switch-row">
+                      <span>ultracode by default</span>
+                      <Toggle
+                        checked={s['claude.default_ultracode'] === 'true'}
+                        onChange={(v) => set('claude.default_ultracode', v ? 'true' : '')}
+                        label="Ultracode by default"
+                      />
+                    </div>
+                    <p className="set-meta">
+                      Claude plans big tasks as dynamic workflows of parallel
+                      agents, at whatever effort. New sessions inherit it; a
+                      session switches it from its effort menu.
+                    </p>
                     <label>default mode
                       <PickerControl
                         value={s['claude.default_permission_mode'] ?? 'normal'}

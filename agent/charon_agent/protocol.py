@@ -205,6 +205,11 @@ METHODS = {
     "set_permission_mode",
     "set_model",
     "set_effort",
+    # A question beside the conversation (Claude `side_question` control
+    # request, agent >= 0.134.0) and the session goal (Codex thread/goal/*;
+    # Claude's goal is the `/goal` command), §14.119.
+    "side_question",
+    "set_goal",
     "set_session_name",
     "set_session_handle",
     "fork_session",

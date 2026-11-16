@@ -119,6 +119,8 @@ const DEFAULTS = {
   'claude.default_model': '',
   'claude.default_fallback_model': '',
   'claude.default_effort': '',
+  // 'true' = new Claude sessions start with ultracode on (§14.56).
+  'claude.default_ultracode': '',
   // Safe source default. An installation may explicitly choose Claude's
   // total-bypass `auto` mode in Settings; new sessions copy the resolved mode.
   'claude.default_permission_mode': 'normal',
