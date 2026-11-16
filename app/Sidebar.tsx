@@ -2,7 +2,7 @@
 import { Fragment, memo, useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
 import type { Vps, VpsFolder, VpsPath } from '@/lib/db/schema';
 import type { SessionListItem, InstallInfo, AgentKind, VpsStalenessBaselines } from '@/lib/types/api';
-import { IconAlarm, IconArrowClockwise, IconCheck2Circle, IconClockHistory, IconLightningCharge, IconEyeSlash, IconListUl, IconMoon, IconPencil, IconRobot, IconServers, IconTerminal, IconTrash, IconWrench } from './icons';
+import { IconAlarm, IconArrowClockwise, IconArrowRepeat, IconCheck2Circle, IconClockHistory, IconLightningCharge, IconEyeSlash, IconListUl, IconMoon, IconPencil, IconRobot, IconServers, IconTerminal, IconTrash, IconWrench } from './icons';
 import { getDraft, useHasDraft } from './inputDraftStore';
 import { fmtMoment } from './taskTime';
 import { describeSchedule, scheduledTaskTitle, type ScheduledTask } from '@/lib/scheduledTasks';
@@ -54,6 +54,8 @@ export type { SessionListItem };
 export type { InstallInfo };
 
 const DETAILS_KEY = 'hub.claude.showDetails.v1';
+/** Folders whose "Routines" heading is folded (§14.120), by path key. */
+const ROUTINES_FOLD_KEY = 'hub.sidebar.routinesFolded.v1';
 // The focus chips ("unread", "running"), browser-local like DETAILS_KEY.
 const FOCUS_UNREAD_KEY = 'hub.claude.focusUnread.v1';
 const FOCUS_RUNNING_KEY = 'hub.claude.focusRunning.v1';
@@ -1635,6 +1637,52 @@ function SessionPathGroup({
   const current = path !== '~' && isSameWorkspace(activeWorkspace, vpsId, path);
   const count = total + shells.length;
   const label = path === '~' ? 'default home directory' : path;
+  // Routine runs (§14.120) sit under ONE "Routines" heading at the bottom of
+  // their folder, sub-sessions included; folding it is remembered per folder.
+  const pathKey = pathCollapseKey(vpsId, path);
+  const [routinesFolded, toggleRoutinesFolded] = useCollapsedGroups(ROUTINES_FOLD_KEY);
+  const { ownRows, routineRows } = useMemo(() => {
+    const own: typeof rows = [];
+    const routine: typeof rows = [];
+    let inRoutine = false;
+    for (const row of rows) {
+      if (row.depth === 0) inRoutine = !!row.item.routineId;
+      (inRoutine ? routine : own).push(row);
+    }
+    return { ownRows: own, routineRows: routine };
+  }, [rows]);
+  const routinesClosed = routinesFolded.has(pathKey);
+  const runCount = routineRows.filter((r) => r.depth === 0).length;
+  const routineAttention = routinesClosed ? subAttention(routineRows.map((r) => r.item)) : '';
+  // Folded, the run being read stays in sight.
+  const shownRoutineRows = routinesClosed ? routineRows.filter((r) => r.item.id === selectedId) : routineRows;
+  const renderRow = ({ item: s, depth, descendants, folded }: SubSessionRow<SessionListItem>, indent: number, movable: boolean) => (
+    <Fragment key={s.id}>
+    <SessionRow
+      s={s}
+      depth={Math.min(depth + indent, MAX_SUB_INDENT)}
+      deleting={deletingSessionIds.has(s.id)}
+      multiSelected={selectedSessionIds.has(s.id)}
+      handle={sessionHandles?.get(s.id)?.handle ?? null}
+      selected={s.id === selectedId}
+      showDetails={showDetails}
+      onSelect={onSelect}
+      onSelectionGesture={onSelectionGesture}
+      onContext={onContext}
+      editing={editingId === s.id}
+      onRenameSubmit={onRenameSubmit}
+      onRenameCancel={onRenameCancel}
+      dnd={movable && onReorder && depth === 0 && !deletingSessionIds.has(s.id) ? dnd.itemProps(s.id) : undefined}
+    />
+    {descendants.length > 0 && (
+      <SubFoldRow
+        parentId={s.id} depth={Math.min(depth + indent + 1, MAX_SUB_INDENT)} folded={folded}
+        count={descendants.length} attention={folded ? subAttention(descendants) : ''}
+        onToggle={onToggleSubFold}
+      />
+    )}
+    </Fragment>
+  );
 
   return (
     <section
@@ -1663,33 +1711,7 @@ function SessionPathGroup({
         <span className="cs-path-name">{path}</span>
         <span className="cs-path-count">{count}</span>
       </button>
-      {!collapsed && rows.map(({ item: s, depth, descendants, folded }) => (
-        <Fragment key={s.id}>
-        <SessionRow
-          s={s}
-          depth={Math.min(depth, MAX_SUB_INDENT)}
-          deleting={deletingSessionIds.has(s.id)}
-          multiSelected={selectedSessionIds.has(s.id)}
-          handle={sessionHandles?.get(s.id)?.handle ?? null}
-          selected={s.id === selectedId}
-          showDetails={showDetails}
-          onSelect={onSelect}
-          onSelectionGesture={onSelectionGesture}
-          onContext={onContext}
-          editing={editingId === s.id}
-          onRenameSubmit={onRenameSubmit}
-          onRenameCancel={onRenameCancel}
-          dnd={onReorder && depth === 0 && !deletingSessionIds.has(s.id) ? dnd.itemProps(s.id) : undefined}
-        />
-        {descendants.length > 0 && (
-          <SubFoldRow
-            parentId={s.id} depth={Math.min(depth + 1, MAX_SUB_INDENT)} folded={folded}
-            count={descendants.length} attention={folded ? subAttention(descendants) : ''}
-            onToggle={onToggleSubFold}
-          />
-        )}
-        </Fragment>
-      ))}
+      {!collapsed && ownRows.map((row) => renderRow(row, 0, true))}
       {!collapsed && shells.map((sh) => (
         <ShellRow
           key={sh.id}
@@ -1700,6 +1722,22 @@ function SessionPathGroup({
           onContext={onContextShell}
         />
       ))}
+      {!collapsed && runCount > 0 && (
+        <button type="button" className={`cs-routines-head${routineAttention ? ` is-${routineAttention}` : ''}`}
+          aria-expanded={!routinesClosed} aria-label={`${routinesClosed ? 'unfold' : 'fold'} the routine runs`}
+          onClick={() => toggleRoutinesFolded(pathKey)}
+          {...tipAttrs({
+            detail: [`${runCount} routine run${runCount === 1 ? '' : 's'}${routineAttention ? `, ${SUB_ATTENTION_TEXT[routineAttention]}` : ''}`],
+            actions: [['Click', routinesClosed ? 'unfold' : 'fold']],
+          })}>
+          <span className="cs-caret" aria-hidden>{routinesClosed ? '▸' : '▾'}</span>
+          <IconArrowRepeat className="cs-routines-ico" aria-hidden />
+          <span className="cs-routines-name">Routines</span>
+          {routineAttention && <span className="cs-sub-dot" aria-hidden />}
+          <span className="cs-routines-count">{runCount}</span>
+        </button>
+      )}
+      {!collapsed && shownRoutineRows.map((row) => renderRow(row, 1, false))}
     </section>
   );
 }

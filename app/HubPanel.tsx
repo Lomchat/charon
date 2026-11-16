@@ -76,7 +76,7 @@ import { revealLine } from './revealLine';
 import { ensureFreshServiceWorker } from './pushClient';
 import { useBrowserNotifications, saveBrowserNotifications, readBrowserNotifications } from './browserNotifications';
 import {
-  IconArrowClockwise, IconBellFill, IconBellSlash, IconGear, IconSearch,
+  IconAlarm, IconArrowClockwise, IconBellFill, IconBellSlash, IconGear, IconSearch,
   IconServers, IconVolumeMute, IconVolumeUp, IconTelegram, IconPeople,
   IconMenu, IconPanelRight, IconRobot, IconThreeDotsVertical,
 } from './icons';
@@ -109,6 +109,7 @@ const PausedSessionsModal = dynamic(() => import('./PausedSessionsModal'), { ssr
 const SearchModal = dynamic(() => import('./SearchModal'), { ssr: false });
 import type { SearchAction } from './SearchModal';
 const SettingsModal = dynamic(() => import('./SettingsModal'), { ssr: false });
+const RoutinesModal = dynamic(() => import('./RoutinesModal'), { ssr: false });
 const SettingScopeModal = dynamic(() => import('./SettingScopeModal'), { ssr: false });
 
 type Props = {
@@ -979,6 +980,7 @@ export default function HubPanel({ vpsList: initialVpsList, vpsFolders: initialF
   }, [accountUsageTargets, refreshUsage]);
   const { notices: modelNotices, markSeen: markModelsSeen, hasNewModels } = useModelNotices();
   const [dataOpen, setDataOpen] = useState(false);
+  const [routinesOpen, setRoutinesOpen] = useState(false);
   const browserNotifications = useBrowserNotifications();
   const pushOn = browserNotifications.enabled;
   const notifSoundEnabled = browserNotifications.sound;
@@ -1979,6 +1981,7 @@ export default function HubPanel({ vpsList: initialVpsList, vpsFolders: initialF
       { id: 'resume-session', label: 'Resume a session…', keywords: 'import scan history', run: () => setResumeOpen({}) },
       { id: 'paused-sessions', label: 'Paused sessions…', keywords: 'sleeping cleanup delete', run: () => setPausedCleanupOpen({ hidden: showHidden }) },
       { id: 'settings', label: 'Settings', keywords: 'preferences config', run: () => setSettingsOpen(true) },
+      { id: 'routines', label: 'Routines', keywords: 'schedule cron weekly automation', run: () => setRoutinesOpen(true) },
       { id: 'vps-data', label: 'VPS & paths', keywords: 'servers machines projects data', run: () => setDataOpen(true) },
       { id: 'toggle-tools', label: 'Toggle tools panel', keywords: 'explorer git search side panel', run: toggleShowTools },
     );
@@ -2149,6 +2152,9 @@ export default function HubPanel({ vpsList: initialVpsList, vpsFolders: initialF
           >
             <IconRobot />
           </a>
+          <button className="head-btn" onClick={() => setRoutinesOpen(true)} title="routines — prompts sent to a new session on a schedule" aria-label="routines" data-label="routines">
+            <IconAlarm />
+          </button>
           <button className="head-btn model-notice-anchor" onClick={() => setSettingsOpen(true)} title={hasNewModels ? "settings — new models available" : "settings"} aria-label={hasNewModels ? "settings — new models available" : "settings"} data-label="settings">
             <IconGear />
             {hasNewModels && <span className="model-notice-dot" aria-hidden="true" />}
@@ -2596,6 +2602,8 @@ export default function HubPanel({ vpsList: initialVpsList, vpsFolders: initialF
         />
       )}
 
+      {routinesOpen && <RoutinesModal onClose={() => setRoutinesOpen(false)} vpsList={vpsList} vpsPaths={vpsPaths} sessions={sessions}
+        onOpenSession={openSessionFromPanel} />}
       {settingsOpen && <SettingsModal onClose={() => { setSettingsOpen(false); setSettingsCat(null); }} vpsList={vpsList} initialCat={settingsCat ?? undefined} modelNotices={modelNotices} onModelsSeen={markModelsSeen} />}
       {dataOpen && (
         <DataModal

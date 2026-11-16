@@ -1,4 +1,5 @@
 import 'server-only';
+import { armRoutineScheduler } from '@/lib/server/hub/routines';
 import { armModelWatch } from './hub/modelWatch';
 import { migrationV2IfNeeded } from './migrationV2';
 import { migrateSessionIdsToHashed, cleanupExpiredSessions } from './auth';
@@ -109,6 +110,8 @@ const STEPS: Step[] = [
   // SDK freshness tick: PyPI latest + idle auto-update + notifications
   // (globalThis-guarded singleton, idempotent).
   { name: 'sdkWatch', run: () => armSdkAutoUpdate() },
+  // Routines (§14.120): the hub's own weekly clock (globalThis singleton).
+  { name: 'routines', run: () => armRoutineScheduler() },
 ];
 
 const stepOk = new Set<string>();

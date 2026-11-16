@@ -1139,6 +1139,52 @@ export type ScanVpsSessionsQuery = {
 
 export type AgentSessionListQuery = { vpsId?: string; status?: string; includeArchived?: boolean };
 
+// ── Routines (§14.120) ────────────────────────────────────────────────────
+/** What a create/update carries (an update: any subset). */
+export type RoutineInput = {
+  name: string;
+  enabled?: boolean;
+  /** Weekdays, 0 = Sunday. */
+  days: number[];
+  /** 'HH:MM' in `timezone`. */
+  time: string;
+  timezone: string;
+  vpsId: string;
+  cwd: string;
+  kind?: import('@/lib/sessionCapabilities').SessionProvider;
+  /** null = the fleet default. 'opus' = always the latest Opus. */
+  model?: string | null;
+  effort?: string | null;
+  permissionMode?: string | null;
+  prompt: string;
+  /** Runs kept out of the archive (newest first). */
+  keepRuns?: number;
+};
+export type RoutineView = Required<Omit<RoutineInput, 'model' | 'effort' | 'permissionMode'>> & {
+  id: string;
+  model: string | null;
+  effort: string | null;
+  permissionMode: string | null;
+  vpsName: string | null;
+  nextRunAt: number | null;
+  lastRunAt: number | null;
+  lastSessionId: string | null;
+  /** The last run's live status, 'archived', or null. */
+  lastStatus: string | null;
+  lastError: string | null;
+};
+export type RoutineRun = {
+  sessionId: string;
+  name: string;
+  routineId: string;
+  routineName: string | null;
+  kind: import('@/lib/sessionCapabilities').SessionProvider;
+  startedAt: number;
+  status: string;
+  archived: boolean;
+  unread: boolean;
+};
+
 export type SessionListItem = AgentSession & {
   accountProfile?: string;
   accountProfileNumber?: number;

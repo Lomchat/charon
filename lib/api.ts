@@ -1,7 +1,7 @@
 import type { AccountProfile } from './accountProfiles';
 import type { AccountLoginAttempt, AccountsResponse } from './providerAccounts';
 import type { AccountUsage } from '@/lib/server/hub/types';
-import type { AccountProfilesResponse, CreateAccountProfileResponse, UpdateAccountProfileResponse } from './types/api';
+import type { AccountProfilesResponse, CreateAccountProfileResponse, UpdateAccountProfileResponse, RoutineInput, RoutineRun, RoutineView } from './types/api';
 import type { CustomEndpoint, EndpointState } from '@/lib/customEndpoints';
 // Typed HTTP client for the dashboard's API routes.
 // For shapes: cf. lib/types/api.ts. Every new method must have its
@@ -696,6 +696,15 @@ export const api = {
   unarchiveSession: (id: string) =>
     send<OkResponse & ActionSyncStamp>('DELETE', `/api/sessions/${id}/archive`),
   /** Hide or show a session with its sub-sessions (§14.118). */
+  listRoutines: () => send<{ routines: RoutineView[] }>('GET', '/api/routines'),
+  createRoutine: (input: RoutineInput) =>
+    send<OkResponse & { id: string; routines: RoutineView[] }>('POST', '/api/routines', input),
+  updateRoutine: (id: string, patch: Partial<RoutineInput>) =>
+    send<OkResponse & { routines: RoutineView[] }>('PATCH', `/api/routines/${id}`, patch),
+  deleteRoutine: (id: string) => send<OkResponse & { routines: RoutineView[] }>('DELETE', `/api/routines/${id}`),
+  runRoutine: (id: string) =>
+    send<OkResponse & ActionSyncStamp & { sessionId: string; routines: RoutineView[] }>('POST', `/api/routines/${id}/run`),
+  listRoutineRuns: () => send<{ runs: RoutineRun[] }>('GET', '/api/routines/runs'),
   askSideQuestion: (id: string, question: string) =>
     send<OkResponse & ActionSyncStamp & { rowId: number }>('POST', `/api/sessions/${id}/side`, { question }),
   setSessionGoal: (id: string, objective: string | null, tokenBudget?: number | null) =>

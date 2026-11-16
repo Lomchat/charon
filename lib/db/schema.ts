@@ -339,6 +339,9 @@ export const agentSessions = sqliteTable('agent_sessions', {
   // The session's goal (Claude `/goal`, Codex `thread/goal/*`): JSON
   // `SessionGoal` (lib/sessionGoal.ts). NULL = none ever set. Read as `goal`.
   goalJson: text('goal'),
+  // The routine whose run created this session (§14.120); NULL = a human's.
+  // No foreign key (it would rebuild this table): a deleted routine clears it.
+  routineId: text('routine_id'),
   createdAt: integer('created_at').notNull().default(sql`(unixepoch())`),
   lastUsedAt: integer('last_used_at')
 }, (t) => [
@@ -664,12 +667,41 @@ export const pushSubs = sqliteTable('push_subscriptions', {
   lastUsedAt: integer('last_used_at')
 });
 
+// A routine (§14.120): a prompt the HUB sends to a NEW session on a weekly
+// schedule. `days` = JSON array of weekdays (0 = Sunday), `time` = 'HH:MM' in
+// `timezone` (IANA). `nextRunAt` (ms) is written BEFORE a run starts: a run
+// fires at most once, even across a crash. Its runs = sessions whose
+// `routine_id` names it; only the newest `keepRuns` stay out of the archive.
+export const routines = sqliteTable('routines', {
+  id: text('id').primaryKey(),
+  name: text('name').notNull(),
+  enabled: integer('enabled').notNull().default(1),
+  days: text('days').notNull(),
+  time: text('time').notNull(),
+  timezone: text('timezone').notNull(),
+  vpsId: text('vps_id').notNull().references(() => vps.id, { onDelete: 'cascade' }),
+  cwd: text('cwd').notNull(),
+  kind: text('kind').notNull().default('claude'),
+  model: text('model'),
+  effort: text('effort'),
+  permissionMode: text('permission_mode'),
+  prompt: text('prompt').notNull(),
+  keepRuns: integer('keep_runs').notNull().default(4),
+  nextRunAt: integer('next_run_at'),
+  lastRunAt: integer('last_run_at'),
+  lastSessionId: text('last_session_id'),
+  lastError: text('last_error'),
+  createdAt: integer('created_at').notNull().default(sql`(unixepoch())`),
+  updatedAt: integer('updated_at').notNull().default(sql`(unixepoch())`),
+});
+
 export type User = typeof users.$inferSelect;
 export type Session = typeof sessions.$inferSelect;
 export type Vps = typeof vps.$inferSelect;
 export type VpsFolder = typeof vpsFolders.$inferSelect;
 export type VpsPath = typeof vpsPaths.$inferSelect;
 export type AgentSession = typeof agentSessions.$inferSelect;
+export type Routine = typeof routines.$inferSelect;
 export type AgentSessionMessageRow = typeof sessionMessages.$inferSelect;
 export type SessionScheduledResume = typeof sessionScheduledResumes.$inferSelect;
 // Internal compact-storage fields are deliberately not part of the API type:
