@@ -1,4 +1,4 @@
-import { NextResponse } from 'next/server';
+import { json } from '@/lib/server/http/json';
 import Anthropic from '@anthropic-ai/sdk';
 import { eq } from 'drizzle-orm';
 import { db, vps } from '@/lib/db';
@@ -37,7 +37,7 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
   if (s instanceof Response) return s;
   const { id } = await params;
   const [v] = db.select().from(vps).where(eq(vps.id, id)).all();
-  if (!v) return NextResponse.json({ error: 'vps not found' }, { status: 404 });
+  if (!v) return Response.json({ error: 'vps not found' }, { status: 404 });
 
   let cwd = '';
   let paths: string[] = [];
@@ -51,11 +51,11 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
     // Which checkout, when the cwd holds several (§14.83).
     repo = body?.repo ? String(body.repo) : null;
   } catch { /* empty */ }
-  if (!cwd) return NextResponse.json({ ok: false, error: 'cwd required' }, { status: 400 });
+  if (!cwd) return Response.json({ ok: false, error: 'cwd required' }, { status: 400 });
 
   const apiKey = getSetting('claude.api_key');
   if (!apiKey) {
-    return NextResponse.json<GitMessageResponse>({
+    return json<GitMessageResponse>({
       ok: false,
       error: 'no API key — add claude.api_key in Settings to draft commit messages',
     });
@@ -66,7 +66,7 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
   // the caller's repo, and fall back to the only entry when there is one.
   const status = (repo && ws.repos.find((r) => r.root === repo)) || (ws.repos.length === 1 ? ws.repos[0] : null);
   if (!ws.ok || !status?.isRepo) {
-    return NextResponse.json<GitMessageResponse>({
+    return json<GitMessageResponse>({
       ok: false, error: ws.error || status?.error || 'not a git repository',
     });
   }
@@ -74,7 +74,7 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
     ? status.files
     : status.files.filter((f) => paths.includes(f.path));
   if (selected.length === 0) {
-    return NextResponse.json<GitMessageResponse>({ ok: false, error: 'no files selected' });
+    return json<GitMessageResponse>({ ok: false, error: 'no files selected' });
   }
 
   // Diffs one file at a time (the only shape the agent exposes — §14.41), in
@@ -160,7 +160,7 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
     });
 
     if (res.stop_reason === 'refusal') {
-      return NextResponse.json<GitMessageResponse>({ ok: false, error: 'the model declined this diff' });
+      return json<GitMessageResponse>({ ok: false, error: 'the model declined this diff' });
     }
     // Validated fields first. Text is the fallback for a model that answered
     // in prose anyway (or an older API that ignored tool_choice) — and it
@@ -185,18 +185,18 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
         .replace(/\n?```$/, '')
         .trim();
     }
-    if (!text) return NextResponse.json<GitMessageResponse>({ ok: false, error: 'empty response' });
-    return NextResponse.json<GitMessageResponse>({ ok: true, message: text });
+    if (!text) return json<GitMessageResponse>({ ok: false, error: 'empty response' });
+    return json<GitMessageResponse>({ ok: true, message: text });
   } catch (e: unknown) {
     // Typed SDK errors so the UI can say something actionable rather than
     // "request failed" — a bad key and a rate limit need different fixes.
     if (e instanceof Anthropic.AuthenticationError) {
-      return NextResponse.json<GitMessageResponse>({ ok: false, error: 'the API key was rejected — check claude.api_key in Settings' });
+      return json<GitMessageResponse>({ ok: false, error: 'the API key was rejected — check claude.api_key in Settings' });
     }
     if (e instanceof Anthropic.RateLimitError) {
-      return NextResponse.json<GitMessageResponse>({ ok: false, error: 'rate-limited by the API — try again shortly' });
+      return json<GitMessageResponse>({ ok: false, error: 'rate-limited by the API — try again shortly' });
     }
     const msg = e instanceof Error ? e.message : String(e);
-    return NextResponse.json<GitMessageResponse>({ ok: false, error: msg.slice(0, 200) });
+    return json<GitMessageResponse>({ ok: false, error: msg.slice(0, 200) });
   }
 }

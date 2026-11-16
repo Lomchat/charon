@@ -1,4 +1,4 @@
-import { NextResponse } from 'next/server';
+import { json } from '@/lib/server/http/json';
 import { eq } from 'drizzle-orm';
 import { db, vps, type Vps } from '@/lib/db';
 import { requireApiSession } from '@/lib/server/session';
@@ -76,23 +76,23 @@ async function handle(req: Request, { params }: RouteContext, headOnly: boolean)
   const archive = url.searchParams.get('archive');
   const stat = url.searchParams.get('stat') === '1';
   if (!root || !path || root.length > 4096 || path.length > 4096) {
-    return NextResponse.json({ ok: false, error: 'root and path are required' }, { status: 400 });
+    return Response.json({ ok: false, error: 'root and path are required' }, { status: 400 });
   }
   const [v] = db.select().from(vps).where(eq(vps.id, id)).all();
-  if (!v) return NextResponse.json({ error: 'vps not found' }, { status: 404 });
+  if (!v) return Response.json({ error: 'vps not found' }, { status: 404 });
 
   const client = getAgentClientForVpsId(id);
   if (!client || client.status !== 'connected') {
-    if (stat) return NextResponse.json<FsStatResponse>({ ok: false, reason: 'offline', error: 'the agent is not connected' });
-    return NextResponse.json({ ok: false, error: 'the agent is not connected' });
+    if (stat) return json<FsStatResponse>({ ok: false, reason: 'offline', error: 'the agent is not connected' });
+    return Response.json({ ok: false, error: 'the agent is not connected' });
   }
 
   if (archive != null && archive !== 'zip') {
-    return NextResponse.json({ ok: false, error: 'unsupported archive format' }, { status: 400 });
+    return Response.json({ ok: false, error: 'unsupported archive format' }, { status: 400 });
   }
   if (archive === 'zip') {
     if (compareVersions(v.agentVersion, ZIP_STREAM_AGENT_VERSION) < 0) {
-      return NextResponse.json({
+      return Response.json({
         ok: false,
         error: `update this VPS agent to ${ZIP_STREAM_AGENT_VERSION} to download folders`,
       }, { status: 409 });
@@ -104,10 +104,10 @@ async function handle(req: Request, { params }: RouteContext, headOnly: boolean)
       listed = await client.call<FsListResponse>('fs_list', { root, path, with_git: false });
     } catch (e: unknown) {
       const msg = e instanceof Error ? e.message : String(e);
-      return NextResponse.json({ ok: false, error: msg.slice(0, 200) }, { status: 502 });
+      return Response.json({ ok: false, error: msg.slice(0, 200) }, { status: 502 });
     }
     if (!listed.ok) {
-      return NextResponse.json({ ok: false, error: listed.error ?? 'directory not found' }, { status: 404 });
+      return Response.json({ ok: false, error: listed.error ?? 'directory not found' }, { status: 404 });
     }
     const base = path === '.'
       ? (root.split('/').filter(Boolean).pop() || 'folder')
@@ -116,7 +116,7 @@ async function handle(req: Request, { params }: RouteContext, headOnly: boolean)
     if (headOnly) return new Response(null, { status: 200, headers });
     const opened = await openRemoteZipStream(req, v, root, path);
     if (!opened.ok) {
-      return NextResponse.json({ ok: false, error: opened.error }, { status: 502 });
+      return Response.json({ ok: false, error: opened.error }, { status: 502 });
     }
     return new Response(opened.body, { status: 200, headers });
   }
@@ -129,10 +129,10 @@ async function handle(req: Request, { params }: RouteContext, headOnly: boolean)
       sr = await client.call('fs_stat', { root, path });
     } catch (e: unknown) {
       const msg = e instanceof Error ? e.message : String(e);
-      return NextResponse.json({ ok: false, error: msg.slice(0, 200) }, { status: 502 });
+      return Response.json({ ok: false, error: msg.slice(0, 200) }, { status: 502 });
     }
     if (!sr.ok || sr.exists === false || !Number.isSafeInteger(sr.size) || (sr.size ?? -1) < 0) {
-      return NextResponse.json({ ok: false, error: sr.error ?? 'file not found' }, { status: 404 });
+      return Response.json({ ok: false, error: sr.error ?? 'file not found' }, { status: 404 });
     }
     const size = sr.size!;
     const parsed = parseByteRange(req.headers.get('range'), size);
@@ -158,7 +158,7 @@ async function handle(req: Request, { params }: RouteContext, headOnly: boolean)
       root, path, offset: start, length, expectedVersion: sr.version ?? null,
     });
     if (!opened.ok) {
-      return NextResponse.json({ ok: false, error: opened.error }, { status: 502 });
+      return Response.json({ ok: false, error: opened.error }, { status: 502 });
     }
     return new Response(opened.body, { status, headers });
   }
@@ -168,31 +168,31 @@ async function handle(req: Request, { params }: RouteContext, headOnly: boolean)
     if (stat) {
       const sr = await client.call<FsStatResponse & AgentLinkInfo & { mtime_ns?: number }>(
         'fs_stat', { root, path });
-      return NextResponse.json<FsStatResponse>({ ...sr, mtimeNs: sr.mtime_ns, ...linkInfo(sr) });
+      return json<FsStatResponse>({ ...sr, mtimeNs: sr.mtime_ns, ...linkInfo(sr) });
     }
     r = await client.call<FsReadResponse>('fs_read', { root, path });
   } catch (e: unknown) {
     if (e instanceof AgentRpcError && e.code === -32601) {
       if (stat) {
-        return NextResponse.json<FsStatResponse>({
+        return json<FsStatResponse>({
           ok: false, reason: 'unsupported', error: 'this VPS runs an agent older than 0.28.0',
         });
       }
-      return NextResponse.json({ ok: false, error: 'this VPS runs an agent older than 0.25.0 — update it to view files' });
+      return Response.json({ ok: false, error: 'this VPS runs an agent older than 0.25.0 — update it to view files' });
     }
     const msg = e instanceof Error ? e.message : String(e);
-    return NextResponse.json({ ok: false, error: msg.slice(0, 200) });
+    return Response.json({ ok: false, error: msg.slice(0, 200) });
   }
 
   if (!(inline || raw)) {
     const raw2 = r as FsReadResponse & AgentLinkInfo & { too_large?: boolean };
-    return NextResponse.json<FsReadResponse>({
+    return json<FsReadResponse>({
       ...r, tooLarge: raw2.too_large === true, ...linkInfo(raw2),
     });
   }
   if (!r.ok || r.content == null || r.encoding == null) {
     const tooLarge = (r as FsReadResponse & { too_large?: boolean }).too_large;
-    return NextResponse.json({
+    return Response.json({
       ok: false,
       error: tooLarge
         ? `update this VPS agent to ${FILE_STREAM_AGENT_VERSION} to download large files`
@@ -202,7 +202,7 @@ async function handle(req: Request, { params }: RouteContext, headOnly: boolean)
   const bytes = r.encoding === 'base64'
     ? Buffer.from(r.content, 'base64')
     : Buffer.from(r.content, 'utf8');
-  return new NextResponse(headOnly ? null : new Uint8Array(bytes), {
+  return new Response(headOnly ? null : new Uint8Array(bytes), {
     headers: { ...byteHeaders(path.split('/').pop() || 'file', inline), 'content-length': String(bytes.length) },
   });
 }

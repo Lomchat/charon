@@ -1,4 +1,3 @@
-import { NextResponse } from 'next/server';
 import { eq } from 'drizzle-orm';
 import { db, vps as vpsTable } from '@/lib/db';
 import { requireApiSession } from '@/lib/server/session';
@@ -19,19 +18,19 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
   if (auth instanceof Response) return auth;
   const body = await req.json().catch(() => null);
   if (!SESSION_PROVIDERS.includes(body?.provider)) {
-    return NextResponse.json({ ok: false, error: 'Unknown provider' }, { status: 400 });
+    return Response.json({ ok: false, error: 'Unknown provider' }, { status: 400 });
   }
   const provider: SessionProvider = body.provider;
   const { id } = await params;
   const v = db.select().from(vpsTable).where(eq(vpsTable.id, id)).get();
-  if (!v) return NextResponse.json({ ok: false, error: 'VPS not found' }, { status: 404 });
+  if (!v) return Response.json({ ok: false, error: 'VPS not found' }, { status: 404 });
   const result: ProviderAccountResponse = { ok: true };
   const text = (value: unknown) => typeof value === 'string' && value.trim() ? value.trim() : undefined;
   try {
     const profile = requireAccountProfile(id, provider, body?.profile ?? 'default');
     if (profile.id !== 'default') {
       const status = await readProfileStatus(id, provider, profile.id, true);
-      return NextResponse.json({ ok: true, loggedIn: status.logged_in, email: status.email, name: text(status.display_name),
+      return Response.json({ ok: true, loggedIn: status.logged_in, email: status.email, name: text(status.display_name),
         organization: status.organization, subscriptionType: status.subscription_type,
         authMethod: status.auth_method, checkedAt: Math.floor(Date.now() / 1000) });
     }
@@ -76,10 +75,10 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
     // After the login flag lands: the header names the Cursor login by its email.
     if (provider === 'cursor') acceptCursorIdentity(id, result.loggedIn === true, result.email);
     if (v.agentStatus === 'ok') emitGlobalVpsStatus(id, 'ok', patch);
-    return NextResponse.json(result);
+    return Response.json(result);
   } catch (e: unknown) {
     const tooOld = (e as { code?: number })?.code === -32601;
-    return NextResponse.json({ ok: false, error: tooOld
+    return Response.json({ ok: false, error: tooOld
       ? 'Update the agent to view account information'
       : 'Account information unavailable. Try refreshing.' }, { status: tooOld ? 409 : 502 });
   }
@@ -91,12 +90,12 @@ export async function DELETE(req: Request, { params }: { params: Promise<{ id: s
   const { id } = await params;
   const query = new URL(req.url).searchParams;
   const provider = query.get('provider');
-  if (provider !== 'claude' && provider !== 'codex') return NextResponse.json({ error: 'Additional accounts are unavailable for this provider' }, { status: 400 });
+  if (provider !== 'claude' && provider !== 'codex') return Response.json({ error: 'Additional accounts are unavailable for this provider' }, { status: 400 });
   const v = db.select().from(vpsTable).where(eq(vpsTable.id, id)).get();
-  if (!v) return NextResponse.json({ error: 'VPS not found' }, { status: 404 });
+  if (!v) return Response.json({ error: 'VPS not found' }, { status: 404 });
   try {
     // Extra profiles only; the default account keeps its provider's route.
     await signOutAccountProfile(id, provider, query.get('profile') ?? '');
-    return NextResponse.json({ ok: true });
-  } catch (e) { return NextResponse.json({ ok: false, error: (e as Error).message }, { status: 502 }); }
+    return Response.json({ ok: true });
+  } catch (e) { return Response.json({ ok: false, error: (e as Error).message }, { status: 502 }); }
 }

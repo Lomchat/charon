@@ -1,4 +1,3 @@
-import { NextResponse } from 'next/server';
 import { eq } from 'drizzle-orm';
 import { db, vps as vpsTable } from '@/lib/db';
 import { requireApiSession } from '@/lib/server/session';
@@ -22,17 +21,17 @@ export async function POST(_req: Request, { params }: { params: Promise<{ id: st
   if (s instanceof Response) return s;
   const { id } = await params;
   const [v] = db.select().from(vpsTable).where(eq(vpsTable.id, id)).all();
-  if (!v) return NextResponse.json({ error: 'vps not found' }, { status: 404 });
+  if (!v) return Response.json({ error: 'vps not found' }, { status: 404 });
 
   const r = await refreshCursorLoginStatus(v);
   if (!r.ok) {
     const tooOld = r.tooOld === true;
-    return NextResponse.json({
+    return Response.json({
       ok: false, loggedIn: false,
       error: tooOld ? 'agent too old to probe Cursor — update the agent' : (r.error ?? 'probe failed'),
     }, { status: tooOld ? 409 : 502 });
   }
-  return NextResponse.json({
+  return Response.json({
     ok: true, loggedIn: !!r.loggedIn, email: r.email ?? null, checkedAt: r.checkedAt ?? null,
   });
 }

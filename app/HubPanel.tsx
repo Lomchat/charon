@@ -1,8 +1,8 @@
 'use client';
 import { effectiveBrowserNotifications } from '@/lib/notificationPreferences';
 import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from 'react';
-import { useSearchParams } from 'next/navigation';
-import dynamic from 'next/dynamic';
+import { useSearchParams } from '@/app/navigation';
+import dynamic from '@/app/dynamic';
 import { api } from '@/lib/api';
 import {
   PROVIDERS, SESSION_PROVIDERS, asSessionProvider, providerLoginPatch,

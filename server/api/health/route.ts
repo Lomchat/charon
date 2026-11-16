@@ -1,4 +1,3 @@
-import { NextResponse } from 'next/server';
 import { db, users } from '@/lib/db';
 import { getBuiltPyzSha, getBuiltAgentVersion } from '@/lib/server/agent/builtPyzSha';
 import { getSession, SESSION_COOKIE } from '@/lib/server/auth';
@@ -53,5 +52,5 @@ export async function GET(req: Request) {
       : {}),
   };
 
-  return NextResponse.json(body, { status: dbOk ? 200 : 503 });
+  return Response.json(body, { status: dbOk ? 200 : 503 });
 }

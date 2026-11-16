@@ -1,4 +1,3 @@
-import { NextResponse } from 'next/server';
 import fs from 'node:fs/promises';
 import { eq } from 'drizzle-orm';
 import { db, agentSessions, vps as vpsTable } from '@/lib/db';
@@ -21,15 +20,15 @@ export async function GET(req: Request, { params }: { params: Promise<{ id: stri
   const { id, attId } = await params;
 
   const att = getAttachment(id, attId);
-  if (!att) return NextResponse.json({ error: 'attachment not found' }, { status: 404 });
+  if (!att) return Response.json({ error: 'attachment not found' }, { status: 404 });
   const blob = attachmentBlobPath(att);
-  if (!blob) return NextResponse.json({ error: 'no local copy of this file' }, { status: 410 });
+  if (!blob) return Response.json({ error: 'no local copy of this file' }, { status: 410 });
 
   let bytes: Buffer;
   try {
     bytes = await fs.readFile(blob);
   } catch {
-    return NextResponse.json({ error: 'local copy is missing on disk' }, { status: 410 });
+    return Response.json({ error: 'local copy is missing on disk' }, { status: 410 });
   }
 
   // `?inline=1` → render in a browser tab (images, PDF, audio, video, text).
@@ -45,7 +44,7 @@ export async function GET(req: Request, { params }: { params: Promise<{ id: stri
   const safe = att.name.replace(/"/g, '');
   const disposition = previewMime ? 'inline' : 'attachment';
 
-  return new NextResponse(new Uint8Array(bytes), {
+  return new Response(new Uint8Array(bytes), {
     headers: {
       // NEVER the browser-declared mime — that value is attacker-controlled.
       // Either a type from the extension-keyed preview allow-list, or an
@@ -71,7 +70,7 @@ export async function DELETE(_req: Request, { params }: { params: Promise<{ id: 
   const { id, attId } = await params;
 
   const att = getAttachment(id, attId);
-  if (!att) return NextResponse.json({ error: 'attachment not found' }, { status: 404 });
+  if (!att) return Response.json({ error: 'attachment not found' }, { status: 404 });
 
   try {
     await removeAttachment(id, attId);
@@ -84,10 +83,10 @@ export async function DELETE(_req: Request, { params }: { params: Promise<{ id: 
       const [v] = db.select().from(vpsTable).where(eq(vpsTable.id, sess.vpsId)).all();
       if (v) void unlinkRemoteAttachment(v, att.remotePath);
     }
-    return NextResponse.json({ ok: true });
+    return Response.json({ ok: true });
   } catch (e: any) {
     // eslint-disable-next-line no-console
     console.error(`[api/sessions/${id}/attachments/${attId} DELETE] failed:`, e?.stack ?? e);
-    return NextResponse.json({ error: e?.message ?? String(e) }, { status: 500 });
+    return Response.json({ error: e?.message ?? String(e) }, { status: 500 });
   }
 }

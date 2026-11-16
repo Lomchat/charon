@@ -1,4 +1,4 @@
-import { NextResponse } from 'next/server';
+import { json } from '@/lib/server/http/json';
 import { eq } from 'drizzle-orm';
 import { db, vps } from '@/lib/db';
 import { requireApiSession } from '@/lib/server/session';
@@ -23,23 +23,23 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
   if (s instanceof Response) return s;
   const { id } = await params;
   const [v] = db.select().from(vps).where(eq(vps.id, id)).all();
-  if (!v) return NextResponse.json({ error: 'vps not found' }, { status: 404 });
+  if (!v) return Response.json({ error: 'vps not found' }, { status: 404 });
 
   let body: FsWriteBody;
   try { body = await req.json(); } catch {
-    return NextResponse.json<FsWriteResponse>({ ok: false, error: 'invalid body' }, { status: 400 });
+    return json<FsWriteResponse>({ ok: false, error: 'invalid body' }, { status: 400 });
   }
   const root = String(body?.root ?? '');
   const path = String(body?.path ?? '');
   const content = typeof body?.content === 'string' ? body.content : null;
   if (!root || !path || content === null) {
-    return NextResponse.json<FsWriteResponse>({ ok: false, error: 'root, path and content are required' }, { status: 400 });
+    return json<FsWriteResponse>({ ok: false, error: 'root, path and content are required' }, { status: 400 });
   }
 
   try {
     const client = getAgentClientForVpsId(id);
     if (!client || client.status !== 'connected') {
-      return NextResponse.json<FsWriteResponse>({ ok: false, reason: 'offline', error: 'the agent is not connected' });
+      return json<FsWriteResponse>({ ok: false, reason: 'offline', error: 'the agent is not connected' });
     }
     const r = await client.call<FsWriteResponse & { sha256?: string | null }>('fs_write', {
       root, path, content,
@@ -47,15 +47,15 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
       ...(body.expectedSha256 === undefined ? {} : { expected_sha256: body.expectedSha256 }),
     });
     if (r?.ok) invalidateGitStatus(id, root);
-    return NextResponse.json<FsWriteResponse>(r);
+    return json<FsWriteResponse>(r);
   } catch (e: unknown) {
     if (e instanceof AgentRpcError && e.code === -32601) {
-      return NextResponse.json<FsWriteResponse>({
+      return json<FsWriteResponse>({
         ok: false, reason: 'unsupported',
         error: 'this VPS runs an agent older than 0.26.0 — update it to save files',
       });
     }
     const msg = e instanceof Error ? e.message : String(e);
-    return NextResponse.json<FsWriteResponse>({ ok: false, reason: 'error', error: msg.slice(0, 200) });
+    return json<FsWriteResponse>({ ok: false, reason: 'error', error: msg.slice(0, 200) });
   }
 }

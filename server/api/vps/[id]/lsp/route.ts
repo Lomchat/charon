@@ -1,4 +1,3 @@
-import { NextResponse } from 'next/server';
 import { eq } from 'drizzle-orm';
 import { db, vps } from '@/lib/db';
 import { requireApiSession } from '@/lib/server/session';
@@ -18,14 +17,14 @@ export async function GET(req: Request, { params }: { params: Promise<{ id: stri
   if (s instanceof Response) return s;
   const { id } = await params;
   const [v] = db.select().from(vps).where(eq(vps.id, id)).all();
-  if (!v) return NextResponse.json({ error: 'vps not found' }, { status: 404 });
+  if (!v) return Response.json({ error: 'vps not found' }, { status: 404 });
 
   const url = new URL(req.url);
   const op = url.searchParams.get('op') ?? 'status';
   const root = url.searchParams.get('root') ?? '';
   const path = url.searchParams.get('path') ?? '';
   if (!root || !path) {
-    return NextResponse.json({ ok: false, error: 'root and path required' }, { status: 400 });
+    return Response.json({ ok: false, error: 'root and path required' }, { status: 400 });
   }
   if (op === 'diagnostics') {
     const since = Math.max(0, Number(url.searchParams.get('since')) || 0);
@@ -33,9 +32,9 @@ export async function GET(req: Request, { params }: { params: Promise<{ id: stri
     // request open until something changes, and a poll that outlives the
     // transport is just a broken poll.
     const wait = Math.max(0, Math.min(Number(url.searchParams.get('wait')) || 0, 25));
-    return NextResponse.json(await lspDiagnostics(id, root, path, since, wait));
+    return Response.json(await lspDiagnostics(id, root, path, since, wait));
   }
-  return NextResponse.json(await lspStatus(id, root, path));
+  return Response.json(await lspStatus(id, root, path));
 }
 
 export async function POST(req: Request, { params }: { params: Promise<{ id: string }> }) {
@@ -43,7 +42,7 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
   if (s instanceof Response) return s;
   const { id } = await params;
   const [v] = db.select().from(vps).where(eq(vps.id, id)).all();
-  if (!v) return NextResponse.json({ error: 'vps not found' }, { status: 404 });
+  if (!v) return Response.json({ error: 'vps not found' }, { status: 404 });
 
   let body: Record<string, unknown> = {};
   try { body = await req.json(); } catch { /* validated below */ }
@@ -51,24 +50,24 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
   const root = String(body.root ?? '');
   const path = String(body.path ?? '');
   if (!root || !path) {
-    return NextResponse.json({ ok: false, error: 'root and path required' }, { status: 400 });
+    return Response.json({ ok: false, error: 'root and path required' }, { status: 400 });
   }
 
   if (op === 'open') {
     const text = typeof body.text === 'string' ? body.text : null;
-    if (text === null) return NextResponse.json({ ok: false, error: 'text required' }, { status: 400 });
-    return NextResponse.json(await lspOpen(id, root, path, text));
+    if (text === null) return Response.json({ ok: false, error: 'text required' }, { status: 400 });
+    return Response.json(await lspOpen(id, root, path, text));
   }
-  if (op === 'close') return NextResponse.json(await lspClose(id, root, path));
+  if (op === 'close') return Response.json(await lspClose(id, root, path));
   if (op === 'apply') {
     const changes = body.changes;
     if (!changes || typeof changes !== 'object') {
-      return NextResponse.json({ ok: false, error: 'changes required' }, { status: 400 });
+      return Response.json({ ok: false, error: 'changes required' }, { status: 400 });
     }
-    return NextResponse.json(await lspApplyEdit(id, root, changes as Record<string, unknown>));
+    return Response.json(await lspApplyEdit(id, root, changes as Record<string, unknown>));
   }
   if (op === 'request') {
-    return NextResponse.json(await lspRequest(id, {
+    return Response.json(await lspRequest(id, {
       root, path,
       method: String(body.method ?? ''),
       position: body.position,
@@ -76,5 +75,5 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
       item: body.item,
     }));
   }
-  return NextResponse.json({ ok: false, error: `unknown op: ${op}` }, { status: 400 });
+  return Response.json({ ok: false, error: `unknown op: ${op}` }, { status: 400 });
 }

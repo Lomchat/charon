@@ -1,4 +1,4 @@
-import { NextResponse } from 'next/server';
+import { json } from '@/lib/server/http/json';
 import { eq } from 'drizzle-orm';
 import { db, vps } from '@/lib/db';
 import { requireApiSession } from '@/lib/server/session';
@@ -40,17 +40,17 @@ export async function GET(req: Request, { params }: { params: Promise<{ id: stri
     ? { limit: Math.min(limit, 5000), offset: Number.isInteger(offset) && offset > 0 ? offset : 0 }
     : {};
   if (!root || root.length > 4096 || path.length > 4096) {
-    return NextResponse.json<FsListResponse>({ ok: false, error: 'root required', entries: [] });
+    return json<FsListResponse>({ ok: false, error: 'root required', entries: [] });
   }
   const [v] = db.select().from(vps).where(eq(vps.id, id)).all();
-  if (!v) return NextResponse.json({ error: 'vps not found' }, { status: 404 });
+  if (!v) return Response.json({ error: 'vps not found' }, { status: 404 });
 
   try {
     const client = getAgentClientForVpsId(id);
     // Checked BEFORE calling: `call` waits up to 30s for a connection and a
     // tree node must never hang that long on a dead VPS.
     if (!client || client.status !== 'connected') {
-      return NextResponse.json<FsListResponse>({ ok: false, error: 'the agent is not connected', entries: [] });
+      return json<FsListResponse>({ ok: false, error: 'the agent is not connected', entries: [] });
     }
     const r = await client.call<FsListResponse & { next_offset?: number }>(
       'fs_list', { root, path, with_git: withGit, ...page },
@@ -69,17 +69,17 @@ export async function GET(req: Request, { params }: { params: Promise<{ id: stri
       };
     });
     const { next_offset: nextOffset, ...rest } = r;
-    return NextResponse.json<FsListResponse>({
+    return json<FsListResponse>({
       ...rest, entries, ...(typeof nextOffset === 'number' ? { nextOffset } : {}),
     });
   } catch (e: unknown) {
     if (e instanceof AgentRpcError && e.code === -32601) {
-      return NextResponse.json<FsListResponse>({
+      return json<FsListResponse>({
         ok: false, entries: [],
         error: 'this VPS runs an agent older than 0.25.0 — update it to browse files',
       });
     }
     const msg = e instanceof Error ? e.message : String(e);
-    return NextResponse.json<FsListResponse>({ ok: false, error: msg.slice(0, 200), entries: [] });
+    return json<FsListResponse>({ ok: false, error: msg.slice(0, 200), entries: [] });
   }
 }

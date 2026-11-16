@@ -1,6 +1,6 @@
 'use client';
 import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
-import dynamic from 'next/dynamic';
+import dynamic from '@/app/dynamic';
 import { createPatch } from 'diff';
 import { api } from '@/lib/api';
 import type { AgentKind, SessionAttachment, ToolCallSummary } from '@/lib/types/api';

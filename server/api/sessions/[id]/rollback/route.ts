@@ -1,4 +1,3 @@
-import { NextResponse } from 'next/server';
 import { and, asc, eq, inArray, not, or, like } from 'drizzle-orm';
 import { db, sessionMessages, agentSessions } from '@/lib/db';
 import { requireApiSession } from '@/lib/server/session';
@@ -29,11 +28,11 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
   const match = /^m(\d+)$/.exec(String(body?.messageId ?? ''));
   const messageId = match ? Number(match[1]) : NaN;
   if (!Number.isSafeInteger(messageId) || messageId < 1) {
-    return NextResponse.json({ error: 'choose a persisted user message to rewind to' }, { status: 400 });
+    return Response.json({ error: 'choose a persisted user message to rewind to' }, { status: 400 });
   }
 
   const [session] = db.select().from(agentSessions).where(eq(agentSessions.id, id)).all();
-  if (!session) return NextResponse.json({ error: 'session not found' }, { status: 404 });
+  if (!session) return Response.json({ error: 'session not found' }, { status: 404 });
   // ⚠ Refused on the capability BEFORE anything else. A backend with
   // `rewind:'none'` used to fall through to Claude's transcript fork, and this
   // route then persisted `nativeSessionId: null` — for every backend but
@@ -41,16 +40,16 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
   // gone and nothing said so (§14.103).
   const kind = asSessionProvider(session.kind);
   if (!supportsSessionCapability(kind, 'rewind')) {
-    return NextResponse.json(
+    return Response.json(
       { error: `${PROVIDERS[kind].label} sessions cannot be rewound` },
       { status: 400 },
     );
   }
   if (session.archived) {
-    return NextResponse.json({ error: 'unarchive the session before rewinding it' }, { status: 409 });
+    return Response.json({ error: 'unarchive the session before rewinding it' }, { status: 409 });
   }
   if (session.status === 'sleeping' || session.status === 'error') {
-    return NextResponse.json({ error: 'resume the session before rewinding it' }, { status: 409 });
+    return Response.json({ error: 'resume the session before rewinding it' }, { status: 409 });
   }
 
   const ordered = orderChronologically(db.select({
@@ -63,13 +62,13 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
     .orderBy(asc(sessionMessages.id)).all());
   const cutoffIndex = ordered.findIndex((row) => row.id === messageId && row.role === 'user');
   if (cutoffIndex < 0) {
-    return NextResponse.json({ error: 'that user message is no longer in this session' }, { status: 409 });
+    return Response.json({ error: 'that user message is no longer in this session' }, { status: 409 });
   }
 
   const removedRows = ordered.slice(cutoffIndex);
   const numTurns = removedRows.filter((row) => row.role === 'user').length;
   if (numTurns < 1 || numTurns > 100) {
-    return NextResponse.json({ error: 'a rewind can remove at most 100 user turns' }, { status: 400 });
+    return Response.json({ error: 'a rewind can remove at most 100 user turns' }, { status: 400 });
   }
   const previousCliMessage = ordered.slice(0, cutoffIndex).reverse()
     .find((row) => typeof row.cliUuid === 'string' && row.cliUuid.length > 0)?.cliUuid ?? null;
@@ -87,7 +86,7 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
     }) as typeof native;
   } catch (e: any) {
     const message = String(e?.message || e);
-    return NextResponse.json({ error: message }, {
+    return Response.json({ error: message }, {
       status: /-32601|no such method/i.test(message) ? 501 : 400,
     });
   }
@@ -135,7 +134,7 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
   // incremental row folds must not keep them (I11, sessionRowCache.ts).
   invalidateSessionRowCaches(id);
 
-  return NextResponse.json({
+  return Response.json({
     ok: true, messageId: `m${messageId}`, numTurns,
     removedMessages: removed, strategy: native.strategy ?? 'fork',
     sync: syncAfter([id]),

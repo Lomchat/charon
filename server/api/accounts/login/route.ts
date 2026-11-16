@@ -1,4 +1,3 @@
-import { NextResponse } from 'next/server';
 import { requireApiSession } from '@/lib/server/session';
 import { isSessionProvider } from '@/lib/sessionCapabilities';
 import { startLogin } from '@/lib/server/accounts/engine';
@@ -12,6 +11,6 @@ export async function POST(req: Request) {
     const body = await req.json();
     if (!isSessionProvider(body.provider)) throw new Error('Provider required');
     const accountId = typeof body.accountId === 'string' && body.accountId ? body.accountId : null;
-    return NextResponse.json({ attempt: await startLogin(body.provider, accountId) });
-  } catch (e) { return NextResponse.json({ error: (e as Error).message }, { status: 400 }); }
+    return Response.json({ attempt: await startLogin(body.provider, accountId) });
+  } catch (e) { return Response.json({ error: (e as Error).message }, { status: 400 }); }
 }

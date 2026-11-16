@@ -1,4 +1,3 @@
-import { NextResponse } from 'next/server';
 import { requireApiSession } from '@/lib/server/session';
 import { getModelsAndEfforts, refreshModelsIfStale } from '@/lib/server/hub/modelSync';
 
@@ -12,5 +11,5 @@ export async function GET() {
   refreshModelsIfStale();
   // { models, efforts } — efforts is the global union (∪ canonical) for selects
   // with no model in scope; each model also carries its own per-model `efforts`.
-  return NextResponse.json(getModelsAndEfforts());
+  return Response.json(getModelsAndEfforts());
 }

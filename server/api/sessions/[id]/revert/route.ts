@@ -1,4 +1,3 @@
-import { NextResponse } from 'next/server';
 import { createHash } from 'node:crypto';
 import { and, desc, eq, lt } from 'drizzle-orm';
 import { db, sessionMessages, agentSessions } from '@/lib/db';
@@ -40,15 +39,15 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
   const { id } = await params;
   const body = await req.json().catch(() => ({}));
   const filePath = typeof body?.filePath === 'string' ? body.filePath.trim().slice(0, 8192) : '';
-  if (!filePath) return NextResponse.json({ ok: false, error: 'filePath required' }, { status: 400 });
+  if (!filePath) return Response.json({ ok: false, error: 'filePath required' }, { status: 400 });
 
   const [session] = db.select().from(agentSessions).where(eq(agentSessions.id, id)).all();
-  if (!session) return NextResponse.json({ ok: false, error: 'session not found' }, { status: 404 });
+  if (!session) return Response.json({ ok: false, error: 'session not found' }, { status: 404 });
   // A revert needs an exact pre-image; a provider that only emits unified
   // diffs cannot offer one (§14.59). Capability, not provider name.
   const kind = asSessionProvider(session.kind);
   if (!supportsSessionCapability(kind, 'safeFileRevert')) {
-    return NextResponse.json(
+    return Response.json(
       { ok: false, error: `${PROVIDERS[kind].label} patch reverts are not available` },
       { status: 400 },
     );
@@ -62,7 +61,7 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
   )).orderBy(desc(sessionMessages.id)).limit(1).all();
   const after = afterRow ? parseSnapshot(afterRow.content) : null;
   if (!afterRow || !after) {
-    return NextResponse.json({ ok: false, error: 'no completed edit snapshot exists for this file' }, { status: 409 });
+    return Response.json({ ok: false, error: 'no completed edit snapshot exists for this file' }, { status: 409 });
   }
 
   const toolId = afterRow.snapshotToolUseId;
@@ -78,15 +77,15 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
     .where(and(...beforeWhere)).orderBy(desc(sessionMessages.id)).limit(1).all();
   const before = beforeRow ? parseSnapshot(beforeRow.content) : null;
   if (!beforeRow || !before) {
-    return NextResponse.json({ ok: false, error: 'the matching before snapshot is missing' }, { status: 409 });
+    return Response.json({ ok: false, error: 'the matching before snapshot is missing' }, { status: 409 });
   }
   if (after.truncated || before.truncated || afterRow.snapshotTruncated || beforeRow.snapshotTruncated) {
-    return NextResponse.json({ ok: false, error: 'snapshot is truncated; refusing an unsafe partial revert' }, { status: 409 });
+    return Response.json({ ok: false, error: 'snapshot is truncated; refusing an unsafe partial revert' }, { status: 409 });
   }
   const afterContent = typeof after.content === 'string' ? after.content : after.content === null ? null : undefined;
   const beforeContent = typeof before.content === 'string' ? before.content : before.content === null ? null : undefined;
   if (afterContent === undefined || beforeContent === undefined) {
-    return NextResponse.json({ ok: false, error: 'snapshot content is invalid' }, { status: 409 });
+    return Response.json({ ok: false, error: 'snapshot content is invalid' }, { status: 409 });
   }
   const expectedSha256 = afterContent === null ? ''
     : createHash('sha256').update(afterContent, 'utf8').digest('hex');
@@ -103,18 +102,18 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
         expected_sha256: expectedSha256,
       });
     if (!result?.ok) {
-      return NextResponse.json({ ok: false, ...result }, {
+      return Response.json({ ok: false, ...result }, {
         status: result?.reason === 'stale' ? 409 : 400,
       });
     }
     invalidateGitStatus(session.vpsId, session.cwd);
-    return NextResponse.json({
+    return Response.json({
       ok: true, action: beforeContent === null ? 'deleted' : 'restored', filePath,
     });
   } catch (e: unknown) {
     if (e instanceof AgentRpcError && e.code === -32601) {
-      return NextResponse.json({ ok: false, reason: 'unsupported', error: 'update this VPS agent to revert safely' }, { status: 501 });
+      return Response.json({ ok: false, reason: 'unsupported', error: 'update this VPS agent to revert safely' }, { status: 501 });
     }
-    return NextResponse.json({ ok: false, error: e instanceof Error ? e.message : String(e) }, { status: 400 });
+    return Response.json({ ok: false, error: e instanceof Error ? e.message : String(e) }, { status: 400 });
   }
 }

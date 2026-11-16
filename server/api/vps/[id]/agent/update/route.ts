@@ -1,4 +1,3 @@
-import { NextResponse } from 'next/server';
 import { eq } from 'drizzle-orm';
 import { db, vps as vpsTable } from '@/lib/db';
 import { requireApiSession } from '@/lib/server/session';
@@ -25,12 +24,12 @@ export async function POST(_req: Request, { params }: { params: Promise<{ id: st
   if (s instanceof Response) return s;
   const { id } = await params;
   const [v] = db.select().from(vpsTable).where(eq(vpsTable.id, id)).all();
-  if (!v) return NextResponse.json({ error: 'vps not found' }, { status: 404 });
+  if (!v) return Response.json({ error: 'vps not found' }, { status: 404 });
 
   const result = await runAgentUpdateFlow(v);
   if (!result.ok) {
     console.error(`[agent/update ${v.id}] failed:`, result.detail);
-    return NextResponse.json({ ok: false, error: result.detail }, { status: 500 });
+    return Response.json({ ok: false, error: result.detail }, { status: 500 });
   }
 
   // Every release line's post-update version, DERIVED from the registry — the
@@ -43,7 +42,7 @@ export async function POST(_req: Request, { params }: { params: Promise<{ id: st
     PROVIDER_VERSION_COLUMNS.map((column) => [column, row[column] ?? null]),
   );
 
-  return NextResponse.json({
+  return Response.json({
     ok: true,
     newVersion: result.newVersion ?? null,
     newPyzSha: result.newPyzSha ?? null,

@@ -1,4 +1,3 @@
-import { NextResponse } from 'next/server';
 import { requireApiSession } from '@/lib/server/session';
 import { getCursorModelsForVps } from '@/lib/server/hub/cursorModels';
 
@@ -13,9 +12,9 @@ export async function GET(req: Request) {
   if (s instanceof Response) return s;
   const vpsId = new URL(req.url).searchParams.get('vpsId');
   if (!vpsId) {
-    return NextResponse.json(
+    return Response.json(
       { ok: false, models: [], reason: 'error', error: 'vpsId required' }, { status: 400 },
     );
   }
-  return NextResponse.json(await getCursorModelsForVps(vpsId));
+  return Response.json(await getCursorModelsForVps(vpsId));
 }

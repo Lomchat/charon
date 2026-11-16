@@ -1,4 +1,3 @@
-import { NextResponse } from 'next/server';
 import { eq } from 'drizzle-orm';
 import { db, vps } from '@/lib/db';
 import { requireApiSession } from '@/lib/server/session';
@@ -21,21 +20,21 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
   if (s instanceof Response) return s;
   const { id } = await params;
   const [v] = db.select().from(vps).where(eq(vps.id, id)).all();
-  if (!v) return NextResponse.json({ error: 'vps not found' }, { status: 404 });
+  if (!v) return Response.json({ error: 'vps not found' }, { status: 404 });
 
   let body: GitCommitBody;
   try {
     body = await req.json();
   } catch {
-    return NextResponse.json({ ok: false, error: 'invalid body' }, { status: 400 });
+    return Response.json({ ok: false, error: 'invalid body' }, { status: 400 });
   }
   const cwd = String(body?.cwd ?? '');
   const message = String(body?.message ?? '');
-  if (!cwd) return NextResponse.json({ ok: false, error: 'cwd required' }, { status: 400 });
-  if (!message.trim()) return NextResponse.json({ ok: false, error: 'empty commit message', reason: 'no_message' });
+  if (!cwd) return Response.json({ ok: false, error: 'cwd required' }, { status: 400 });
+  if (!message.trim()) return Response.json({ ok: false, error: 'empty commit message', reason: 'no_message' });
 
   const paths = Array.isArray(body?.paths) ? body.paths.map(String) : undefined;
-  return NextResponse.json(await gitCommit(id, cwd, {
+  return Response.json(await gitCommit(id, cwd, {
     message, paths, all: !!body?.all, push: !!body?.push,
     repo: body?.repo ? String(body.repo) : null,
   }));

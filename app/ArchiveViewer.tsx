@@ -1,6 +1,6 @@
 'use client';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import dynamic from 'next/dynamic';
+import dynamic from '@/app/dynamic';
 import { api } from '@/lib/api';
 import type { ArchiveEntry, FsArchiveResponse } from '@/lib/types/api';
 import type { ByteViewerProps } from './fileViews';

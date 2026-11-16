@@ -1,4 +1,3 @@
-import { NextResponse } from 'next/server';
 import { eq } from 'drizzle-orm';
 import { db, vps } from '@/lib/db';
 import { requireApiSession } from '@/lib/server/session';
@@ -52,12 +51,12 @@ export async function GET(req: Request, { params }: { params: Promise<{ id: stri
   const { id } = await params;
   const url = new URL(req.url);
   const path = url.searchParams.get('path') ?? '';
-  if (path.length > 4096) return NextResponse.json({ ok: false, error: 'path too long' }, { status: 400 });
+  if (path.length > 4096) return Response.json({ ok: false, error: 'path too long' }, { status: 400 });
   const [v] = db.select().from(vps).where(eq(vps.id, id)).all();
-  if (!v) return NextResponse.json({ ok: false, error: 'vps not found' }, { status: 404 });
+  if (!v) return Response.json({ ok: false, error: 'vps not found' }, { status: 404 });
   if (url.searchParams.get('check') === '1') {
-    if (!path.trim() || path.includes('\0')) return NextResponse.json({ ok: false, error: 'invalid path' }, { status: 400 });
-    return NextResponse.json(await checkSessionPath(v, path));
+    if (!path.trim() || path.includes('\0')) return Response.json({ ok: false, error: 'invalid path' }, { status: 400 });
+    return Response.json(await checkSessionPath(v, path));
   }
 
   // FAST PATH: the `list_dir` RPC over the VPS's persistent agent pipe
@@ -70,7 +69,7 @@ export async function GET(req: Request, { params }: { params: Promise<{ id: stri
     const client = getAgentClientForVpsId(id);
     if (client.status === 'connected') {
       const r = await client.call<VpsFsListResponse>('list_dir', { path });
-      if (r && typeof r === 'object' && r.ok) return NextResponse.json(r);
+      if (r && typeof r === 'object' && r.ok) return Response.json(r);
     }
   } catch { /* fall through to ssh */ }
 
@@ -86,11 +85,11 @@ export async function GET(req: Request, { params }: { params: Promise<{ id: stri
     'exit 0',
   ].join('\n');
   const r = await sshExec(v, script, { timeoutMs: 10_000, session: fsSession(v) });
-  if (r.code === 3) return NextResponse.json({ ok: true, exists: false, resolved: null, dirs: [] });
+  if (r.code === 3) return Response.json({ ok: true, exists: false, resolved: null, dirs: [] });
   if (!r.ok) {
     const firstLine = r.stderr.split('\n').map((l) => l.trim()).filter(Boolean)[0] ?? 'ssh failed';
     // Soft failure (200): the client hides suggestions, never blocks the flow.
-    return NextResponse.json({ ok: false, error: firstLine });
+    return Response.json({ ok: false, error: firstLine });
   }
   const lines = r.stdout.split('\n');
   const resolved = lines[0]?.trim() || null;
@@ -105,7 +104,7 @@ export async function GET(req: Request, { params }: { params: Promise<{ id: stri
     if (da !== dbb) return da - dbb;
     return a.localeCompare(b);
   });
-  return NextResponse.json({
+  return Response.json({
     ok: true,
     exists: true,
     resolved,

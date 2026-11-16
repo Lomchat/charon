@@ -1,4 +1,3 @@
-import { NextResponse } from 'next/server';
 import { requireApiSession } from '@/lib/server/session';
 import { stopBackgroundTask } from '@/lib/server/agent/sessionOps';
 
@@ -15,11 +14,11 @@ export async function POST(
   const s = await requireApiSession();
   if (s instanceof Response) return s;
   const { id, taskId } = await params;
-  if (!taskId) return NextResponse.json({ error: 'taskId required' }, { status: 400 });
+  if (!taskId) return Response.json({ error: 'taskId required' }, { status: 400 });
   try {
     await stopBackgroundTask(id, taskId);
-    return NextResponse.json({ ok: true });
+    return Response.json({ ok: true });
   } catch (e: any) {
-    return NextResponse.json({ error: e?.message ?? String(e) }, { status: 500 });
+    return Response.json({ error: e?.message ?? String(e) }, { status: 500 });
   }
 }

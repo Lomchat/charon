@@ -4,7 +4,7 @@ import { pendingUpdateRows } from '@/lib/runtimeUpdate';
 import PickerControl from './PickerControl';
 import SessionAccountChoice from './SessionAccountChoice';
 import type { AccountSwitchTarget } from './UsageAccountSwitch';
-import dynamic from 'next/dynamic';
+import dynamic from '@/app/dynamic';
 import { useSessionEndpoint } from './useSessionEndpoint';
 import { endpointParameters, supportsCustomEndpoint, type EndpointState } from '@/lib/customEndpoints';
 import EndpointModelPicker from './EndpointModelPicker';

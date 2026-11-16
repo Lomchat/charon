@@ -6,7 +6,7 @@
 // A missing entry is a compile error (`Record` over the union), never a login
 // button that opens nothing.
 import type { ComponentType } from 'react';
-import dynamic from 'next/dynamic';
+import dynamic from '@/app/dynamic';
 import type { Vps } from '@/lib/db/schema';
 import type { SessionProvider } from '@/lib/sessionCapabilities';
 

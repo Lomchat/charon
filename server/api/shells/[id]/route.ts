@@ -1,4 +1,3 @@
-import { NextResponse } from 'next/server';
 import { requireApiSession } from '@/lib/server/session';
 import { getShell, stopShell, updateShellMeta } from '@/lib/server/shell/shellSession';
 
@@ -8,8 +7,8 @@ export async function GET(_req: Request, { params }: { params: Promise<{ id: str
   if (s instanceof Response) return s;
   const { id } = await params;
   const sh = getShell(id);
-  if (!sh) return NextResponse.json({ error: 'shell not found' }, { status: 404 });
-  return NextResponse.json(sh);
+  if (!sh) return Response.json({ error: 'shell not found' }, { status: 404 });
+  return Response.json(sh);
 }
 
 // PATCH /api/shells/[id]  Body: { name?, color? }
@@ -23,8 +22,8 @@ export async function PATCH(req: Request, { params }: { params: Promise<{ id: st
     name: 'name' in body ? body.name : undefined,
     color: 'color' in body ? body.color : undefined,
   });
-  if (!updated) return NextResponse.json({ error: 'shell not found' }, { status: 404 });
-  return NextResponse.json(updated);
+  if (!updated) return Response.json({ error: 'shell not found' }, { status: 404 });
+  return Response.json(updated);
 }
 
 // DELETE /api/shells/[id] — agent's `shell_kill` + drop the DB row.
@@ -38,8 +37,8 @@ export async function DELETE(req: Request, { params }: { params: Promise<{ id: s
   const force = new URL(req.url).searchParams.get('force') === '1';
   const r = await stopShell(id, { force });
   if (!r.ok) {
-    if (r.notFound) return NextResponse.json({ error: r.error }, { status: 404 });
-    return NextResponse.json({ ok: false, error: r.error, canForce: true }, { status: 502 });
+    if (r.notFound) return Response.json({ error: r.error }, { status: 404 });
+    return Response.json({ ok: false, error: r.error, canForce: true }, { status: 502 });
   }
-  return NextResponse.json({ ok: true, forced: r.forced ?? false });
+  return Response.json({ ok: true, forced: r.forced ?? false });
 }

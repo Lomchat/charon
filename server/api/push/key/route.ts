@@ -1,9 +1,8 @@
-import { NextResponse } from 'next/server';
 import { requireApiSession } from '@/lib/server/session';
 import { getVapidPublic } from '@/lib/server/hub/webPush';
 
 export async function GET() {
   const s = await requireApiSession();
   if (s instanceof Response) return s;
-  return NextResponse.json({ publicKey: getVapidPublic() });
+  return Response.json({ publicKey: getVapidPublic() });
 }

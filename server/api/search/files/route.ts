@@ -1,5 +1,5 @@
+import { json } from '@/lib/server/http/json';
 import { randomBytes } from 'node:crypto';
-import { NextResponse } from 'next/server';
 import { eq } from 'drizzle-orm';
 import { db, agentSessions, vpsPaths, vps as vpsTable } from '@/lib/db';
 import { requireApiSession } from '@/lib/server/session';
@@ -35,7 +35,7 @@ export async function POST(req: Request) {
   if (s instanceof Response) return s;
   let body: { q?: unknown };
   try { body = await req.json(); } catch {
-    return NextResponse.json({ error: 'invalid body' }, { status: 400 });
+    return Response.json({ error: 'invalid body' }, { status: 400 });
   }
   const q = String(body?.q ?? '').slice(0, 200);
   gs.__charonFileSearchPrev?.abort();
@@ -54,12 +54,12 @@ export async function POST(req: Request) {
 async function run(q: string, signal: AbortSignal) {
   const terms = queryTerms(q);
   const empty: FileSearchResponse = { files: [], rootsSearched: 0, rootsSkipped: 0, truncated: false };
-  if (!terms.length || longestTerm(terms).length < 2) return NextResponse.json(empty);
+  if (!terms.length || longestTerm(terms).length < 2) return Response.json(empty);
 
   const clients = new Map(
     listAgentClients().filter((c) => c.status === 'connected').map((c) => [c.vps.id, c] as const),
   );
-  if (clients.size === 0) return NextResponse.json(empty);
+  if (clients.size === 0) return Response.json(empty);
 
   const since = Math.floor(Date.now() / 1000) - RECENT_S;
   const cands: RootCandidate[] = [];
@@ -135,5 +135,5 @@ async function run(q: string, signal: AbortSignal) {
   open = false;
 
   const files = filterRankFiles(hits, terms, MAX_FILE_HITS);
-  return NextResponse.json<FileSearchResponse>({ files, rootsSearched, rootsSkipped, truncated });
+  return json<FileSearchResponse>({ files, rootsSearched, rootsSkipped, truncated });
 }

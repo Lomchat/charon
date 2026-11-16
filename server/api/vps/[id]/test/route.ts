@@ -1,4 +1,3 @@
-import { NextResponse } from 'next/server';
 import { spawn } from 'node:child_process';
 import { eq } from 'drizzle-orm';
 import { db, vps } from '@/lib/db';
@@ -50,7 +49,7 @@ export async function POST(_req: Request, { params }: { params: Promise<{ id: st
   if (s instanceof Response) return s;
   const { id } = await params;
   const [v] = db.select().from(vps).where(eq(vps.id, id)).all();
-  if (!v) return NextResponse.json({ ok: false, error: 'vps not found' }, { status: 404 });
+  if (!v) return Response.json({ ok: false, error: 'vps not found' }, { status: 404 });
   const result = await testSsh(v.sshUser, v.ip, v.sshPort);
-  return NextResponse.json(result);
+  return Response.json(result);
 }

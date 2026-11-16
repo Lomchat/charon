@@ -16,7 +16,7 @@
 #   - Ensures/repairs the data dir and the ssh dir, applies Drizzle migrations.
 #   - Preflights the SSH private keys (directory? unreadable? bad perms?).
 #   - Hands off to `node server.js` (the Dockerfile CMD — the custom server
-#     with the WebSocket shell bridge; NOT `next start`) as uid 1001.
+#     with the WebSocket shell bridge) as uid 1001.
 set -e
 
 CHARON_UID=1001

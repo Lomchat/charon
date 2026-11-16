@@ -13,7 +13,7 @@ import {
 
 // The map view of a .geojson / .gpx / .kml file (§14.112). The pane's TEXT is
 // the source — unsaved edits included — so a fix in the editor shows here.
-// Lazy twice over, like the PDF pane: this module is a next/dynamic chunk,
+// Lazy twice over, like the PDF pane: this module is a lazy chunk (app/dynamic.tsx),
 // and Leaflet itself is imported only once a map file is actually opened.
 // The file is untrusted: no property string ever reaches innerHTML.
 

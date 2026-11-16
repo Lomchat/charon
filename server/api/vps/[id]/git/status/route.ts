@@ -1,4 +1,3 @@
-import { NextResponse } from 'next/server';
 import { eq } from 'drizzle-orm';
 import { db, vps } from '@/lib/db';
 import { requireApiSession } from '@/lib/server/session';
@@ -23,10 +22,10 @@ export async function GET(req: Request, { params }: { params: Promise<{ id: stri
   const cwd = url.searchParams.get('cwd') ?? '';
   const force = url.searchParams.get('force') === '1';
   if (!cwd || cwd.length > 4096) {
-    return NextResponse.json({ ok: false, error: 'cwd required', isRepo: false, files: [] });
+    return Response.json({ ok: false, error: 'cwd required', isRepo: false, files: [] });
   }
   const [v] = db.select().from(vps).where(eq(vps.id, id)).all();
-  if (!v) return NextResponse.json({ error: 'vps not found' }, { status: 404 });
+  if (!v) return Response.json({ error: 'vps not found' }, { status: 404 });
 
-  return NextResponse.json(await getGitWorkspace(id, cwd, { force }));
+  return Response.json(await getGitWorkspace(id, cwd, { force }));
 }

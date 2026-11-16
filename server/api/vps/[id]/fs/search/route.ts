@@ -1,4 +1,4 @@
-import { NextResponse } from 'next/server';
+import { json } from '@/lib/server/http/json';
 import { eq } from 'drizzle-orm';
 import { db, vps } from '@/lib/db';
 import { requireApiSession } from '@/lib/server/session';
@@ -27,26 +27,26 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
   if (s instanceof Response) return s;
   const { id } = await params;
   const [v] = db.select().from(vps).where(eq(vps.id, id)).all();
-  if (!v) return NextResponse.json({ error: 'vps not found' }, { status: 404 });
+  if (!v) return Response.json({ error: 'vps not found' }, { status: 404 });
 
   let body: FsSearchQuery;
   try { body = await req.json(); } catch {
-    return NextResponse.json<FsSearchResponse>({ ok: false, error: 'invalid body', files: [] }, { status: 400 });
+    return json<FsSearchResponse>({ ok: false, error: 'invalid body', files: [] }, { status: 400 });
   }
   const root = String(body?.root ?? '');
   const query = String(body?.query ?? '');
   if (!root || root.length > 4096) {
-    return NextResponse.json<FsSearchResponse>({ ok: false, error: 'a root is required', files: [] }, { status: 400 });
+    return json<FsSearchResponse>({ ok: false, error: 'a root is required', files: [] }, { status: 400 });
   }
   // A query longer than this is a paste accident, and the regex it compiles to
   // is the agent's problem to run for 20 seconds.
   if (query.length > 1000) {
-    return NextResponse.json<FsSearchResponse>({ ok: false, reason: 'bad_query', error: 'that search is too long', files: [] });
+    return json<FsSearchResponse>({ ok: false, reason: 'bad_query', error: 'that search is too long', files: [] });
   }
 
   const client = getAgentClientForVpsId(id);
   if (!client || client.status !== 'connected') {
-    return NextResponse.json<FsSearchResponse>({ ok: false, reason: 'offline', error: 'the agent is not connected', files: [] });
+    return json<FsSearchResponse>({ ok: false, reason: 'offline', error: 'the agent is not connected', files: [] });
   }
   const rpcParams = {
     root,
@@ -61,9 +61,9 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
   };
   if (body?.stream === true) return streamed(client, rpcParams, req.signal);
   try {
-    return NextResponse.json<FsSearchResponse>(shape(await client.call<RpcSearch>('fs_search', rpcParams)));
+    return json<FsSearchResponse>(shape(await client.call<RpcSearch>('fs_search', rpcParams)));
   } catch (e: unknown) {
-    return NextResponse.json<FsSearchResponse>(failure(e));
+    return json<FsSearchResponse>(failure(e));
   }
 }
 

@@ -1,4 +1,3 @@
-import { NextResponse } from 'next/server';
 import { and, asc, eq } from 'drizzle-orm';
 import { db, vpsPaths, vps as vpsTable } from '@/lib/db';
 import { requireApiSession } from '@/lib/server/session';
@@ -11,7 +10,7 @@ export async function GET() {
   const rows = db.select().from(vpsPaths)
     .orderBy(asc(vpsPaths.vpsId), asc(vpsPaths.path))
     .all();
-  return NextResponse.json(rows);
+  return Response.json(rows);
 }
 
 // POST /api/vps-paths
@@ -26,10 +25,10 @@ export async function POST(req: Request) {
   const label = body.label != null && String(body.label).trim() !== ''
     ? String(body.label).trim() : null;
   if (!vpsId || !path) {
-    return NextResponse.json({ error: 'vpsId and path required' }, { status: 400 });
+    return Response.json({ error: 'vpsId and path required' }, { status: 400 });
   }
   const [v] = db.select().from(vpsTable).where(eq(vpsTable.id, vpsId)).all();
-  if (!v) return NextResponse.json({ error: 'unknown vps' }, { status: 404 });
+  if (!v) return Response.json({ error: 'unknown vps' }, { status: 404 });
 
   const [existing] = db.select().from(vpsPaths)
     .where(and(eq(vpsPaths.vpsId, vpsId), eq(vpsPaths.path, path)))
@@ -39,13 +38,13 @@ export async function POST(req: Request) {
     if (label != null && existing.label !== label) {
       db.update(vpsPaths).set({ label }).where(eq(vpsPaths.id, existing.id)).run();
       const [row] = db.select().from(vpsPaths).where(eq(vpsPaths.id, existing.id)).all();
-      return NextResponse.json(row);
+      return Response.json(row);
     }
-    return NextResponse.json(existing);
+    return Response.json(existing);
   }
   const [created] = db.insert(vpsPaths)
     .values({ vpsId, path, label })
     .returning()
     .all();
-  return NextResponse.json(created);
+  return Response.json(created);
 }

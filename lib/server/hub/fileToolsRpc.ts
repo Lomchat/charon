@@ -1,5 +1,4 @@
 import 'server-only';
-import { NextResponse } from 'next/server';
 import { eq } from 'drizzle-orm';
 import { db, vps } from '@/lib/db';
 import { getAgentClientForVpsId } from '@/lib/server/agent/AgentClientPool';
@@ -18,25 +17,25 @@ export async function fileToolCall(
   method: AgentMethodName,
   params: Record<string, unknown>,
   opts: { timeoutMs?: number; map?: (r: Record<string, unknown>) => Record<string, unknown> } = {},
-): Promise<NextResponse> {
+): Promise<Response> {
   const [v] = db.select({ id: vps.id }).from(vps).where(eq(vps.id, vpsId)).all();
-  if (!v) return NextResponse.json({ ok: false, error: 'vps not found' }, { status: 404 });
+  if (!v) return Response.json({ ok: false, error: 'vps not found' }, { status: 404 });
   const client = getAgentClientForVpsId(vpsId);
   if (!client || client.status !== 'connected') {
-    return NextResponse.json({ ok: false, reason: 'offline', error: 'the agent is not connected' });
+    return Response.json({ ok: false, reason: 'offline', error: 'the agent is not connected' });
   }
   try {
     const r = await client.call<Record<string, unknown>>(method, params, { timeoutMs: opts.timeoutMs });
-    return NextResponse.json(opts.map ? opts.map(r) : r);
+    return Response.json(opts.map ? opts.map(r) : r);
   } catch (e: unknown) {
     if (e instanceof AgentRpcError && e.code === -32601) {
-      return NextResponse.json({
+      return Response.json({
         ok: false, reason: 'unsupported',
         error: `update this VPS agent to ${FILETOOLS_AGENT_VERSION} or newer to open this file here`,
       });
     }
     const msg = e instanceof Error ? e.message : String(e);
-    return NextResponse.json({ ok: false, reason: 'error', error: msg.slice(0, 300) });
+    return Response.json({ ok: false, reason: 'error', error: msg.slice(0, 300) });
   }
 }
 

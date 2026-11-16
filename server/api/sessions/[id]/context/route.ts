@@ -3,7 +3,6 @@ import { eq } from 'drizzle-orm';
 import { connectionConfig } from '@/lib/server/customEndpoints';
 import { supportsCustomEndpoint } from '@/lib/customEndpoints';
 import { asSessionProvider, showsTurnCost } from '@/lib/sessionCapabilities';
-import { NextResponse } from 'next/server';
 import { requireApiSession } from '@/lib/server/session';
 import { callSessionRpc } from '@/lib/server/hub/sessionRpc';
 import { recordedSessionUsage } from '@/lib/server/agent/sessionUsage';
@@ -46,7 +45,7 @@ export async function GET(req: Request, { params }: { params: Promise<{ id: stri
   // custom endpoint, whose operator sets its own. The `turn_usage` rows keep
   // the figure either way; this only decides whether the panel prices it.
   const priced = !endpoint && !!row && showsTurnCost(asSessionProvider(row.kind));
-  return NextResponse.json({
+  return Response.json({
     ...context,
     recorded_usage: recorded && !priced ? { ...recorded, cost_usd: null } : recorded,
     ...(recordedPending ? { recordedPending: true } : {}),

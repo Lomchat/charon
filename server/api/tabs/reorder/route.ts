@@ -1,4 +1,3 @@
-import { NextResponse } from 'next/server';
 import { requireApiSession } from '@/lib/server/session';
 import { emitGlobalTabsChanged } from '@/lib/server/agent/sessionOps';
 import { listTabs, reorderGroups, reorderTabs, reorderVps } from '@/lib/server/hub/tabs';
@@ -15,7 +14,7 @@ export async function POST(req: Request) {
   const s = await requireApiSession();
   if (s instanceof Response) return s;
   let body: ReorderTabsBody;
-  try { body = await req.json(); } catch { return NextResponse.json({ error: 'invalid body' }, { status: 400 }); }
+  try { body = await req.json(); } catch { return Response.json({ error: 'invalid body' }, { status: 400 }); }
 
   if (body?.scope === 'tabs' && body.vpsId && Array.isArray(body.ids)) {
     reorderTabs(body.vpsId, String(body.path ?? ''), body.ids.map(String));
@@ -24,8 +23,8 @@ export async function POST(req: Request) {
   } else if (body?.scope === 'vps' && Array.isArray(body.vpsIds)) {
     reorderVps(body.vpsIds.map(String));
   } else {
-    return NextResponse.json({ error: 'unknown scope' }, { status: 400 });
+    return Response.json({ error: 'unknown scope' }, { status: 400 });
   }
   emitGlobalTabsChanged();
-  return NextResponse.json({ ok: true, tabs: listTabs() });
+  return Response.json({ ok: true, tabs: listTabs() });
 }

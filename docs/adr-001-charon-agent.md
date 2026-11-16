@@ -42,7 +42,7 @@ preserves work across control-plane failures while reusing SSH authorization.
 ```
 ┌──────────────┐   HTTPS / SSE / WS   ┌──────────────────────┐
 │ Browser      │ ◄──────────────────► │ Charon hub           │
-│ sessions     │                      │ Next.js + SQLite     │
+│ sessions     │                      │ Hono + SQLite        │
 │ files / Git  │                      │ AgentClientPool      │
 │ terminals    │                      └──────────┬───────────┘
 └──────────────┘                                 │ one SSH / VPS

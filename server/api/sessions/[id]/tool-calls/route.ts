@@ -1,4 +1,3 @@
-import { NextResponse } from 'next/server';
 import { eq } from 'drizzle-orm';
 import { db, agentSessions } from '@/lib/db';
 import { requireApiSession } from '@/lib/server/session';
@@ -23,7 +22,7 @@ export async function GET(req: Request, { params }: { params: Promise<{ id: stri
     try {
       const exists = db.select({ id: agentSessions.id }).from(agentSessions)
         .where(eq(agentSessions.id, id)).get();
-      if (!exists) return NextResponse.json({ error: 'not found' }, { status: 404 });
+      if (!exists) return Response.json({ error: 'not found' }, { status: 404 });
       const url = new URL(req.url);
       const rawLimit = Number(url.searchParams.get('limit') ?? TOOL_CALLS_DEFAULT_LIMIT);
       const limit = Number.isFinite(rawLimit)
@@ -31,13 +30,13 @@ export async function GET(req: Request, { params }: { params: Promise<{ id: stri
         : TOOL_CALLS_DEFAULT_LIMIT;
       const beforeRaw = url.searchParams.get('before');
       const before = beforeRaw != null && /^\d+$/.test(beforeRaw) ? Number(beforeRaw) : null;
-      return NextResponse.json(loadToolCalls(id, before, limit));
+      return Response.json(loadToolCalls(id, before, limit));
     } catch (e: any) {
       // Same contract as the session GET: a transient failure is a clean
       // retryable 503, never an HTML 500.
       // eslint-disable-next-line no-console
       console.error(`[api/sessions/${id}/tool-calls GET] failed:`, e?.stack ?? e);
-      return NextResponse.json({ error: e?.message ?? String(e) }, { status: 503 });
+      return Response.json({ error: e?.message ?? String(e) }, { status: 503 });
     }
   });
 }

@@ -1,4 +1,3 @@
-import { NextResponse } from 'next/server';
 import { requireApiSession } from '@/lib/server/session';
 import { seedInitialData } from '@/lib/server/seed';
 import { noteConnectionAttention, setConnectionFocus } from '@/lib/server/agent/eventConnections';
@@ -33,29 +32,29 @@ export async function POST(req: Request) {
   try { seedInitialData(); } catch {}
 
   let body: any;
-  try { body = await req.json(); } catch { return NextResponse.json({ error: 'invalid json' }, { status: 400 }); }
+  try { body = await req.json(); } catch { return Response.json({ error: 'invalid json' }, { status: 400 }); }
 
   const conn = body?.conn;
   if (typeof conn !== 'string' || conn.length < 8) {
-    return NextResponse.json({ error: 'missing conn' }, { status: 400 });
+    return Response.json({ error: 'missing conn' }, { status: 400 });
   }
   const kind = body?.kind ?? 'focus';
   if (kind !== 'focus' && kind !== 'attention') {
-    return NextResponse.json({ error: "kind must be 'focus' or 'attention'" }, { status: 400 });
+    return Response.json({ error: "kind must be 'focus' or 'attention'" }, { status: 400 });
   }
   if (kind === 'attention') {
     // Focus itself is untouched, and nothing is read.
     const att = noteConnectionAttention(conn);
-    return NextResponse.json({ ok: att.ok });
+    return Response.json({ ok: att.ok });
   }
   const sessionId = body?.sessionId;
   if (sessionId != null && typeof sessionId !== 'string') {
-    return NextResponse.json({ error: 'sessionId must be string or null' }, { status: 400 });
+    return Response.json({ error: 'sessionId must be string or null' }, { status: 400 });
   }
 
   const focusSeq = Number(body?.focusSeq);
   if (!Number.isSafeInteger(focusSeq) || focusSeq < 1) {
-    return NextResponse.json({ error: 'focusSeq must be a positive integer' }, { status: 400 });
+    return Response.json({ error: 'focusSeq must be a positive integer' }, { status: 400 });
   }
   const visible = body?.visible !== false;
   // Absent (a pre-attention client) ⇒ undefined: that conn keeps "attended =
@@ -75,5 +74,5 @@ export async function POST(req: Request) {
   // already closed). Not a fatal error — the client can retry (a proto-2
   // client reconnects its SSE). `sync`: the bus revision after the apply and
   // the read-acks (whose unread frames it covers).
-  return NextResponse.json({ ...result, sync: currentRev() });
+  return Response.json({ ...result, sync: currentRev() });
 }

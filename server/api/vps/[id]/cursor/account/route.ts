@@ -1,4 +1,3 @@
-import { NextResponse } from 'next/server';
 import { eq } from 'drizzle-orm';
 import { db, vps as vpsTable } from '@/lib/db';
 import { requireApiSession } from '@/lib/server/session';
@@ -20,19 +19,19 @@ export async function DELETE(_req: Request, { params }: { params: Promise<{ id: 
   if (s instanceof Response) return s;
   const { id } = await params;
   const [v] = db.select().from(vpsTable).where(eq(vpsTable.id, id)).all();
-  if (!v) return NextResponse.json({ error: 'vps not found' }, { status: 404 });
+  if (!v) return Response.json({ error: 'vps not found' }, { status: 404 });
   try {
     const client = getAgentClient(v);
     const r = await client.call<{ ok: boolean; error?: string }>('cursor_logout', {});
-    if (!r?.ok) return NextResponse.json({ ok: false, error: r?.error ?? 'sign-out failed' });
+    if (!r?.ok) return Response.json({ ok: false, error: r?.error ?? 'sign-out failed' });
     invalidateCursorModels(v.id);
     try {
       db.update(vpsTable).set(providerLoginPatch('cursor', 0))
         .where(eq(vpsTable.id, v.id)).run();
     } catch {}
     if (v.agentStatus === 'ok') emitGlobalVpsStatus(v.id, 'ok', { cursorLoggedIn: 0 });
-    return NextResponse.json({ ok: true });
+    return Response.json({ ok: true });
   } catch (e: any) {
-    return NextResponse.json({ ok: false, error: String(e?.message ?? e) }, { status: 502 });
+    return Response.json({ ok: false, error: String(e?.message ?? e) }, { status: 502 });
   }
 }

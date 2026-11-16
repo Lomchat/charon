@@ -1,6 +1,6 @@
 'use client';
 import React, { memo, useCallback, useMemo, useState } from 'react';
-import dynamic from 'next/dynamic';
+import dynamic from '@/app/dynamic';
 import ReactMarkdown, { defaultUrlTransform } from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import rehypeHighlight from 'rehype-highlight';

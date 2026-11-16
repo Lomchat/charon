@@ -1,4 +1,3 @@
-import { NextResponse } from 'next/server';
 import { requireApiSession } from '@/lib/server/session';
 import { startShell, listShells } from '@/lib/server/shell/shellSession';
 
@@ -8,7 +7,7 @@ export async function GET(_req: Request, { params }: { params: Promise<{ id: str
   if (s instanceof Response) return s;
   const { id } = await params;
   const shells = listShells().filter((sh) => sh.vpsId === id);
-  return NextResponse.json({ shells });
+  return Response.json({ shells });
 }
 
 // POST /api/vps/[id]/shells  Body: { cwd?, name?, cols?, rows? }
@@ -25,8 +24,8 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
       cols: typeof body.cols === 'number' ? body.cols : undefined,
       rows: typeof body.rows === 'number' ? body.rows : undefined,
     });
-    return NextResponse.json(shell);
+    return Response.json(shell);
   } catch (e: any) {
-    return NextResponse.json({ error: e?.message ?? String(e) }, { status: 500 });
+    return Response.json({ error: e?.message ?? String(e) }, { status: 500 });
   }
 }

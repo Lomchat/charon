@@ -1,4 +1,3 @@
-import { NextResponse } from 'next/server';
 import { requireApiSession } from '@/lib/server/session';
 import { getLoginSession } from '@/lib/server/agent/loginSession';
 
@@ -16,15 +15,15 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
   const { id } = await params;
   const profile = new URL(req.url).searchParams.get("profile") ?? "default";
   const sess = getLoginSession(id, profile);
-  if (!sess) return NextResponse.json({ ok: false, error: 'no active login attempt' }, { status: 404 });
+  if (!sess) return Response.json({ ok: false, error: 'no active login attempt' }, { status: 404 });
   let body: unknown;
   try { body = await req.json(); } catch { body = {}; }
   const code = typeof (body as { code?: unknown })?.code === 'string' ? (body as { code: string }).code : '';
-  if (!code.trim()) return NextResponse.json({ ok: false, error: 'code required' }, { status: 400 });
+  if (!code.trim()) return Response.json({ ok: false, error: 'code required' }, { status: 400 });
   try {
     sess.submitCode(code);
-    return NextResponse.json({ ok: true, ...sess.status() });
+    return Response.json({ ok: true, ...sess.status() });
   } catch (e: any) {
-    return NextResponse.json({ ok: false, error: e?.message ?? String(e) }, { status: 409 });
+    return Response.json({ ok: false, error: e?.message ?? String(e) }, { status: 409 });
   }
 }

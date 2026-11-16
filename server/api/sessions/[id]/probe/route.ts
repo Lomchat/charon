@@ -1,4 +1,3 @@
-import { NextResponse } from 'next/server';
 import { and, eq, sql } from 'drizzle-orm';
 import {
   db, agentSessions, sessionMessages, sessionPendingPermissions, sessionPendingQuestions,
@@ -47,7 +46,7 @@ export async function GET(req: Request, { params }: { params: Promise<{ id: stri
 
       const exists = db.select({ id: agentSessions.id }).from(agentSessions)
         .where(eq(agentSessions.id, id)).get();
-      if (!exists) return NextResponse.json({ error: 'not found' }, { status: 404 });
+      if (!exists) return Response.json({ error: 'not found' }, { status: 404 });
 
       const maxRow = db.select({ m: sql<number>`max(${sessionMessages.id})` })
         .from(sessionMessages)
@@ -90,11 +89,11 @@ export async function GET(req: Request, { params }: { params: Promise<{ id: stri
         newRowsTruncated,
         pendingIds: [...perms.map((p) => p.id), ...qs.map((q) => q.id)],
       };
-      return NextResponse.json(body);
+      return Response.json(body);
     } catch (e: any) {
       // eslint-disable-next-line no-console
       console.error(`[api/sessions/${id}/probe GET] failed:`, e?.stack ?? e);
-      return NextResponse.json({ error: e?.message ?? String(e) }, { status: 503 });
+      return Response.json({ error: e?.message ?? String(e) }, { status: 503 });
     }
   });
 }

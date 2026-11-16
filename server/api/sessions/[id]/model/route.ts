@@ -1,4 +1,3 @@
-import { NextResponse } from 'next/server';
 import { requireApiSession } from '@/lib/server/session';
 import { syncAfter } from '@/lib/server/sync/sessionSummaries';
 import { getOrCreateStream } from '@/lib/server/agent/sessionOps';
@@ -20,7 +19,7 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
   if (s instanceof Response) return s;
   const { id } = await params;
   const stream = getOrCreateStream(id);
-  if (!stream) return NextResponse.json({ error: 'session not found' }, { status: 404 });
+  if (!stream) return Response.json({ error: 'session not found' }, { status: 404 });
   const body = await req.json().catch(() => ({}));
   // Normalise: empty string → null (= clear back to global default).
   const model = typeof body?.model === 'string' && body.model.length > 0 ? body.model : null;
@@ -32,8 +31,8 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
     // return the new value here — clients listen to the SSE for the
     // authoritative confirmation. Returning the optimistic local values
     // would let the UI show a "saved" state for an invalid input.
-    return NextResponse.json({ ok: true, sync: syncAfter([id]) });
+    return Response.json({ ok: true, sync: syncAfter([id]) });
   } catch (e: any) {
-    return NextResponse.json({ error: e?.message ?? String(e) }, { status: 500 });
+    return Response.json({ error: e?.message ?? String(e) }, { status: 500 });
   }
 }

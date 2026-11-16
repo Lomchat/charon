@@ -1,4 +1,4 @@
-import { NextResponse } from 'next/server';
+import { json } from '@/lib/server/http/json';
 import { requireApiSession } from '@/lib/server/session';
 import { mintLivePreview } from '@/lib/server/hub/livePreviewMint';
 import type { FsLivePreviewBody, FsLivePreviewResponse } from '@/lib/types/api';
@@ -14,9 +14,9 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
 
   let body: FsLivePreviewBody;
   try { body = await req.json(); } catch {
-    return NextResponse.json<FsLivePreviewResponse>({ ok: false, error: 'invalid body' }, { status: 400 });
+    return json<FsLivePreviewResponse>({ ok: false, error: 'invalid body' }, { status: 400 });
   }
   const m = mintLivePreview(id, String(body?.root ?? ''), String(body?.path ?? ''), s.sessionId);
-  if (!m.ok) return NextResponse.json<FsLivePreviewResponse>({ ok: false, error: m.error }, { status: m.status });
-  return NextResponse.json<FsLivePreviewResponse>({ ok: true, url: m.url, expiresAt: m.expiresAt });
+  if (!m.ok) return json<FsLivePreviewResponse>({ ok: false, error: m.error }, { status: m.status });
+  return json<FsLivePreviewResponse>({ ok: true, url: m.url, expiresAt: m.expiresAt });
 }

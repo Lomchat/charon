@@ -24,18 +24,19 @@
     "remote-ide",
     "ssh",
     "vps",
-    "nextjs",
     "self-hosted",
     "agent",
-    "dashboard"
+    "dashboard",
+    "vite",
+    "hono"
   ],
   "engines": {
     "node": ">=20"
   },
   "scripts": {
-    "dev": "node server.js",
-    "build": "node scripts/check-protocol-sync.mjs && node scripts/gen-api-routes.mjs && next build && node scripts/migrate.mjs && touch .next/.deploy-ready",
-    "start": "node server.js",
+    "dev": "node scripts/dev.mjs",
+    "build": "node scripts/check-protocol-sync.mjs && node scripts/gen-api-routes.mjs && node scripts/build-client.mjs && node scripts/build-server.mjs && node scripts/migrate.mjs && touch dist/.deploy-ready",
+    "start": "NODE_ENV=production node server.js",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "smoke": "node scripts/smoke.mjs",
@@ -51,6 +52,7 @@
     "@dnd-kit/core": "^6.3.1",
     "@dnd-kit/sortable": "^10.0.0",
     "@dnd-kit/utilities": "^3.2.2",
+    "@hono/node-server": "^2.1.8",
     "@types/ws": "^8.18.1",
     "@viz-js/viz": "^3.31.0",
     "@xterm/addon-fit": "^0.11.0",
@@ -65,7 +67,6 @@
     "leaflet": "^1.9.4",
     "mammoth": "^1.13.0",
     "mermaid": "^11.17.2",
-    "next": "^15.5.28",
     "pdfjs-dist": "^6.4.299",
     "react": "^19.2.8",
     "react-dom": "^19.2.8",
@@ -86,8 +87,11 @@
     "@types/react-dom": "^19.2.7",
     "@types/three": "^0.186.0",
     "@types/web-push": "^3.6.4",
+    "@vitejs/plugin-react": "^5.2.0",
     "drizzle-kit": "^0.31.10",
+    "esbuild": "^0.25.12",
     "typescript": "^5.7.3",
+    "vite": "^7.3.8",
     "vitest": "^3.2.6"
   },
   "overrides": {

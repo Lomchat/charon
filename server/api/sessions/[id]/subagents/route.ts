@@ -1,5 +1,4 @@
 import { readWorkflowTranscript } from '@/lib/server/hub/workflowTranscript';
-import { NextResponse } from 'next/server';
 import { requireApiSession } from '@/lib/server/session';
 import { callSessionRpc } from '@/lib/server/hub/sessionRpc';
 import { recoverSubagentTranscript } from '@/lib/server/hub/subagentTranscriptCompat';
@@ -24,19 +23,19 @@ export async function GET(req: Request, { params }: { params: Promise<{ id: stri
     const after = rawAfter == null ? undefined : Number(rawAfter);
     if ((before != null && (!Number.isSafeInteger(before) || before <= 0))
       || (after != null && (!Number.isSafeInteger(after) || after < 0)) || (before != null && after != null))
-      return NextResponse.json({ ok: false, error: 'Invalid transcript cursor.' }, { status: 400 });
-    return NextResponse.json(await readWorkflowTranscript(id, task || '', query.get('label') || '', query.get('phase') || '', before,
+      return Response.json({ ok: false, error: 'Invalid transcript cursor.' }, { status: 400 });
+    return Response.json(await readWorkflowTranscript(id, task || '', query.get('label') || '', query.get('phase') || '', before,
       query.get('expectedAgent') || undefined, { after, fileId: query.get('fileId') || undefined, cursor: query.get('cursor') || undefined,
         nativeAgent: task ? undefined : query.get('agent') || undefined,
         workflowAgent: task ? query.get('agent') || undefined : undefined }));
   }
   const agent = query.get('agent');
   if (agent) {
-    return NextResponse.json(
+    return Response.json(
       await recoverSubagentTranscript(id, agent, await callSessionRpc(id, 'get_subagent_messages', { agent_id: agent })));
   }
   const force = new URL(req.url).searchParams.get('force') === '1';
-  return NextResponse.json(readSessionInsightSnapshot(
+  return Response.json(readSessionInsightSnapshot(
     id,
     'subagents',
     async () => hideInternalCodexSubagents(await callSessionRpc(id, 'list_subagents')),

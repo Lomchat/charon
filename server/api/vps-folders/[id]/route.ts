@@ -1,4 +1,3 @@
-import { NextResponse } from 'next/server';
 import { eq, asc } from 'drizzle-orm';
 import { db, vps, vpsFolders } from '@/lib/db';
 import { requireApiSession } from '@/lib/server/session';
@@ -11,12 +10,12 @@ export async function PATCH(req: Request, { params }: { params: Promise<{ id: st
   if (s instanceof Response) return s;
   const { id } = await params;
   const body = await req.json().catch(() => null) as { name?: string; collapsed?: boolean } | null;
-  if (!body) return NextResponse.json({ error: 'invalid json' }, { status: 400 });
+  if (!body) return Response.json({ error: 'invalid json' }, { status: 400 });
 
   const update: Record<string, unknown> = {};
   if (typeof body.name === 'string') {
     const name = body.name.trim();
-    if (!name) return NextResponse.json({ error: 'name cannot be empty' }, { status: 400 });
+    if (!name) return Response.json({ error: 'name cannot be empty' }, { status: 400 });
     update.name = name;
   }
   if (typeof body.collapsed === 'boolean') {
@@ -24,11 +23,11 @@ export async function PATCH(req: Request, { params }: { params: Promise<{ id: st
   }
   if (Object.keys(update).length === 0) {
     const [row] = db.select().from(vpsFolders).where(eq(vpsFolders.id, id)).all();
-    return NextResponse.json(row ?? null);
+    return Response.json(row ?? null);
   }
   db.update(vpsFolders).set(update).where(eq(vpsFolders.id, id)).run();
   const [row] = db.select().from(vpsFolders).where(eq(vpsFolders.id, id)).all();
-  return NextResponse.json(row);
+  return Response.json(row);
 }
 
 // DELETE /api/vps-folders/[id] — deletes a folder. Refuses to delete the
@@ -39,10 +38,10 @@ export async function DELETE(_req: Request, { params }: { params: Promise<{ id: 
   if (s instanceof Response) return s;
   const { id } = await params;
   if (id === DEFAULT_FOLDER_ID) {
-    return NextResponse.json({ error: 'cannot delete the default folder' }, { status: 400 });
+    return Response.json({ error: 'cannot delete the default folder' }, { status: 400 });
   }
   const [folder] = db.select().from(vpsFolders).where(eq(vpsFolders.id, id)).all();
-  if (!folder) return NextResponse.json({ error: 'folder not found' }, { status: 404 });
+  if (!folder) return Response.json({ error: 'folder not found' }, { status: 404 });
 
   db.transaction((tx) => {
     // Move the folder's VPS to 'default', appending (positions at the end).
@@ -58,5 +57,5 @@ export async function DELETE(_req: Request, { params }: { params: Promise<{ id: 
     }
     tx.delete(vpsFolders).where(eq(vpsFolders.id, id)).run();
   });
-  return NextResponse.json({ ok: true });
+  return Response.json({ ok: true });
 }

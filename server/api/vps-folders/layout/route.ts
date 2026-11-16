@@ -1,4 +1,3 @@
-import { NextResponse } from 'next/server';
 import { db, vps, vpsFolders } from '@/lib/db';
 import { eq, asc, max, ne } from 'drizzle-orm';
 import { requireApiSession } from '@/lib/server/session';
@@ -29,7 +28,7 @@ export async function POST(req: Request) {
   try {
     body = await req.json();
   } catch {
-    return NextResponse.json({ error: 'invalid json' }, { status: 400 });
+    return Response.json({ error: 'invalid json' }, { status: 400 });
   }
   const inFolders = Array.isArray(body.folders) ? body.folders : [];
   const inVps = Array.isArray(body.vps) ? body.vps : [];
@@ -41,7 +40,7 @@ export async function POST(req: Request) {
   );
   for (const v of inVps) {
     if (!knownFolderIds.has(v.folderId)) {
-      return NextResponse.json({ error: `unknown folder id: ${v.folderId}` }, { status: 400 });
+      return Response.json({ error: `unknown folder id: ${v.folderId}` }, { status: 400 });
     }
   }
 
@@ -72,5 +71,5 @@ export async function POST(req: Request) {
 
   const folders = db.select().from(vpsFolders).orderBy(asc(vpsFolders.position), asc(vpsFolders.createdAt)).all();
   const vpsRows = db.select().from(vps).orderBy(asc(vps.position)).all();
-  return NextResponse.json({ ok: true, folders, vps: vpsRows });
+  return Response.json({ ok: true, folders, vps: vpsRows });
 }

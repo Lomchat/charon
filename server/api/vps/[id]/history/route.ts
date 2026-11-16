@@ -1,4 +1,4 @@
-import { NextResponse } from 'next/server';
+import { json } from '@/lib/server/http/json';
 import { eq } from 'drizzle-orm';
 import { db, vps } from '@/lib/db';
 import { requireApiSession } from '@/lib/server/session';
@@ -18,17 +18,17 @@ export async function GET(_req: Request, { params }: { params: Promise<{ id: str
   if (s instanceof Response) return s;
   const { id } = await params;
   const [v] = db.select({ id: vps.id }).from(vps).where(eq(vps.id, id)).all();
-  if (!v) return NextResponse.json<HistoryIndexResponse>({ ok: false, reason: 'error', error: 'vps not found' }, { status: 404 });
+  if (!v) return json<HistoryIndexResponse>({ ok: false, reason: 'error', error: 'vps not found' }, { status: 404 });
   try {
     const r = await getAgentClientForVpsId(id).call('history_index', {
       kinds: SESSION_PROVIDERS.filter((p) => PROVIDERS[p].deployment.historyIndex), budget_ms: BUDGET_MS,
     }) as HistoryIndexResponse;
-    return NextResponse.json<HistoryIndexResponse>(r);
+    return json<HistoryIndexResponse>(r);
   } catch (e: unknown) {
     if ((e as { code?: number })?.code === -32601) {
-      return NextResponse.json<HistoryIndexResponse>({ ok: false, reason: 'unsupported' });
+      return json<HistoryIndexResponse>({ ok: false, reason: 'unsupported' });
     }
-    return NextResponse.json<HistoryIndexResponse>({
+    return json<HistoryIndexResponse>({
       ok: false, reason: 'offline', error: e instanceof Error ? e.message : String(e),
     }, { status: 502 });
   }

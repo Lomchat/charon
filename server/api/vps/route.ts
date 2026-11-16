@@ -1,4 +1,3 @@
-import { NextResponse } from 'next/server';
 import crypto from 'node:crypto';
 import { db, vps, vpsFolders } from '@/lib/db';
 import { requireApiSession } from '@/lib/server/session';
@@ -15,7 +14,7 @@ export async function POST(req: Request) {
 
   // Strict validation — these values end up in ssh argvs (P1.3).
   const v = validateVpsTarget(body);
-  if (!v.ok) return NextResponse.json({ error: v.error }, { status: 400 });
+  if (!v.ok) return Response.json({ error: v.error }, { status: 400 });
   const { name, ip, sshUser, sshPort, defaultPath } = v;
 
   // Folder resolution: if folderId is provided and exists we use it,
@@ -40,5 +39,5 @@ export async function POST(req: Request) {
 
   const row = { id: newId(), name, ip, sshUser, sshPort, defaultPath, folderId, position };
   db.insert(vps).values(row).run();
-  return NextResponse.json({ ...row, createdAt: Math.floor(Date.now() / 1000) });
+  return Response.json({ ...row, createdAt: Math.floor(Date.now() / 1000) });
 }

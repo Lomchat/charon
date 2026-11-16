@@ -1,4 +1,3 @@
-import { NextResponse } from 'next/server';
 import { eq } from 'drizzle-orm';
 import { db, vps as vpsTable } from '@/lib/db';
 import { requireApiSession } from '@/lib/server/session';
@@ -19,16 +18,16 @@ export async function POST(_req: Request, { params }: { params: Promise<{ id: st
   if (s instanceof Response) return s;
   const { id } = await params;
   const [v] = db.select().from(vpsTable).where(eq(vpsTable.id, id)).all();
-  if (!v) return NextResponse.json({ error: 'vps not found' }, { status: 404 });
+  if (!v) return Response.json({ error: 'vps not found' }, { status: 404 });
 
   const r = await refreshClaudeLoginStatus(v);
   if (!r.ok) {
-    return NextResponse.json({
+    return Response.json({
       ok: false,
       error: r.error,
       loggedIn: r.loggedIn,
       checkedAt: r.checkedAt,
     });
   }
-  return NextResponse.json({ ok: true, loggedIn: r.loggedIn, checkedAt: r.checkedAt });
+  return Response.json({ ok: true, loggedIn: r.loggedIn, checkedAt: r.checkedAt });
 }

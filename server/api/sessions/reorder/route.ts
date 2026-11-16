@@ -1,4 +1,3 @@
-import { NextResponse } from 'next/server';
 import { and, eq } from 'drizzle-orm';
 import { db, agentSessions } from '@/lib/db';
 import { requireApiSession } from '@/lib/server/session';
@@ -25,7 +24,7 @@ export async function POST(req: Request) {
     ids = Array.isArray(b?.ids) ? b.ids.map(String) : [];
   } catch { /* validated below */ }
   if (!vpsId || ids.length === 0) {
-    return NextResponse.json({ error: 'vpsId and ids are required' }, { status: 400 });
+    return Response.json({ error: 'vpsId and ids are required' }, { status: 400 });
   }
 
   const rows = db.select().from(agentSessions).where(eq(agentSessions.vpsId, vpsId)).all();
@@ -42,5 +41,5 @@ export async function POST(req: Request) {
   });
   // Marks this VPS's summaries (`position` is a list fact, §14.108).
   emitGlobalSessionListChanged(vpsId);
-  return NextResponse.json({ ok: true, sync: syncAfter('dirty') });
+  return Response.json({ ok: true, sync: syncAfter('dirty') });
 }

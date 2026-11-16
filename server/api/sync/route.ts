@@ -1,4 +1,3 @@
-import { NextResponse } from 'next/server';
 import { db, vps, vpsPaths } from '@/lib/db';
 import { validateVpsTarget, validateRemotePath } from '@/lib/server/vpsValidate';
 import { eq, and } from 'drizzle-orm';
@@ -47,14 +46,14 @@ function checkAuth(req: Request): boolean {
 
 export async function POST(req: Request) {
   if (!checkAuth(req)) {
-    return NextResponse.json({ error: 'unauthorized' }, { status: 401 });
+    return Response.json({ error: 'unauthorized' }, { status: 401 });
   }
 
   let body: { vps?: VpsRow[]; vpsPaths?: VpsPathRow[] };
   try {
     body = await req.json();
   } catch {
-    return NextResponse.json({ error: 'invalid json' }, { status: 400 });
+    return Response.json({ error: 'invalid json' }, { status: 400 });
   }
 
   const inVps = Array.isArray(body.vps) ? body.vps : [];
@@ -118,5 +117,5 @@ export async function POST(req: Request) {
     }
   });
 
-  return NextResponse.json({ ok: true, counts });
+  return Response.json({ ok: true, counts });
 }

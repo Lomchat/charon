@@ -1,4 +1,3 @@
-import { NextResponse } from 'next/server';
 import { eq } from 'drizzle-orm';
 import { db, vps } from '@/lib/db';
 import { requireApiSession } from '@/lib/server/session';
@@ -15,6 +14,6 @@ export async function GET(_req: Request, { params }: { params: Promise<{ id: str
   if (s instanceof Response) return s;
   const { id } = await params;
   const [v] = db.select().from(vps).where(eq(vps.id, id)).all();
-  if (!v) return NextResponse.json({ error: 'vps not found' }, { status: 404 });
-  return NextResponse.json({ activity: activityFor(id) });
+  if (!v) return Response.json({ error: 'vps not found' }, { status: 404 });
+  return Response.json({ activity: activityFor(id) });
 }

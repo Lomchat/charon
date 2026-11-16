@@ -1,4 +1,3 @@
-import { NextResponse } from 'next/server';
 import { desc, eq } from 'drizzle-orm';
 import { db, vps as vpsTable, vpsPaths, agentSessions } from '@/lib/db';
 import { requireApiSession } from '@/lib/server/session';
@@ -19,7 +18,7 @@ export async function GET(req: Request, { params }: { params: Promise<{ id: stri
   if (s instanceof Response) return s;
   const { id } = await params;
   const [v] = db.select().from(vpsTable).where(eq(vpsTable.id, id)).all();
-  if (!v) return NextResponse.json({ error: 'vps not found' }, { status: 404 });
+  if (!v) return Response.json({ error: 'vps not found' }, { status: 404 });
   const url = new URL(req.url);
   const includeArchived = url.searchParams.get('archived') === '1';
 
@@ -57,7 +56,7 @@ export async function GET(req: Request, { params }: { params: Promise<{ id: stri
       scanned?: string[]; remaining?: string[];
     }>('cursor_list_agents', { include_archived: includeArchived, cwds });
     if (!r?.ok) {
-      return NextResponse.json({
+      return Response.json({
         ok: false, sessions: [],
         error: r?.error ?? 'could not list Cursor conversations',
         reason: r?.reason ?? 'error',
@@ -67,7 +66,7 @@ export async function GET(req: Request, { params }: { params: Promise<{ id: stri
     remaining = r.remaining ?? [];
   } catch (e: any) {
     const tooOld = e?.code === -32601;
-    return NextResponse.json({
+    return Response.json({
       ok: false, sessions: [], reason: tooOld ? 'unsupported' : 'error',
       error: tooOld ? 'agent too old to list Cursor conversations — update the agent'
         : String(e?.message ?? e),
@@ -106,7 +105,7 @@ export async function GET(req: Request, { params }: { params: Promise<{ id: stri
 
   // `folders` lets the tab offer the choice, `nextCwd` lets it continue — a
   // scan that silently stopped at a bound reads exactly like "there is nothing".
-  return NextResponse.json({
+  return Response.json({
     ok: true, sessions, folders,
     ...(remaining.length ? { nextCwd: remaining[0], truncated: true } : {}),
   });

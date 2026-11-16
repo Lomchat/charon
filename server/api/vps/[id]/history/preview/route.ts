@@ -1,4 +1,4 @@
-import { NextResponse } from 'next/server';
+import { json } from '@/lib/server/http/json';
 import { eq } from 'drizzle-orm';
 import { db, vps } from '@/lib/db';
 import { requireApiSession } from '@/lib/server/session';
@@ -20,20 +20,20 @@ export async function GET(req: Request, { params }: { params: Promise<{ id: stri
   const sessionId = url.searchParams.get('id') ?? '';
   const turns = Math.max(1, Math.min(30, Number(url.searchParams.get('turns')) || 3));
   if (!(SESSION_PROVIDERS as readonly string[]).includes(kind) || !ID.test(sessionId)) {
-    return NextResponse.json<HistoryPreviewResponse>({ ok: false, reason: 'invalid', error: 'kind and id are required' }, { status: 400 });
+    return json<HistoryPreviewResponse>({ ok: false, reason: 'invalid', error: 'kind and id are required' }, { status: 400 });
   }
   const [v] = db.select({ id: vps.id }).from(vps).where(eq(vps.id, id)).all();
-  if (!v) return NextResponse.json<HistoryPreviewResponse>({ ok: false, reason: 'error', error: 'vps not found' }, { status: 404 });
+  if (!v) return json<HistoryPreviewResponse>({ ok: false, reason: 'error', error: 'vps not found' }, { status: 404 });
   try {
     const r = await getAgentClientForVpsId(id).call('history_preview', {
       kind, session_id: sessionId, turns,
     }) as HistoryPreviewResponse;
-    return NextResponse.json<HistoryPreviewResponse>(r);
+    return json<HistoryPreviewResponse>(r);
   } catch (e: unknown) {
     if ((e as { code?: number })?.code === -32601) {
-      return NextResponse.json<HistoryPreviewResponse>({ ok: false, reason: 'unsupported' });
+      return json<HistoryPreviewResponse>({ ok: false, reason: 'unsupported' });
     }
-    return NextResponse.json<HistoryPreviewResponse>({
+    return json<HistoryPreviewResponse>({
       ok: false, reason: 'offline', error: e instanceof Error ? e.message : String(e),
     }, { status: 502 });
   }

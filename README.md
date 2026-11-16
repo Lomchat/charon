@@ -4,7 +4,7 @@
 [![License: Apache 2.0](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](./LICENSE)
 [![Node](https://img.shields.io/badge/node-%E2%89%A520-339933?logo=node.js&logoColor=white)](https://nodejs.org)
 [![Python](https://img.shields.io/badge/python-%E2%89%A53.10-3776AB?logo=python&logoColor=white)](https://www.python.org)
-[![Next.js](https://img.shields.io/badge/Next.js-15-black?logo=next.js)](https://nextjs.org)
+[![Vite](https://img.shields.io/badge/Vite-7-646CFF?logo=vite)](https://vite.dev) [![Hono](https://img.shields.io/badge/Hono-4-E36002?logo=hono)](https://hono.dev)
 
 > **One browser tab to run AI coding sessions — and read, edit, commit and
 > ship what they write — across all your remote servers.** Charon is a
@@ -27,7 +27,7 @@ the hub. Charon is only the control plane.
 
 ```
 ┌───────────────┐  HTTPS/SSE   ┌────────────────────────┐  SSH (1 per VPS)  ┌──────────────────────┐
-│   Browser     │ ◄──────────► │  Charon (Next.js)      │ ◄───────────────► │  charon-agent (VPS)  │
+│   Browser     │ ◄──────────► │  Charon (Hono + Vite)  │ ◄───────────────► │  charon-agent (VPS)  │
 │  sessions +   │  SSE / POST  │  - 1 SSH per VPS       │  exec: pyz        │  - asyncio Unix sock │
 │  files +      │              │  - JSON-RPC multiplex  │  --connect proxy  │  - N SDK sessions    │
 │  shells       │              │  - SQLite (charon.db)  │  stdio↔socket     │  - files · git       │
@@ -436,8 +436,8 @@ model-catalogue refresh. Without it both show an explicit message.
 Details and rationale: [`docs/adr-001-charon-agent.md`](./docs/adr-001-charon-agent.md);
 contributor map: [`CONTRIBUTING.md`](./CONTRIBUTING.md).
 
-- **Hub** (this repo): Next.js 15 App Router, React 19, SQLite via Drizzle +
-  `better-sqlite3`, SSR + one SSE stream per tab. Single process, single user.
+- **Hub** (this repo): React 19 built by Vite, a Hono server on Node, SQLite via
+  Drizzle + `better-sqlite3`, one SSE stream per tab. Single process, single user.
 - **`charon-agent`**: a stdlib-only Python zipapp at `~/.charon/charon-agent.pyz`
   on each VPS. It listens on a Unix socket and hosts the provider sessions,
   `charon_peer`, detached shell holders and bounded file/search/Git/LSP services.
@@ -449,7 +449,7 @@ contributor map: [`CONTRIBUTING.md`](./CONTRIBUTING.md).
   are reported, never silent.
 - **Security**: `HttpOnly`/`SameSite=Lax` cookies (`Secure` in prod),
   origin-checked mutations, rate-limited login, `X-Frame-Options: DENY`, HSTS,
-  `Referrer-Policy`, `Permissions-Policy` (no CSP: Next inlines SSR scripts).
+  `Referrer-Policy`, `Permissions-Policy`.
   File bytes are served from an extension allow-list with `nosniff` and a
   `sandbox` CSP. The agent socket is `chmod 600` and opens no TCP port: your SSH
   key is the authorization boundary.
@@ -482,8 +482,7 @@ After any change under `agent/charon_agent/`, bump `__version__` and run
 
 | Symptom | Fix |
 | --- | --- |
-| Blank page, 404 on `/_next/static/*` | Built with `--turbopack` (breaks `next start`; the `build` script never passes it). `rm -rf .next && npm run build`. |
-| `next start` loops "Could not find a production build" | A crashed `next dev` polluted `.next`. Same fix. |
+| `Cannot find module './dist/server/index.cjs'` | No build yet: `npm run build`. |
 | Red dot next to a VPS | Agent not installed/reachable; the health chips name the broken axis and offer the fix. |
 | "Agent out of date" / "update the agent" | Click **Update agent** (or let auto-update run while the VPS is quiet). |
 | Explorer / git panel: "the agent is not connected" | SSH is down; the health chips give the reason. It reloads when the box returns. |

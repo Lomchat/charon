@@ -1,4 +1,3 @@
-import { NextResponse } from 'next/server';
 import { eq } from 'drizzle-orm';
 import { db, agentSessions } from '@/lib/db';
 import { requireApiSession } from '@/lib/server/session';
@@ -34,8 +33,8 @@ export async function POST(req: Request) {
     onlyPaused = b?.onlyPaused === true;
   } catch { /* validated below */ }
   ids = [...new Set(ids)];
-  if (ids.length === 0) return NextResponse.json({ error: 'ids are required' }, { status: 400 });
-  if (ids.length > MAX_IDS) return NextResponse.json({ error: `at most ${MAX_IDS} ids per request` }, { status: 400 });
+  if (ids.length === 0) return Response.json({ error: 'ids are required' }, { status: 400 });
+  if (ids.length > MAX_IDS) return Response.json({ error: `at most ${MAX_IDS} ids per request` }, { status: 400 });
 
   const out: BulkDeleteSessionsResponse = { ok: true, deleted: [], missing: [], notPaused: [], failed: [] };
   let tabsDropped = false;
@@ -60,5 +59,5 @@ export async function POST(req: Request) {
   if (out.deleted.length > 0) emitGlobalSessionListChanged(out.deleted[0]);
   // Each deletion published its own `session_summary{null}` (deleteSession).
   out.sync = syncAfter('dirty');
-  return NextResponse.json(out);
+  return Response.json(out);
 }

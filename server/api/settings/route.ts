@@ -1,4 +1,3 @@
-import { NextResponse } from 'next/server';
 import { NOTIFICATION_EVENTS } from '@/lib/notificationPreferences';
 import { emitGlobalSettingsChanged } from '@/lib/server/agent/sessionOps';
 import { requireApiSession } from '@/lib/server/session';
@@ -75,14 +74,14 @@ export async function GET() {
   if (s instanceof Response) return s;
   // `sync`: the bus revision these values reflect. Not a setting key: the
   // modal only POSTs the keys it edited, and the allow-list drops the rest.
-  return NextResponse.json({ ...sanitizeForResponse(getAllSettings()), sync: currentRev() });
+  return Response.json({ ...sanitizeForResponse(getAllSettings()), sync: currentRev() });
 }
 
 export async function POST(req: Request) {
   const s = await requireApiSession();
   if (s instanceof Response) return s;
   const body = await req.json();
-  if (!body || typeof body !== 'object') return NextResponse.json({ error: 'object required' }, { status: 400 });
+  if (!body || typeof body !== 'object') return Response.json({ error: 'object required' }, { status: 400 });
   const rejected: string[] = [];
   for (const [k, v] of Object.entries(body)) {
     if (!SETTINGS_WRITE_ALLOWLIST.includes(k)) continue;
@@ -152,5 +151,5 @@ export async function POST(req: Request) {
     setSetting(k as any, val);
   }
   emitGlobalSettingsChanged();
-  return NextResponse.json({ ...sanitizeForResponse(getAllSettings()), ...(rejected.length ? { rejected } : {}) });
+  return Response.json({ ...sanitizeForResponse(getAllSettings()), ...(rejected.length ? { rejected } : {}) });
 }

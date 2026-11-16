@@ -1,4 +1,3 @@
-import { NextResponse } from 'next/server';
 import { eq } from 'drizzle-orm';
 import { db, vps as vpsTable } from '@/lib/db';
 import { requireApiSession } from '@/lib/server/session';
@@ -44,17 +43,17 @@ export async function POST(_req: Request, { params }: { params: Promise<{ id: st
   if (s instanceof Response) return s;
   const { id } = await params;
   const v = await loadVps(id);
-  if (!v) return NextResponse.json({ error: 'vps not found' }, { status: 404 });
+  if (!v) return Response.json({ error: 'vps not found' }, { status: 404 });
   try {
     const client = getAgentClient(v);
     const r = await client.call<{ ok: boolean; error?: string; login_id?: string; url?: string }>(
       'cursor_login_start', {},
     );
-    if (!r?.ok) return NextResponse.json({ ok: false, error: r?.error ?? 'Cursor sign-in failed to start' });
-    return NextResponse.json({ ok: true, loginId: r.login_id, url: r.url });
+    if (!r?.ok) return Response.json({ ok: false, error: r?.error ?? 'Cursor sign-in failed to start' });
+    return Response.json({ ok: true, loginId: r.login_id, url: r.url });
   } catch (e: any) {
     const m = mapAgentError(e);
-    return NextResponse.json({ ok: false, error: m.error }, { status: m.status });
+    return Response.json({ ok: false, error: m.error }, { status: m.status });
   }
 }
 
@@ -63,14 +62,14 @@ export async function GET(req: Request, { params }: { params: Promise<{ id: stri
   if (s instanceof Response) return s;
   const { id } = await params;
   const v = await loadVps(id);
-  if (!v) return NextResponse.json({ error: 'vps not found' }, { status: 404 });
+  if (!v) return Response.json({ error: 'vps not found' }, { status: 404 });
   const loginId = new URL(req.url).searchParams.get('loginId') ?? '';
   try {
     const client = getAgentClient(v);
     const r = await client.call<{ ok: boolean; status?: string; error?: string; url?: string }>(
       'cursor_login_status', { login_id: loginId },
     );
-    if (!r?.ok) return NextResponse.json({ ok: false, error: r?.error ?? 'status failed' });
+    if (!r?.ok) return Response.json({ ok: false, error: r?.error ?? 'status failed' });
     if (r.status === 'success') {
       // Model access is account-scoped. Drop every server-side copy before a
       // picker can ask under the newly stored credential (§14.103).
@@ -84,10 +83,10 @@ export async function GET(req: Request, { params }: { params: Promise<{ id: stri
       } catch {}
       if (v.agentStatus === 'ok') emitGlobalVpsStatus(v.id, 'ok', { cursorLoggedIn: 1 });
     }
-    return NextResponse.json({ ok: true, status: r.status, url: r.url ?? null, error: r.error ?? null });
+    return Response.json({ ok: true, status: r.status, url: r.url ?? null, error: r.error ?? null });
   } catch (e: any) {
     const m = mapAgentError(e);
-    return NextResponse.json({ ok: false, error: m.error }, { status: m.status });
+    return Response.json({ ok: false, error: m.error }, { status: m.status });
   }
 }
 
@@ -96,11 +95,11 @@ export async function DELETE(req: Request, { params }: { params: Promise<{ id: s
   if (s instanceof Response) return s;
   const { id } = await params;
   const v = await loadVps(id);
-  if (!v) return NextResponse.json({ error: 'vps not found' }, { status: 404 });
+  if (!v) return Response.json({ error: 'vps not found' }, { status: 404 });
   const loginId = new URL(req.url).searchParams.get('loginId') ?? '';
   try {
     const client = getAgentClient(v);
     await client.call('cursor_login_cancel', { login_id: loginId });
   } catch {}
-  return NextResponse.json({ ok: true });
+  return Response.json({ ok: true });
 }

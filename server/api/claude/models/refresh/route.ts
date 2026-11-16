@@ -1,4 +1,3 @@
-import { NextResponse } from 'next/server';
 import { requireApiSession } from '@/lib/server/session';
 import { refreshModels, getModelsAndEfforts } from '@/lib/server/hub/modelSync';
 
@@ -12,5 +11,5 @@ export async function POST() {
   const s = await requireApiSession();
   if (s instanceof Response) return s;
   const result = await refreshModels();
-  return NextResponse.json({ ...result, ...getModelsAndEfforts() });
+  return Response.json({ ...result, ...getModelsAndEfforts() });
 }

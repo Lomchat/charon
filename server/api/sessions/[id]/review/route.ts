@@ -1,4 +1,3 @@
-import { NextResponse } from 'next/server';
 import { eq } from 'drizzle-orm';
 import { randomBytes } from 'node:crypto';
 import { db, agentSessions } from '@/lib/db';
@@ -66,9 +65,9 @@ async function startAdaptedDetachedReview(
   });
   const response = await forkSession(forkReq, { params: Promise.resolve({ id }) });
   const payload = await response.json();
-  if (!response.ok) return NextResponse.json(payload, { status: response.status });
+  if (!response.ok) return Response.json(payload, { status: response.status });
   const { providerConfig: _config, ...session } = payload.session ?? {};
-  return NextResponse.json({
+  return Response.json({
     ...payload,
     ok: true,
     delivery: 'detached',
@@ -84,27 +83,27 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
   const { id } = await params;
   const body = await req.json().catch(() => ({}));
   const target = normalizeTarget(body?.target);
-  if (!target) return NextResponse.json({ error: 'invalid or incomplete review target' }, { status: 400 });
+  if (!target) return Response.json({ error: 'invalid or incomplete review target' }, { status: 400 });
   const delivery = body?.delivery === 'detached' ? 'detached' : 'inline';
 
   const [source] = db.select().from(agentSessions).where(eq(agentSessions.id, id)).all();
-  if (!source) return NextResponse.json({ error: 'session not found' }, { status: 404 });
-  if (source.archived) return NextResponse.json({ error: 'unarchive the session before reviewing' }, { status: 409 });
+  if (!source) return Response.json({ error: 'session not found' }, { status: 404 });
+  if (source.archived) return Response.json({ error: 'unarchive the session before reviewing' }, { status: 409 });
 
   if (delivery === 'inline') {
     try {
       const result = await startInlineReview(id, asSessionProvider(source.kind), target);
-      return NextResponse.json(result);
+      return Response.json(result);
     } catch (e: any) {
       const message = String(e?.message || e);
-      return NextResponse.json({ error: message }, {
+      return Response.json({ error: message }, {
         status: /-32601|no such method/i.test(message) ? 501 : 400,
       });
     }
   }
 
   if (!source.nativeSessionId) {
-    return NextResponse.json({ error: 'send a message before creating a separate review session' }, { status: 400 });
+    return Response.json({ error: 'send a message before creating a separate review session' }, { status: 400 });
   }
   const kind = asSessionProvider(source.kind);
   if (!hasNativeCapability(kind, 'fork')) {
@@ -115,10 +114,10 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
   try {
     forked = await callSessionRpc(id, 'fork_session', { title: name });
   } catch (e: any) {
-    return NextResponse.json({ error: String(e?.message || e) }, { status: 400 });
+    return Response.json({ error: String(e?.message || e) }, { status: 400 });
   }
   if (!forked?.ok || typeof forked.claude_session_id !== 'string') {
-    return NextResponse.json({ error: forked?.error || 'review fork returned no native session id' }, {
+    return Response.json({ error: forked?.error || 'review fork returned no native session id' }, {
       status: forked?.reason === 'unsupported' ? 501 : 400,
     });
   }
@@ -138,13 +137,13 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
     const result = await startInlineReview(newId, kind, target);
     emitGlobalSessionListChanged(newId);
     const [session] = db.select().from(agentSessions).where(eq(agentSessions.id, newId)).all();
-    return NextResponse.json({
+    return Response.json({
       ...result, ok: true, delivery: 'detached',
       review_thread_id: forked.claude_session_id,
       session: { ...session, providerConfig: undefined },
     });
   } catch (e: any) {
     await deleteSession(newId);
-    return NextResponse.json({ error: String(e?.message || e) }, { status: 400 });
+    return Response.json({ error: String(e?.message || e) }, { status: 400 });
   }
 }

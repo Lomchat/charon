@@ -1,6 +1,5 @@
 import { accountProfileId, accountProfileNumber } from '@/lib/accountProfiles';
 import { requireAccountProfile, readProfileStatus } from '@/lib/server/agent/accountProfiles';
-import { NextResponse } from 'next/server';
 import { asc, eq, and, inArray, lte } from 'drizzle-orm';
 import { sql } from 'drizzle-orm';
 import { db, agentSessions, sessionMessages, vps as vpsTable } from '@/lib/db';
@@ -189,10 +188,10 @@ async function forkToClaude(
   } catch (e: any) {
     const msg = String(e?.message || e);
     const status = /-32601|no such method|cannot fork/i.test(msg) ? 501 : 400;
-    return NextResponse.json({ error: msg }, { status });
+    return Response.json({ error: msg }, { status });
   }
   if (!forked?.claude_session_id) {
-    return NextResponse.json({ error: 'fork returned no session id' }, { status: 500 });
+    return Response.json({ error: 'fork returned no session id' }, { status: 500 });
   }
 
   const newId = randomBytes(8).toString('hex');
@@ -238,20 +237,20 @@ async function forkToClaude(
       started = true;
     } catch (e: any) {
       await deleteSession(newId);
-      return NextResponse.json({ error: String(e?.message || startError || e) }, { status: 400 });
+      return Response.json({ error: String(e?.message || startError || e) }, { status: 400 });
     }
   }
 
   emitGlobalSessionListChanged(newId);
   const [row] = db.select().from(agentSessions).where(eq(agentSessions.id, newId)).all();
-  return NextResponse.json({ ok: true, session: row, forkedFrom: source.id, copied, started });
+  return Response.json({ ok: true, session: row, forkedFrom: source.id, copied, started });
 }
 
 async function forkToCodex(source: SourceSession, name: string, cutoffId: number | null, replacementPrompt?: string) {
   const [vps] = db.select({ codexAvailable: vpsTable.codexAvailable })
     .from(vpsTable).where(eq(vpsTable.id, source.vpsId)).all();
   if (!vps || vps.codexAvailable !== 1) {
-    return NextResponse.json(
+    return Response.json(
       { error: 'Codex is not available on this VPS. Install or update the agent first.' },
       { status: 400 },
     );
@@ -274,7 +273,7 @@ async function forkToCodex(source: SourceSession, name: string, cutoffId: number
     .orderBy(asc(sessionMessages.id)).all();
   const items = codexItemsFromForkHistory(historyRows);
   if (!items.length) {
-    return NextResponse.json({ error: 'this session has no history to import' }, { status: 400 });
+    return Response.json({ error: 'this session has no history to import' }, { status: 400 });
   }
 
   // Reserve the id so every failure path can remove the half-created Charon
@@ -312,7 +311,7 @@ async function forkToCodex(source: SourceSession, name: string, cutoffId: number
     await sendReplacement(newId, replacementPrompt);
     emitGlobalSessionListChanged(newId);
     const [row] = db.select().from(agentSessions).where(eq(agentSessions.id, newId)).all();
-    return NextResponse.json({
+    return Response.json({
       ok: true,
       session: row,
       forkedFrom: source.id,
@@ -325,7 +324,7 @@ async function forkToCodex(source: SourceSession, name: string, cutoffId: number
     try { await deleteSession(newId); } catch {}
     const msg = String(e?.message || e);
     const unsupported = /-32601|no such method|inject_items|does not support/i.test(msg);
-    return NextResponse.json({
+    return Response.json({
       error: unsupported
         ? 'This VPS agent is too old to fork into Codex. Update the agent first.'
         : msg,
@@ -370,10 +369,10 @@ async function forkCodexNative(source: SourceSession, name: string, lastTurnId?:
     }
     emitGlobalSessionListChanged(newId);
     const [row] = db.select().from(agentSessions).where(eq(agentSessions.id, newId)).all();
-    return NextResponse.json({ ok: true, session: { ...row, providerConfig: undefined, accountProfile: accountProfileId(row?.providerConfig), accountProfileNumber: accountProfileNumber(row?.providerConfig) },
+    return Response.json({ ok: true, session: { ...row, providerConfig: undefined, accountProfile: accountProfileId(row?.providerConfig), accountProfileNumber: accountProfileNumber(row?.providerConfig) },
       forkedFrom: source.id, copied, started });
   } catch (e: any) {
-    return NextResponse.json({ error: String(e?.message || e) }, { status: 400 });
+    return Response.json({ error: String(e?.message || e) }, { status: 400 });
   }
 }
 
@@ -401,7 +400,7 @@ async function forkViaHandoff(source: SourceSession, name: string,
   }).from(sessionMessages).where(and(...filters))
     .orderBy(asc(sessionMessages.id)).all();
   if (!rows.length) {
-    return NextResponse.json({ error: 'this session has no history to import' }, { status: 400 });
+    return Response.json({ error: 'this session has no history to import' }, { status: 400 });
   }
 
   const transcript = rows.map((row, i) =>
@@ -424,11 +423,11 @@ async function forkViaHandoff(source: SourceSession, name: string,
   const paths = chunks.map((_, i) => `${CHARON_FORK_DIR}/${newId}-${i + 1}.md`);
   // fs_write creates no parents: the folder (and its git exclusion) comes first.
   const host = db.select().from(vpsTable).where(eq(vpsTable.id, source.vpsId)).get();
-  if (!host) return NextResponse.json({ error: 'vps not found' }, { status: 404 });
+  if (!host) return Response.json({ error: 'vps not found' }, { status: 404 });
   const prepared = await sshExec(host, charonDirCommand(source.cwd.replace(/\/+$/, ''), CHARON_FORK_DIR));
   if (!prepared.ok) {
     const detail = (prepared.stderr || '').trim().split('\n').slice(-2).join(' ').slice(0, 300);
-    return NextResponse.json({ error: `could not create ${CHARON_FORK_DIR}/${detail ? ': ' + detail : ''}` }, { status: 400 });
+    return Response.json({ error: `could not create ${CHARON_FORK_DIR}/${detail ? ': ' + detail : ''}` }, { status: 400 });
   }
   try {
     const stream = await startNewSession({
@@ -460,13 +459,13 @@ async function forkViaHandoff(source: SourceSession, name: string,
 
     emitGlobalSessionListChanged(newId);
     const [row] = db.select().from(agentSessions).where(eq(agentSessions.id, newId)).all();
-    return NextResponse.json({
+    return Response.json({
       ok: true, session: row, forkedFrom: source.id, copied,
       importedMessages: rows.length, fragments: paths.length, started: true,
     });
   } catch (e: any) {
     try { await deleteSession(newId); } catch {}
-    return NextResponse.json({ error: String(e?.message || e) }, { status: 400 });
+    return Response.json({ error: String(e?.message || e) }, { status: 400 });
   }
 }
 
@@ -475,7 +474,7 @@ export async function GET(_req: Request, { params }: { params: Promise<{ id: str
   if (auth instanceof Response) return auth;
   const { id } = await params;
   const [source] = db.select().from(agentSessions).where(eq(agentSessions.id, id)).all();
-  if (!source) return NextResponse.json({ error: 'session not found' }, { status: 404 });
+  if (!source) return Response.json({ error: 'session not found' }, { status: 404 });
   const users = db.select({ id: sessionMessages.id, content: sessionMessages.content,
     createdAt: sessionMessages.createdAt })
     .from(sessionMessages).where(and(eq(sessionMessages.sessionId, id),
@@ -486,7 +485,7 @@ export async function GET(_req: Request, { params }: { params: Promise<{ id: str
   const forkPointsRpc = PROVIDERS[asSessionProvider(source.kind)].nativeRpc.forkPoints;
   if (forkPointsRpc) {
     const native = await callSessionRpc(id, forkPointsRpc as AgentMethodName);
-    if (!native?.ok) return NextResponse.json(native, { status: native?.reason === 'unsupported' ? 501 : 400 });
+    if (!native?.ok) return Response.json(native, { status: native?.reason === 'unsupported' ? 501 : 400 });
     const points = (Array.isArray(native.points) ? native.points : []).map((point: any, index: number) => {
       const nextUser = users[index + 1]?.id ?? Number.MAX_SAFE_INTEGER;
       const answer = assistantRows.filter((row) => row.id > (users[index]?.id ?? 0) && row.id < nextUser).at(-1);
@@ -497,7 +496,7 @@ export async function GET(_req: Request, { params }: { params: Promise<{ id: str
       createdAt: users[index]?.createdAt ?? point.started_at ?? 0,
       };
     });
-    return NextResponse.json({ ok: true, points });
+    return Response.json({ ok: true, points });
   }
   const points = users.map((user, index) => {
     const nextUser = users[index + 1]?.id ?? Number.MAX_SAFE_INTEGER;
@@ -506,7 +505,7 @@ export async function GET(_req: Request, { params }: { params: Promise<{ id: str
     return { turnId: answer?.cliUuid ?? null, previousTurnId: previous?.cliUuid ?? null,
       prompt: user.content, messageId: user.id, cutoffId: answer?.id ?? user.id, createdAt: user.createdAt };
   }).filter((point) => point.turnId);
-  return NextResponse.json({ ok: true, points });
+  return Response.json({ ok: true, points });
 }
 
 /** Arguments every transport receives; each uses the subset it can honour
@@ -566,9 +565,9 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
   if (auth instanceof Response) return auth;
   const { id } = await params;
   const [source] = db.select().from(agentSessions).where(eq(agentSessions.id, id)).all();
-  if (!source) return NextResponse.json({ error: 'session not found' }, { status: 404 });
+  if (!source) return Response.json({ error: 'session not found' }, { status: 404 });
   if (!source.nativeSessionId) {
-    return NextResponse.json(
+    return Response.json(
       { error: 'this session has no transcript yet — send a message first' },
       { status: 400 },
     );
@@ -576,7 +575,7 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
 
   const body = await req.json().catch(() => ({}));
   if (body?.targetKind != null && !isSessionProvider(body.targetKind)) {
-    return NextResponse.json(
+    return Response.json(
       { error: `targetKind must be one of: ${SESSION_PROVIDERS.join(', ')}` },
       { status: 400 },
     );
@@ -586,11 +585,11 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
   const upToMessageId = typeof body?.upToMessageId === 'string' ? body.upToMessageId : undefined;
   const requestedCutoff = body?.cutoffMessageId == null ? null : numericCutoff(id, body.cutoffMessageId);
   if (body?.cutoffMessageId != null && requestedCutoff == null) {
-    return NextResponse.json({ error: 'invalid transcript cutoff' }, { status: 400 });
+    return Response.json({ error: 'invalid transcript cutoff' }, { status: 400 });
   }
   const cutoffId = requestedCutoff ?? forkCutoff(id, upToMessageId);
   if (upToMessageId && cutoffId == null) {
-    return NextResponse.json({ error: 'that message is not in this transcript' }, { status: 400 });
+    return Response.json({ error: 'that message is not in this transcript' }, { status: 400 });
   }
   const name = typeof body?.name === 'string' && body.name.trim()
     ? body.name.trim()
@@ -616,5 +615,5 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
     return FORK_TRANSPORTS[asSessionProvider(source.kind)][targetKind]({
       source: projected, name, lastTurnId, upToMessageId, cutoffId, replacementPrompt,
     });
-  } catch (e) { return NextResponse.json({ error: (e as Error).message }, { status: 400 }); }
+  } catch (e) { return Response.json({ error: (e as Error).message }, { status: 400 }); }
 }

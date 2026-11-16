@@ -1,6 +1,6 @@
 'use client';
 import { useEffect } from 'react';
-import { useRouter } from 'next/navigation';
+import { useRouter } from '@/app/navigation';
 
 // Listens for `open-session` messages sent by the service worker (sw.js)
 // when the user clicks a push notification. We do the routing here, at

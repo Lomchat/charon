@@ -6,7 +6,7 @@
 //   1. Creates an isolated temp SQLite DB, runs the Drizzle migrations
 //      against it, then seeds 100% FICTITIOUS data (reusing the demo seeder).
 //   2. Spawns the Charon hub as a child process on a TEST PORT, reusing the
-//      existing `.next` production build, with autoconnect disabled.
+//      existing production build (dist/), with autoconnect disabled.
 //   3. Drives a headless Chromium (Playwright) authenticated via the seeded
 //      session cookie and ASSERTS the core flows render (login/auth,
 //      dashboard, session view, add-VPS, shell entry).
@@ -115,9 +115,9 @@ async function main() {
   log('→ seeding fictitious data');
   runNode(['scripts/demo-seed.mjs'], 'demo-seed');
 
-  // 2) spawn the hub on the test port, reusing .next
-  if (!existsSync(join(REPO, '.next', 'BUILD_ID'))) {
-    throw new Error('.next/BUILD_ID missing — run `npm run build` first');
+  // 2) spawn the hub on the test port, reusing dist/
+  if (!existsSync(join(REPO, 'dist', 'client', 'BUILD_ID'))) {
+    throw new Error('dist/client/BUILD_ID missing — run `npm run build` first');
   }
   log(`→ starting hub on ${BASE} (NODE_ENV=production, autoconnect off)`);
   hub = spawn('node', ['server.js'], {

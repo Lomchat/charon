@@ -1,6 +1,6 @@
 'use client';
 import { useEffect, useState } from 'react';
-import dynamic from 'next/dynamic';
+import dynamic from '@/app/dynamic';
 import { api } from '@/lib/api';
 import type { ByteViewerProps } from './fileViews';
 

@@ -1,4 +1,3 @@
-import { NextResponse } from 'next/server';
 import { eq } from 'drizzle-orm';
 import { db, agentSessions } from '@/lib/db';
 import { requireApiSession } from '@/lib/server/session';
@@ -33,10 +32,10 @@ export async function GET(req: Request, { params }: { params: Promise<{ id: stri
   if (auth instanceof Response) return auth;
   const { id } = await params;
   const row = await rowFor(id);
-  if (!row) return NextResponse.json({ error: 'session not found' }, { status: 404 });
+  if (!row) return Response.json({ error: 'session not found' }, { status: 404 });
   const force = new URL(req.url).searchParams.get('force') === '1';
   try {
-    return NextResponse.json(readSessionInsightSnapshot(
+    return Response.json(readSessionInsightSnapshot(
       id,
       'resources',
       async () => browserSessionResources(await listResources(id, row.kind, force)),
@@ -44,7 +43,7 @@ export async function GET(req: Request, { params }: { params: Promise<{ id: stri
     ));
   } catch (error: any) {
     const message = String(error?.message || error);
-    return NextResponse.json({ ok: false, error: message, reason: /-32601/.test(message) ? 'unsupported' : undefined });
+    return Response.json({ ok: false, error: message, reason: /-32601/.test(message) ? 'unsupported' : undefined });
   }
 }
 
@@ -53,19 +52,19 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
   if (auth instanceof Response) return auth;
   const { id } = await params;
   const row = await rowFor(id);
-  if (!row) return NextResponse.json({ error: 'session not found' }, { status: 404 });
+  if (!row) return Response.json({ error: 'session not found' }, { status: 404 });
   const body = await req.json().catch(() => ({}));
   const name = typeof body?.name === 'string' ? body.name.trim().slice(0, 256) : '';
   const path = typeof body?.path === 'string' ? body.path.trim().slice(0, 8192) : '';
   if (typeof body?.enabled !== 'boolean' || (!name && !path)) {
-    return NextResponse.json({ error: 'name/path and enabled required' }, { status: 400 });
+    return Response.json({ error: 'name/path and enabled required' }, { status: 400 });
   }
 
   if (row.kind === 'codex') {
-    if (!path) return NextResponse.json({ error: 'skill path required' }, { status: 400 });
+    if (!path) return Response.json({ error: 'skill path required' }, { status: 400 });
     const result = await callSessionRpc(id, 'set_codex_skill', { path, enabled: body.enabled });
     invalidateSessionInsightSnapshot(id, 'resources');
-    return NextResponse.json(result, { status: result?.ok ? 200 : result?.reason === 'unsupported' ? 501 : 400 });
+    return Response.json(result, { status: result?.ok ? 200 : result?.reason === 'unsupported' ? 501 : 400 });
   }
 
   try {
@@ -76,7 +75,7 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
       .map((skill) => skill.name).filter((value): value is string => !!value);
     const target = name || (inventory.skills ?? []).find((skill: any) => skill.path === path)?.name || '';
     if (!target || !discovered.includes(target)) {
-      return NextResponse.json({ error: 'skill is no longer available' }, { status: 409 });
+      return Response.json({ error: 'skill is no longer available' }, { status: 409 });
     }
     const current = (parseProviderConfig(row.providerConfig) ?? {}) as ClaudeSessionConfig;
     const selected = new Set(
@@ -99,8 +98,8 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
       }
     }
     invalidateSessionInsightSnapshot(id, 'resources');
-    return NextResponse.json({ ok: true, enabled: body.enabled, applied, warning });
+    return Response.json({ ok: true, enabled: body.enabled, applied, warning });
   } catch (error: any) {
-    return NextResponse.json({ error: String(error?.message || error) }, { status: 400 });
+    return Response.json({ error: String(error?.message || error) }, { status: 400 });
   }
 }

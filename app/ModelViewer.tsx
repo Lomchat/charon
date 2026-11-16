@@ -16,7 +16,7 @@ import {
 } from './modelViewerHelpers';
 
 // The 3D model pane (§14.112): glTF/GLB, STL, OBJ and PLY, orbit/pan/zoom.
-// Lazy twice over: this module is a next/dynamic chunk, and three.js with
+// Lazy twice over: this module is a lazy chunk (app/dynamic.tsx), and three.js with
 // its loaders (~700KB) is imported only once a model is actually opened.
 // Frames are drawn ON DEMAND — a moved camera, a resize, a new model, or the
 // auto-rotation — never a standing 60 fps loop, and nothing at all while the

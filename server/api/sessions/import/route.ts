@@ -1,5 +1,4 @@
 import { requireAccountProfile, accountProfileDirectory } from '@/lib/server/agent/accountProfiles';
-import { NextResponse } from 'next/server';
 import { eq } from 'drizzle-orm';
 import { db, vps as vpsTable, sessionMessages, sessionLogs } from '@/lib/db';
 import { requireApiSession } from '@/lib/server/session';
@@ -49,12 +48,12 @@ export async function POST(req: Request) {
   const nativeSessionId = String(body.nativeSessionId ?? body.claudeSessionId ?? '').trim();
   const cwd = String(body.cwd ?? '').trim();
   if (!vpsId || !nativeSessionId || !cwd) {
-    return NextResponse.json({ error: 'vpsId, nativeSessionId, cwd required' }, { status: 400 });
+    return Response.json({ error: 'vpsId, nativeSessionId, cwd required' }, { status: 400 });
   }
   const kind = asSessionProvider(body.kind);
 
   const [v] = db.select().from(vpsTable).where(eq(vpsTable.id, vpsId)).all();
-  if (!v) return NextResponse.json({ error: 'vps not found' }, { status: 404 });
+  if (!v) return Response.json({ error: 'vps not found' }, { status: 404 });
 
   try {
     const profile = requireAccountProfile(vpsId, kind, body.accountProfile);
@@ -111,12 +110,12 @@ export async function POST(req: Request) {
       }).run();
     }
 
-    return NextResponse.json({
+    return Response.json({
       id,
       messagesImported: importedCount,
       importError,
     });
   } catch (e: any) {
-    return NextResponse.json({ error: e?.message ?? String(e) }, { status: 500 });
+    return Response.json({ error: e?.message ?? String(e) }, { status: 500 });
   }
 }

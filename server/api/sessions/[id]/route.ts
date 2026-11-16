@@ -2,7 +2,6 @@ import { ultracodeOf } from '@/lib/providerConfigFlags';
 import { accountProfileId, accountProfileNumber } from '@/lib/accountProfiles';
 import { publicConnection } from '@/lib/server/customEndpoints';
 import { sessionTokenUsage } from '@/lib/server/agent/sessionTokenUsage';
-import { NextResponse } from 'next/server';
 import { and, asc, desc, eq, gt, gte, lt, lte, notInArray, sql } from 'drizzle-orm';
 import {
   db, agentSessions, sessionMessages,
@@ -172,7 +171,7 @@ export async function GET(req: Request, { params }: { params: Promise<{ id: stri
   // be ≤ this snapshot's `sync`. Delta mode too: it serves `streamingText`.
   peekStream(id)?.flushLiveBroadcasts();
   const [row] = db.select().from(agentSessions).where(eq(agentSessions.id, id)).all();
-  if (!row) return NextResponse.json({ error: 'not found' }, { status: 404 });
+  if (!row) return Response.json({ error: 'not found' }, { status: 404 });
   // Delta mode is legacy-only and always full (§3.5 of the sync refonte).
   const view: TranscriptView = since == null && url.searchParams.get('view') === 'conversation'
     ? 'conversation' : 'full';
@@ -224,7 +223,7 @@ export async function GET(req: Request, { params }: { params: Promise<{ id: stri
     // token fold, expiry sweep, pendings, max(id), bg registry — belongs to
     // the window and the delta poll.
     const page: AgentSessionMessageWindow = { messages, hasMore, oldestChatId, sync: currentRev() };
-    const response = NextResponse.json(page);
+    const response = Response.json(page);
     response.headers.set('server-timing', `message-window;dur=${windowMs.toFixed(1)}, session-total;dur=${(performance.now() - perfStarted).toFixed(1)}`);
     return response;
   }
@@ -295,7 +294,7 @@ export async function GET(req: Request, { params }: { params: Promise<{ id: stri
     return planFallback;
   };
 
-  const response = NextResponse.json({
+  const response = Response.json({
     // Window mode only: the legacy delta poll's envelope stays as it was.
     ...(since == null ? { view, toolCallCount: countToolCalls(id) } : {}),
     // The session's cross-session fact as the list/SSE carry it (§14.108);
@@ -392,7 +391,7 @@ export async function GET(req: Request, { params }: { params: Promise<{ id: stri
     // 5s poll retries on its own.
     // eslint-disable-next-line no-console
     console.error(`[api/sessions/${id} GET] failed:`, e?.stack ?? e);
-    return NextResponse.json({ error: e?.message ?? String(e) }, { status: 503 });
+    return Response.json({ error: e?.message ?? String(e) }, { status: 503 });
   }
   });
 }
@@ -415,24 +414,24 @@ export async function PATCH(req: Request, { params }: { params: Promise<{ id: st
   if ('handle' in body) {
     const handle = normalizeSessionHandle(body.handle);
     if (!handle) {
-      return NextResponse.json({ error: 'a valid session handle is required' }, { status: 400 });
+      return Response.json({ error: 'a valid session handle is required' }, { status: 400 });
     }
     update.handle = handle;
   }
   if (Object.keys(update).length === 0) {
     const [row] = db.select().from(agentSessions).where(eq(agentSessions.id, id)).all();
-    return NextResponse.json(row ?? null);
+    return Response.json(row ?? null);
   }
 
   const [before] = db.select().from(agentSessions).where(eq(agentSessions.id, id)).all();
-  if (!before) return NextResponse.json({ error: 'session not found' }, { status: 404 });
+  if (!before) return Response.json({ error: 'session not found' }, { status: 404 });
   if (typeof update.handle === 'string' && update.handle !== before.handle) {
     const conflict = db.select({ id: agentSessions.id }).from(agentSessions).where(and(
       eq(agentSessions.vpsId, before.vpsId),
       eq(agentSessions.handle, update.handle),
     )).get();
     if (conflict && conflict.id !== id) {
-      return NextResponse.json({ error: `@${update.handle} is already used on this VPS` }, { status: 409 });
+      return Response.json({ error: `@${update.handle} is already used on this VPS` }, { status: 409 });
     }
   }
 
@@ -440,7 +439,7 @@ export async function PATCH(req: Request, { params }: { params: Promise<{ id: st
     db.update(agentSessions).set(update).where(eq(agentSessions.id, id)).run();
   } catch (e) {
     if (typeof update.handle === 'string' && /unique/i.test(String(e))) {
-      return NextResponse.json({ error: `@${update.handle} is already used on this VPS` }, { status: 409 });
+      return Response.json({ error: `@${update.handle} is already used on this VPS` }, { status: 409 });
     }
     throw e;
   }
@@ -484,7 +483,7 @@ export async function PATCH(req: Request, { params }: { params: Promise<{ id: st
 
   const publicRow = { ...row, providerConfig: undefined, goalJson: undefined, ultracode: ultracodeOf(row.providerConfig), accountProfile: accountProfileId(row.providerConfig), accountProfileNumber: accountProfileNumber(row.providerConfig), endpoint: publicConnection(row.providerConfig) };
   const sync = syncAfter([id]);
-  return NextResponse.json({ ...publicRow, sync });
+  return Response.json({ ...publicRow, sync });
 }
 
 // DELETE /api/sessions/[id]
@@ -500,9 +499,9 @@ export async function DELETE(_req: Request, { params }: { params: Promise<{ id: 
   try {
     await deleteSession(id);
     // deleteSession published `session_summary{null}` synchronously.
-    return NextResponse.json({ ok: true, sync: syncAfter([id]) });
+    return Response.json({ ok: true, sync: syncAfter([id]) });
   } catch (e: any) {
-    return NextResponse.json({ error: e?.message ?? String(e) }, { status: 500 });
+    return Response.json({ error: e?.message ?? String(e) }, { status: 500 });
   }
 }
 

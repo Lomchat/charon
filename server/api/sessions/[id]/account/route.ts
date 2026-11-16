@@ -1,4 +1,3 @@
-import { NextResponse } from 'next/server';
 import { requireApiSession } from '@/lib/server/session';
 import { syncAfter } from '@/lib/server/sync/sessionSummaries';
 import { switchSessionAccount } from '@/lib/server/accounts/migration';
@@ -12,9 +11,9 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
     const { accountId } = await req.json();
     if (typeof accountId !== 'string') throw new Error('Account required');
     const result = await switchSessionAccount(id, accountId);
-    return NextResponse.json({ ok: true, ...result, sync: syncAfter([id]) });
+    return Response.json({ ok: true, ...result, sync: syncAfter([id]) });
   } catch (e) {
     const status = (e as { status?: number }).status ?? 400;
-    return NextResponse.json({ error: (e as Error).message }, { status });
+    return Response.json({ error: (e as Error).message }, { status });
   }
 }

@@ -1,4 +1,3 @@
-import { NextResponse } from 'next/server';
 import { requireApiSession } from '@/lib/server/session';
 import { sendTestMessage, startTelegramBot } from '@/lib/server/hub/telegram';
 
@@ -10,6 +9,6 @@ export async function POST() {
   // Make sure polling is started after a config update
   startTelegramBot();
   const r = await sendTestMessage();
-  if (!r.ok) return NextResponse.json({ ok: false, error: r.error }, { status: 400 });
-  return NextResponse.json({ ok: true });
+  if (!r.ok) return Response.json({ ok: false, error: r.error }, { status: 400 });
+  return Response.json({ ok: true });
 }

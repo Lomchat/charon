@@ -55,7 +55,7 @@ describe('API router', () => {
     const table = fs.readFileSync(path.join(root, 'server/apiRoutes.generated.ts'), 'utf8');
     const listed = [...table.matchAll(/\{ file: "([^"]+)"/g)].map((m) => m[1]).sort();
     expect(listed).toEqual(onDisk);
-    // A route left under app/api would be served by Next, around the router.
-    expect(walk(path.join(root, 'app/api')).map((f) => path.relative(root, f))).toEqual(['app/api/[...path]/route.ts']);
+    // A route file anywhere else would simply never be served.
+    expect(walk(path.join(root, 'app'))).toEqual([]);
   });
 });

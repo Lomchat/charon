@@ -1,4 +1,3 @@
-import { NextResponse } from 'next/server';
 import { eq } from 'drizzle-orm';
 import { db, vps as vpsTable } from '@/lib/db';
 import type { Vps } from '@/lib/db/schema';
@@ -50,7 +49,7 @@ export async function POST(_req: Request, { params }: { params: Promise<{ id: st
   if (s instanceof Response) return s;
   const { id } = await params;
   const [v] = db.select().from(vpsTable).where(eq(vpsTable.id, id)).all();
-  if (!v) return NextResponse.json({ error: 'vps not found' }, { status: 404 });
+  if (!v) return Response.json({ error: 'vps not found' }, { status: 404 });
 
   const ok = (client: AgentClient) => {
     // This recreated client object lost autoConnect's onStatus hook. Re-arm the
@@ -59,7 +58,7 @@ export async function POST(_req: Request, { params }: { params: Promise<{ id: st
     // manual refresh also un-freezes any session stranded on the dead client.
     // cf. CLAUDE.md §14.51.
     armAgentClientHooks(client, v.id);
-    return NextResponse.json({
+    return Response.json({
       ok: true,
       agentStatus: 'ok' as const,
       agentVersion: client.hello?.agent_version ?? null,
@@ -92,7 +91,7 @@ export async function POST(_req: Request, { params }: { params: Promise<{ id: st
     if (result.ok) {
       // The flow persisted + published the versions and re-armed the pool's
       // client (§14.51): only the verdict is left to answer.
-      return NextResponse.json({
+      return Response.json({
         ok: true,
         agentStatus: 'ok' as const,
         agentVersion: result.newVersion ?? null,
@@ -130,7 +129,7 @@ export async function POST(_req: Request, { params }: { params: Promise<{ id: st
   // F5. Status+reason only — no version keys, so the no-clobber contract
   // leaves whatever version we last knew intact.
   try { emitGlobalVpsStatus(v.id, status as 'ok' | 'missing' | 'error', { agentLastError: lastError }); } catch {}
-  return NextResponse.json({
+  return Response.json({
     ok: false,
     agentStatus: status,
     agentLastError: lastError,

@@ -1,5 +1,4 @@
 import { requireAccountProfile, accountProfileDirectory } from '@/lib/server/agent/accountProfiles';
-import { NextResponse } from 'next/server';
 import { eq } from 'drizzle-orm';
 import { db, vps } from '@/lib/db';
 import { requireApiSession } from '@/lib/server/session';
@@ -128,14 +127,14 @@ export async function GET(req: Request, { params }: { params: Promise<{ id: stri
   if (s instanceof Response) return s;
   const { id } = await params;
   const [v] = db.select().from(vps).where(eq(vps.id, id)).all();
-  if (!v) return NextResponse.json({ error: 'vps not found' }, { status: 404 });
+  if (!v) return Response.json({ error: 'vps not found' }, { status: 404 });
   const profile = new URL(req.url).searchParams.get('profile') ?? 'default';
   let profileDir: string | undefined;
   try {
     requireAccountProfile(id, 'claude', profile);
     if (profile !== 'default') profileDir = await accountProfileDirectory(id, 'claude', profile);
     if (profile !== 'default' && !profileDir) throw new Error('Account profile directory unavailable');
-  } catch (e) { return NextResponse.json({ error: (e as Error).message }, { status: 400 }); }
+  } catch (e) { return Response.json({ error: (e as Error).message }, { status: 400 }); }
 
 
   // The scan also works on python3.9 (no 3.10+ syntax used).
@@ -144,11 +143,11 @@ export async function GET(req: Request, { params }: { params: Promise<{ id: stri
     `"$PY" -${profileDir ? ` ${shQuote(profileDir)}` : ""}`;
   const r = await sshExec(v, cmd, { stdin: SCAN_PY, timeoutMs: 30_000 });
   if (!r.ok) {
-    return NextResponse.json({ error: 'ssh failed', stderr: r.stderr.slice(-400), stdout: r.stdout.slice(-400) }, { status: 500 });
+    return Response.json({ error: 'ssh failed', stderr: r.stderr.slice(-400), stdout: r.stdout.slice(-400) }, { status: 500 });
   }
   let parsed: any[] = [];
   try { parsed = JSON.parse(r.stdout.trim()); } catch (e) {
-    return NextResponse.json({ error: 'bad json from VPS', stdout: r.stdout.slice(-400) }, { status: 500 });
+    return Response.json({ error: 'bad json from VPS', stdout: r.stdout.slice(-400) }, { status: 500 });
   }
-  return NextResponse.json({ sessions: parsed });
+  return Response.json({ sessions: parsed });
 }

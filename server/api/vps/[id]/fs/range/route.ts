@@ -1,4 +1,3 @@
-import { NextResponse } from 'next/server';
 import { requireApiSession } from '@/lib/server/session';
 import { fileToolCall, rootAndPath } from '@/lib/server/hub/fileToolsRpc';
 
@@ -19,7 +18,7 @@ export async function GET(req: Request, { params }: { params: Promise<{ id: stri
   const offset = Number(url.searchParams.get('offset') ?? 0);
   const length = Number(url.searchParams.get('length') ?? 0);
   if (!at || !Number.isSafeInteger(offset) || !Number.isSafeInteger(length) || length < 0) {
-    return NextResponse.json({ ok: false, error: 'root, path, offset and length are required' }, { status: 400 });
+    return Response.json({ ok: false, error: 'root, path, offset and length are required' }, { status: 400 });
   }
   return fileToolCall(id, 'fs_read_range', { ...at, offset, length });
 }

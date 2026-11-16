@@ -1,4 +1,3 @@
-import { NextResponse } from 'next/server';
 import { eq } from 'drizzle-orm';
 import { agentSessions, db, vps } from '@/lib/db';
 import { requireApiSession } from '@/lib/server/session';
@@ -22,19 +21,19 @@ export async function PATCH(req: Request, { params }: { params: Promise<{ id: st
     if (!(k in body)) continue;
     if (k === 'sshPort') {
       const p = validatePort(body[k]);
-      if (p == null) return NextResponse.json({ error: 'invalid ssh port (1..65535)' }, { status: 400 });
+      if (p == null) return Response.json({ error: 'invalid ssh port (1..65535)' }, { status: 400 });
       update[k] = p;
     } else if (k === 'defaultPath') {
       const p = validateRemotePath(body[k]);
-      if (p === undefined) return NextResponse.json({ error: 'invalid default path' }, { status: 400 });
+      if (p === undefined) return Response.json({ error: 'invalid default path' }, { status: 400 });
       update[k] = p;
     } else if (k === 'ip') {
       const h = validateHost(body[k]);
-      if (!h) return NextResponse.json({ error: 'invalid host/ip' }, { status: 400 });
+      if (!h) return Response.json({ error: 'invalid host/ip' }, { status: 400 });
       update[k] = h;
     } else if (k === 'sshUser') {
       const u = validateSshUser(body[k]);
-      if (!u) return NextResponse.json({ error: 'invalid ssh user' }, { status: 400 });
+      if (!u) return Response.json({ error: 'invalid ssh user' }, { status: 400 });
       update[k] = u;
     } else if (k === 'claudeSettingSources') {
       // Per-BOX Claude settings scope (§14.100). NULL/'' = inherit the hub
@@ -43,18 +42,18 @@ export async function PATCH(req: Request, { params }: { params: Promise<{ id: st
       // keeps 'none' (isolation) apart from '' (inherit).
       let parsed;
       try { parsed = parseSettingSources(body[k]); } catch (e: any) {
-        return NextResponse.json({ error: String(e?.message ?? 'invalid settings sources') }, { status: 400 });
+        return Response.json({ error: String(e?.message ?? 'invalid settings sources') }, { status: 400 });
       }
       update[k] = parsed == null ? null : formatSettingSources(parsed);
     } else {
       const v = String(body[k] ?? '').trim();
-      if (!v || v.length > 120) return NextResponse.json({ error: 'invalid name' }, { status: 400 });
+      if (!v || v.length > 120) return Response.json({ error: 'invalid name' }, { status: 400 });
       update[k] = v;
     }
   }
   if (Object.keys(update).length === 0) {
     const [row] = db.select().from(vps).where(eq(vps.id, id)).all();
-    return NextResponse.json(row ?? null);
+    return Response.json(row ?? null);
   }
   // If we touch credentials/host, drop the client (it will be recreated
   // with the new values on next access).
@@ -68,7 +67,7 @@ export async function PATCH(req: Request, { params }: { params: Promise<{ id: st
   if (credsChanged && row) {
     try { armAgentClientHooks(getAgentClient(row), id); } catch {}
   }
-  return NextResponse.json(row);
+  return Response.json(row);
 }
 
 export async function DELETE(_req: Request, { params }: { params: Promise<{ id: string }> }) {
@@ -105,5 +104,5 @@ export async function DELETE(_req: Request, { params }: { params: Promise<{ id: 
   // `cancelled` per pending gate (G7: the remote kills above may never have
   // reached the agent), one list change — and free the incremental folds (I11).
   deleteVpsSessions(id, () => { db.delete(vps).where(eq(vps.id, id)).run(); });
-  return NextResponse.json({ ok: true });
+  return Response.json({ ok: true });
 }

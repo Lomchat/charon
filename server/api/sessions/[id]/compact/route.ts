@@ -1,4 +1,3 @@
-import { NextResponse } from 'next/server';
 import { eq } from 'drizzle-orm';
 import { db, agentSessions } from '@/lib/db';
 import { requireApiSession } from '@/lib/server/session';
@@ -12,20 +11,20 @@ export async function POST(_req: Request, { params }: { params: Promise<{ id: st
   if (auth instanceof Response) return auth;
   const { id } = await params;
   const [row] = db.select().from(agentSessions).where(eq(agentSessions.id, id)).all();
-  if (!row) return NextResponse.json({ error: 'session not found' }, { status: 404 });
+  if (!row) return Response.json({ error: 'session not found' }, { status: 404 });
   // The capability, not the status: a backend with no compaction primitive had
   // `/compact` delivered to its model as a literal prompt (§14.103).
   const kind = asSessionProvider(row.kind);
   if (!supportsSessionCapability(kind, 'compact')) {
-    return NextResponse.json(
+    return Response.json(
       { error: `${PROVIDERS[kind].label} sessions cannot be compacted` },
       { status: 400 },
     );
   }
   try {
     await getAgentClientForVpsId(row.vpsId).call('compact_session', { session_id: id });
-    return NextResponse.json({ ok: true });
+    return Response.json({ ok: true });
   } catch (e: any) {
-    return NextResponse.json({ error: String(e?.message || e) }, { status: 400 });
+    return Response.json({ error: String(e?.message || e) }, { status: 400 });
   }
 }

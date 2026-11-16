@@ -1,4 +1,3 @@
-import { NextResponse } from 'next/server';
 import { eq, inArray, sql } from 'drizzle-orm';
 import { db, agentSessions, vps as vpsTable } from '@/lib/db';
 import { requireApiSession } from '@/lib/server/session';
@@ -19,7 +18,7 @@ export async function GET(req: Request) {
   if (s instanceof Response) return s;
   const q = String(new URL(req.url).searchParams.get('q') ?? '').trim();
   const ftsQuery = toFtsQuery(q);
-  if (!ftsQuery) return NextResponse.json({ results: [] });
+  if (!ftsQuery) return Response.json({ results: [] });
   const perfStarted = performance.now();
 
   const rows = db.all(sql`
@@ -54,7 +53,7 @@ export async function GET(req: Request) {
     }
   }
 
-  const response = NextResponse.json({
+  const response = Response.json({
     results: rows.map((r) => ({
       messageId: r.id,
       sessionId: r.sessionId,

@@ -1,4 +1,3 @@
-import { NextResponse } from 'next/server';
 import { requireApiSession } from '@/lib/server/session';
 import { retryInstall } from '@/lib/server/install/installSession';
 
@@ -9,6 +8,6 @@ export async function POST(_req: Request, { params }: { params: Promise<{ id: st
   if (s instanceof Response) return s;
   const { id } = await params;
   const inst = retryInstall(id);
-  if (!inst) return NextResponse.json({ error: 'install not found' }, { status: 404 });
-  return NextResponse.json(inst.info());
+  if (!inst) return Response.json({ error: 'install not found' }, { status: 404 });
+  return Response.json(inst.info());
 }

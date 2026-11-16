@@ -1,5 +1,4 @@
 import { accountProfileId } from '@/lib/accountProfiles';
-import { NextResponse } from 'next/server';
 import { eq } from 'drizzle-orm';
 import { db, agentSessions } from '@/lib/db';
 import { requireApiSession } from '@/lib/server/session';
@@ -28,7 +27,7 @@ export async function POST(_req: Request, { params }: { params: Promise<{ id: st
   if (auth instanceof Response) return auth;
   const { id } = await params;
   const row = await rowFor(id);
-  if (!row) return NextResponse.json({ error: 'session not found' }, { status: 404 });
+  if (!row) return Response.json({ error: 'session not found' }, { status: 404 });
   try {
     const client = getAgentClientForVpsId(row.vpsId);
     try {
@@ -73,9 +72,9 @@ export async function POST(_req: Request, { params }: { params: Promise<{ id: st
     emitGlobalSessionListChanged(id);
     // Out of the other agents' `list_sessions` too (§14.118).
     void pushPeerHidden(row.vpsId);
-    return NextResponse.json({ ok: true, archived: true, sync: syncAfter([id]) });
+    return Response.json({ ok: true, archived: true, sync: syncAfter([id]) });
   } catch (e: any) {
-    return NextResponse.json({ error: String(e?.message || e) }, { status: 400 });
+    return Response.json({ error: String(e?.message || e) }, { status: 400 });
   }
 }
 
@@ -84,7 +83,7 @@ export async function DELETE(_req: Request, { params }: { params: Promise<{ id: 
   if (auth instanceof Response) return auth;
   const { id } = await params;
   const row = await rowFor(id);
-  if (!row) return NextResponse.json({ error: 'session not found' }, { status: 404 });
+  if (!row) return Response.json({ error: 'session not found' }, { status: 404 });
   try {
     const kind = asSessionProvider(row.kind);
     const unarchiveRpc = PROVIDERS[kind].nativeRpc.unarchive;
@@ -100,8 +99,8 @@ export async function DELETE(_req: Request, { params }: { params: Promise<{ id: 
     // Back in the list: the provider republishes its summary.
     emitGlobalSessionListChanged(id);
     void pushPeerHidden(row.vpsId);
-    return NextResponse.json({ ok: true, archived: false, sync: syncAfter([id]) });
+    return Response.json({ ok: true, archived: false, sync: syncAfter([id]) });
   } catch (e: any) {
-    return NextResponse.json({ error: String(e?.message || e) }, { status: 400 });
+    return Response.json({ error: String(e?.message || e) }, { status: 400 });
   }
 }

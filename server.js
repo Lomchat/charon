@@ -1,15 +1,15 @@
 /**
- * Custom Next.js server with WebSocket support for persistent shells.
- *
- * Why custom: Next.js App Router doesn't expose raw socket upgrades from
- * route handlers, so a WebSocket endpoint requires wrapping the HTTP
- * server ourselves. Everything else (pages + REST routes) goes through
- * Next's regular request handler.
+ * The hub's process: ONE Node HTTP server.
+ *   - every HTTP request → the Hono app (dist/server/index.cjs, built from
+ *     server/http/: auth gate, pages, API, client build files);
+ *   - `/api/shells/<id>/ws` upgrades → the shell WebSocket bridge below.
+ * Dev (NODE_ENV != production): the UI is served by Vite (hot reload) in
+ * front of the same app (`npm run dev`, scripts/dev.mjs).
  *
  * Architecture for `/api/shells/<id>/ws`:
  *   - Auth: direct SQLite read of the `sessions` table (the cookie value
  *     IS the session id, validated against expires_at; same logic as the
- *     middleware, inlined here because middleware doesn't run on upgrades).
+ *     HTTP gate, inlined here because the gate never sees an Upgrade).
  *   - Per WS connection: spawn its own `ssh ... charon-agent.pyz --connect`
  *     line-delimited JSON-RPC pipe to the agent — but all connections to a
  *     given VPS share one SSH ControlMaster (see sshShared.js), so opening
@@ -27,15 +27,14 @@
  *         · text frame    = JSON control: {type:'resize', cols, rows}
  *     Using binary for the high-volume data path avoids any JSON parse
  *     in the hot loop; control messages stay readable for debugging.
- *
- * Deployment: the systemd unit's ExecStart must point at `node server.js`
- * (replacing `next start`). `next build` is still required first to
- * produce .next/.
  */
+// `.env` for `npm run dev`/`start` by hand; under systemd the unit's
+// EnvironmentFile already set every key, and dotenv never overrides one.
+require('dotenv').config({ quiet: true });
 const { createServer } = require('node:http');
 const { parse } = require('node:url');
 const { spawn } = require('node:child_process');
-const next = require('next');
+const path = require('node:path');
 const { WebSocketServer } = require('ws');
 const Database = require('better-sqlite3');
 
@@ -43,8 +42,6 @@ const dev = process.env.NODE_ENV !== 'production';
 const hostname = process.env.HOST || '127.0.0.1';
 const port = parseInt(process.env.PORT || '10556', 10);
 
-const app = next({ dev, hostname, port });
-const handle = app.getRequestHandler();
 
 // ── DB (auth + shell metadata) ────────────────────────────────────────────
 const dbPath = process.env.DATABASE_URL || './data/charon.db';
@@ -300,8 +297,30 @@ function originAllowed(req) {
   return allowed.has(oHost);
 }
 
-app.prepare().then(() => {
-  const server = createServer((req, res) => handle(req, res, parse(req.url, true)));
+// The HTTP side: the Hono app over the client build (production), or behind
+// Vite's dev middleware (development).
+async function httpListener() {
+  const hub = require('./dist/server/index.cjs');
+  if (!dev) {
+    const clientDir = path.join(__dirname, 'dist', 'client');
+    const app = hub.createHttpApp({
+      templates: hub.prodTemplates(clientDir),
+      clientDir,
+      assetArchiveDir: path.join(__dirname, 'dist', 'assets-archive'),
+    });
+    return { hub, listener: hub.getRequestListener(app.fetch, { overrideGlobalObjects: false }) };
+  }
+  const { createServer: createVite } = await import('vite');
+  const vite = await createVite({ root: __dirname, server: { middlewareMode: true }, appType: 'custom' });
+  const app = hub.createHttpApp({ templates: hub.devTemplates(vite, __dirname), clientDir: null, assetArchiveDir: null });
+  const honoListener = hub.getRequestListener(app.fetch, { overrideGlobalObjects: false });
+  return { hub, listener: (req, res) => vite.middlewares(req, res, () => honoListener(req, res)) };
+}
+
+httpListener().then(({ hub, listener }) => {
+  // BEFORE the first request (§14.45): agents connect at process boot.
+  hub.bootHub();
+  const server = createServer(listener);
   // maxPayload (P0.5): inbound frames are keystrokes + tiny JSON control —
   // 1 MiB is generous (a huge clipboard paste) and bounds a hostile frame.
   const wss = new WebSocketServer({ noServer: true, maxPayload: 1024 * 1024 });

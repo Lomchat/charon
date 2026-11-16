@@ -1,4 +1,3 @@
-import { NextResponse } from 'next/server';
 import { requireApiSession } from '@/lib/server/session';
 import { getInstall, stopInstall } from '@/lib/server/install/installSession';
 
@@ -8,8 +7,8 @@ export async function GET(_req: Request, { params }: { params: Promise<{ id: str
   if (s instanceof Response) return s;
   const { id } = await params;
   const inst = getInstall(id);
-  if (!inst) return NextResponse.json({ error: 'install not found' }, { status: 404 });
-  return NextResponse.json(inst.info());
+  if (!inst) return Response.json({ error: 'install not found' }, { status: 404 });
+  return Response.json(inst.info());
 }
 
 // DELETE /api/installs/[id] → closes the install session (removes from pool).
@@ -20,5 +19,5 @@ export async function DELETE(_req: Request, { params }: { params: Promise<{ id: 
   if (s instanceof Response) return s;
   const { id } = await params;
   const ok = stopInstall(id);
-  return NextResponse.json({ ok });
+  return Response.json({ ok });
 }

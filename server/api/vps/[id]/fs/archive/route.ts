@@ -1,4 +1,3 @@
-import { NextResponse } from 'next/server';
 import { requireApiSession } from '@/lib/server/session';
 import { fileToolCall, rootAndPath } from '@/lib/server/hub/fileToolsRpc';
 import { invalidateGitStatus } from '@/lib/server/hub/git';
@@ -17,14 +16,14 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
   const { id } = await params;
   let body: Record<string, unknown>;
   try { body = await req.json(); } catch {
-    return NextResponse.json({ ok: false, error: 'invalid body' }, { status: 400 });
+    return Response.json({ ok: false, error: 'invalid body' }, { status: 400 });
   }
   const at = rootAndPath(body);
-  if (!at) return NextResponse.json({ ok: false, error: 'root and path are required' }, { status: 400 });
+  if (!at) return Response.json({ ok: false, error: 'root and path are required' }, { status: 400 });
   if (body.op === 'list') return fileToolCall(id, 'archive_list', at);
   if (body.op === 'read') {
     if (typeof body.member !== 'string') {
-      return NextResponse.json({ ok: false, error: 'member is required' }, { status: 400 });
+      return Response.json({ ok: false, error: 'member is required' }, { status: 400 });
     }
     return fileToolCall(id, 'archive_read', { ...at, member: body.member });
   }
@@ -34,5 +33,5 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
     invalidateGitStatus(id, at.root);
     return res;
   }
-  return NextResponse.json({ ok: false, error: 'op must be list, read or extract' }, { status: 400 });
+  return Response.json({ ok: false, error: 'op must be list, read or extract' }, { status: 400 });
 }

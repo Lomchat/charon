@@ -3,10 +3,10 @@
 import { useEffect } from 'react';
 import { isChunkLoadError, reloadOnceForChunkError } from './chunkReload';
 
-// Route-segment error boundary (§14.57). Catches render errors in the app shell
-// (HubPanel, Sidebar, TabBar, modals) that fall OUTSIDE SessionErrorBoundary,
-// so a bad render recovers here instead of white-screening to global-error.
-// On a stale-chunk error, reload onto the fresh build; otherwise offer reset.
+// What THE page error boundary shows (§14.57, web/mount.tsx): render errors in
+// the app shell (HubPanel, Sidebar, TabBar, modals) that fall outside
+// SessionErrorBoundary. On a stale-chunk error, reload onto the fresh build;
+// otherwise offer reset.
 export default function AppError({
   error,
   reset,
@@ -25,8 +25,7 @@ export default function AppError({
         minHeight: '100vh',
         display: 'grid',
         placeItems: 'center',
-        // This boundary renders INSIDE the root layout, so the theme tokens
-        // are available (global-error.tsx replaces <html> and cannot use them).
+        // The theme tokens come from <html data-theme> (server-rendered).
         background: 'var(--bg)',
         color: 'var(--text)',
         fontFamily: 'var(--body)',

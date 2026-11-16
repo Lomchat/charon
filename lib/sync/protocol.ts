@@ -16,7 +16,7 @@ import type { VpsRuntimeSnapshot } from '@/lib/types/api';
 
 /** The `sync` field of HTTP responses: the bus revision the response reflects. */
 export type SyncStamp = SyncRev;
-/** `.next/BUILD_ID`, `'development'` in dev. */
+/** `dist/client/BUILD_ID`, `'development'` in dev. */
 export type BuildId = string;
 
 export type SyncControlFrame =

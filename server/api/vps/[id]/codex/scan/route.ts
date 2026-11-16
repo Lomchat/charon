@@ -1,5 +1,4 @@
 import { requireAccountProfile, accountProfileDirectory } from '@/lib/server/agent/accountProfiles';
-import { NextResponse } from 'next/server';
 import { eq } from 'drizzle-orm';
 import { db, vps } from '@/lib/db';
 import { requireApiSession } from '@/lib/server/session';
@@ -236,14 +235,14 @@ export async function GET(req: Request, { params }: { params: Promise<{ id: stri
   const { id } = await params;
   const archived = new URL(req.url).searchParams.get('archived') === '1';
   const [v] = db.select().from(vps).where(eq(vps.id, id)).all();
-  if (!v) return NextResponse.json({ error: 'vps not found' }, { status: 404 });
+  if (!v) return Response.json({ error: 'vps not found' }, { status: 404 });
   const profile = new URL(req.url).searchParams.get('profile') ?? 'default';
   let profileDir: string | undefined;
   try {
     requireAccountProfile(id, 'codex', profile);
     if (profile !== 'default') profileDir = await accountProfileDirectory(id, 'codex', profile);
     if (profile !== 'default' && !profileDir) throw new Error('Account profile directory unavailable');
-  } catch (e) { return NextResponse.json({ error: (e as Error).message }, { status: 400 }); }
+  } catch (e) { return Response.json({ error: (e as Error).message }, { status: 400 }); }
 
 
   try {
@@ -252,7 +251,7 @@ export async function GET(req: Request, { params }: { params: Promise<{ id: stri
       sessions?: unknown[];
     };
     if (result?.ok && Array.isArray(result.sessions)) {
-      return NextResponse.json({ sessions: result.sessions });
+      return Response.json({ sessions: result.sessions });
     }
   } catch {
     // Old/offline agent or SDK unable to start: fall through to disk scan.
@@ -260,18 +259,18 @@ export async function GET(req: Request, { params }: { params: Promise<{ id: stri
 
   // Rollout files don't carry the state-db archive bit. Returning every
   // rollout here would label active threads as archived, so degrade honestly.
-  if (archived) return NextResponse.json({ sessions: [], archivedUnavailable: true });
+  if (archived) return Response.json({ sessions: [], archivedUnavailable: true });
 
   const cmd =
     `PY=$(command -v python3.13 || command -v python3.12 || command -v python3.11 || command -v python3.10 || command -v python3); ` +
     `"$PY" -${profileDir ? ` ${shQuote(profileDir)}` : ""}`;
   const r = await sshExec(v, cmd, { stdin: SCAN_PY, timeoutMs: 45_000 });
   if (!r.ok) {
-    return NextResponse.json({ error: 'ssh failed', stderr: r.stderr.slice(-400), stdout: r.stdout.slice(-400) }, { status: 500 });
+    return Response.json({ error: 'ssh failed', stderr: r.stderr.slice(-400), stdout: r.stdout.slice(-400) }, { status: 500 });
   }
   let parsed: any[] = [];
   try { parsed = JSON.parse(r.stdout.trim()); } catch {
-    return NextResponse.json({ error: 'bad json from VPS', stdout: r.stdout.slice(-400) }, { status: 500 });
+    return Response.json({ error: 'bad json from VPS', stdout: r.stdout.slice(-400) }, { status: 500 });
   }
-  return NextResponse.json({ sessions: parsed });
+  return Response.json({ sessions: parsed });
 }

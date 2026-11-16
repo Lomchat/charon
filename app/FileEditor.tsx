@@ -1,6 +1,6 @@
 'use client';
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
-import dynamic from 'next/dynamic';
+import dynamic from '@/app/dynamic';
 import { api } from '@/lib/api';
 import type { FsLinkInfo, FsReadResponse } from '@/lib/types/api';
 import { fmtSize } from './sessionAttachments';

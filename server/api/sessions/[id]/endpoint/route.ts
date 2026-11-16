@@ -1,4 +1,3 @@
-import { NextResponse } from 'next/server';
 import { eq } from 'drizzle-orm';
 import { db, agentSessions } from '@/lib/db';
 import { requireApiSession } from '@/lib/server/session';
@@ -13,17 +12,17 @@ export async function GET(_req: Request, { params }: { params: Promise<{ id: str
   const auth = await requireApiSession(); if (auth instanceof Response) return auth;
   const { id } = await params;
   const row = db.select().from(agentSessions).where(eq(agentSessions.id, id)).get();
-  if (!row) return NextResponse.json({ error: 'Session not found.' }, { status: 404 });
+  if (!row) return Response.json({ error: 'Session not found.' }, { status: 404 });
   const state = publicConnection(row.providerConfig);
   if (state.active) state.active = await enrichEndpoint(state.active);
   if (state.pending?.endpoint) state.pending.endpoint = await enrichEndpoint(state.pending.endpoint);
-  return NextResponse.json(state);
+  return Response.json(state);
 }
 export async function POST(req: Request, { params }: { params: Promise<{ id: string }> }) {
   const auth = await requireApiSession(); if (auth instanceof Response) return auth;
   const { id } = await params;
   const row = db.select().from(agentSessions).where(eq(agentSessions.id, id)).get();
-  if (!row) return NextResponse.json({ error: 'Session not found.' }, { status: 404 });
+  if (!row) return Response.json({ error: 'Session not found.' }, { status: 404 });
   try {
     if (!supportsCustomEndpoint(row.kind)) throw new Error('Custom endpoints are not supported by this engine.');
     if (row.archived) throw new Error('Unarchive this session before changing its connection.');
@@ -33,7 +32,7 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
       current.pendingConnection = null; current.endpointError = null;
       db.update(agentSessions).set({ providerConfig: JSON.stringify(current) }).where(eq(agentSessions.id, id)).run();
       emitGlobalSessionListChanged(id);
-      return NextResponse.json(publicConnection(JSON.stringify(current)));
+      return Response.json(publicConnection(JSON.stringify(current)));
     }
     let endpoint = null;
     if (body.endpoint !== null) {
@@ -43,9 +42,9 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
     }
     const result = await queueEndpoint(id, endpoint);
     if (endpoint && body.saveForReuse === true) saveEndpoint(endpoint);
-    return NextResponse.json(result);
+    return Response.json(result);
   } catch (e) {
     const message = e instanceof Error ? e.message : 'Could not configure endpoint.';
-    return NextResponse.json({ error: /unknown method|no such method|-32601/i.test(message) ? 'Update the agent on this VPS to use custom endpoints.' : message }, { status: 400 });
+    return Response.json({ error: /unknown method|no such method|-32601/i.test(message) ? 'Update the agent on this VPS to use custom endpoints.' : message }, { status: 400 });
   }
 }

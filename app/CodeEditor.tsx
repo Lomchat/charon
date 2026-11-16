@@ -142,7 +142,7 @@ function editorLook(dark: boolean) {
 }
 
 /**
- * The CodeMirror instance. Mounted only through `next/dynamic(ssr:false)` from
+ * The CodeMirror instance. Mounted only through `dynamic()` (app/dynamic.tsx) from
  * FileEditor — it is ~200KB and must stay out of the main chunk, and it touches
  * `document` at construction so it cannot render on the server either.
  *

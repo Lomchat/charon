@@ -1,5 +1,4 @@
 import crypto from 'node:crypto';
-import { NextResponse } from 'next/server';
 import { requireApiSession } from '@/lib/server/session';
 import { emitGlobalTabsChanged, getOrCreateStream } from '@/lib/server/agent/sessionOps';
 import { pinTabForRef } from '@/lib/server/hub/tabs';
@@ -21,25 +20,25 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
   if (s instanceof Response) return s;
   const { id } = await params;
   const stream = getOrCreateStream(id);
-  if (!stream) return NextResponse.json({ error: 'session not found' }, { status: 404 });
+  if (!stream) return Response.json({ error: 'session not found' }, { status: 404 });
   const body = await req.json();
   try {
     if (body.type === 'interrupt') {
       await stream.sendInterrupt();
-      return NextResponse.json({ ok: true });
+      return Response.json({ ok: true });
     }
     const content = String(body.content ?? '').trim();
-    if (!content) return NextResponse.json({ error: 'content required' }, { status: 400 });
+    if (!content) return Response.json({ error: 'content required' }, { status: 400 });
     const rawClientMessageId: unknown = body.clientMessageId;
     if (rawClientMessageId != null
       && (typeof rawClientMessageId !== 'string' || !CLIENT_MESSAGE_ID_RE.test(rawClientMessageId))) {
-      return NextResponse.json({ error: 'invalid clientMessageId' }, { status: 400 });
+      return Response.json({ error: 'invalid clientMessageId' }, { status: 400 });
     }
     const clientMessageId = typeof rawClientMessageId === 'string' ? rawClientMessageId : crypto.randomUUID();
     const codexInputs = Array.isArray(body.codexInputs) ? body.codexInputs : undefined;
     if (codexInputs && (codexInputs.length > 16 || codexInputs.some((item: unknown) =>
       !item || typeof item !== 'object' || Array.isArray(item)))) {
-      return NextResponse.json({ error: 'invalid codexInputs' }, { status: 400 });
+      return Response.json({ error: 'invalid codexInputs' }, { status: 400 });
     }
     const normalized = codexInputs?.map((raw: any) => {
       if (raw.type === 'text' && typeof raw.text === 'string') {
@@ -52,7 +51,7 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
       return null;
     });
     if (normalized?.some((item: unknown) => item == null)) {
-      return NextResponse.json({ error: 'unsupported codex input item' }, { status: 400 });
+      return Response.json({ error: 'unsupported codex input item' }, { status: 400 });
     }
     // A manual prompt supersedes any delayed quota-recovery prompt for this
     // session; leaving it armed would unexpectedly send a second continuation.
@@ -65,8 +64,8 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
     // can't evict the conversation you're having. §14.78 — announced only
     // when a tab actually changed (every send used to re-sync every tab bar).
     if (pinTabForRef('session', id)) emitGlobalTabsChanged();
-    return NextResponse.json({ ok: true, rowId, clientMessageId, sync: syncAfter([id]) });
+    return Response.json({ ok: true, rowId, clientMessageId, sync: syncAfter([id]) });
   } catch (e: any) {
-    return NextResponse.json({ error: e?.message ?? String(e) }, { status: 500 });
+    return Response.json({ error: e?.message ?? String(e) }, { status: 500 });
   }
 }

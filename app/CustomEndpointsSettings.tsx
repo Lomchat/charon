@@ -1,6 +1,6 @@
 'use client';
 import { useEffect, useRef, useState } from 'react';
-import dynamic from 'next/dynamic';
+import dynamic from '@/app/dynamic';
 import { api } from '@/lib/api';
 import { publishSavedEndpoints, refreshSavedEndpoints } from './savedEndpointsStore';
 import type { EndpointBatch, Vps } from '@/lib/types/api';

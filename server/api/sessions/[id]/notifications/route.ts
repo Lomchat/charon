@@ -1,4 +1,3 @@
-import { NextResponse } from 'next/server';
 import { eq } from 'drizzle-orm';
 import { db, agentSessions, sessionNotificationSettings } from '@/lib/db';
 import { requireApiSession } from '@/lib/server/session';
@@ -11,17 +10,17 @@ export async function GET(_req: Request, { params }: Context) {
   const auth = await requireApiSession(); if (auth instanceof Response) return auth;
   const { id } = await params;
   if (!db.select({ id: agentSessions.id }).from(agentSessions).where(eq(agentSessions.id, id)).get())
-    return NextResponse.json({ error: 'session not found' }, { status: 404 });
-  return NextResponse.json({ telegram: sessionTelegramNotifications(id), defaults: telegramNotificationDefaults() });
+    return Response.json({ error: 'session not found' }, { status: 404 });
+  return Response.json({ telegram: sessionTelegramNotifications(id), defaults: telegramNotificationDefaults() });
 }
 export async function PUT(req: Request, { params }: Context) {
   const auth = await requireApiSession(); if (auth instanceof Response) return auth;
   const { id } = await params;
   if (!db.select({ id: agentSessions.id }).from(agentSessions).where(eq(agentSessions.id, id)).get())
-    return NextResponse.json({ error: 'session not found' }, { status: 404 });
+    return Response.json({ error: 'session not found' }, { status: 404 });
   const body = await req.json().catch(() => null);
   if (!body || typeof body !== 'object' || !('telegram' in body) || (body.telegram !== null && (typeof body.telegram !== 'object' || typeof body.telegram.enabled !== 'boolean')))
-    return NextResponse.json({ error: 'telegram preferences or null required' }, { status: 400 });
+    return Response.json({ error: 'telegram preferences or null required' }, { status: 400 });
   if (body.telegram === null) db.delete(sessionNotificationSettings).where(eq(sessionNotificationSettings.sessionId, id)).run();
   else {
     const telegram = JSON.stringify(normalizeChannelNotifications(body.telegram));
@@ -29,5 +28,5 @@ export async function PUT(req: Request, { params }: Context) {
       .onConflictDoUpdate({ target: sessionNotificationSettings.sessionId, set: { telegram } }).run();
   }
   emitGlobalSettingsChanged();
-  return NextResponse.json({ telegram: sessionTelegramNotifications(id), defaults: telegramNotificationDefaults() });
+  return Response.json({ telegram: sessionTelegramNotifications(id), defaults: telegramNotificationDefaults() });
 }

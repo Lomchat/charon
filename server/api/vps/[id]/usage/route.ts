@@ -1,4 +1,3 @@
-import { NextResponse } from 'next/server';
 import { eq } from 'drizzle-orm';
 import { db, vps } from '@/lib/db';
 import { requireApiSession } from '@/lib/server/session';
@@ -34,13 +33,13 @@ export async function GET(_req: Request, { params }: { params: Promise<{ id: str
   if (s instanceof Response) return s;
   const { id } = await params;
   const [v] = db.select().from(vps).where(eq(vps.id, id)).all();
-  if (!v) return NextResponse.json({ error: 'vps not found' }, { status: 404 });
+  if (!v) return Response.json({ error: 'vps not found' }, { status: 404 });
 
   const query = new URL(_req.url).searchParams;
   const provider = query.get('provider');
   const profile = query.get('profile') ?? 'default';
   if (provider != null || profile !== 'default') {
-    if (!isSessionProvider(provider)) return NextResponse.json({ error: 'Provider required' }, { status: 400 });
+    if (!isSessionProvider(provider)) return Response.json({ error: 'Provider required' }, { status: 400 });
     try {
       requireAccountProfile(id, provider, profile);
       const refresh = query.get('refresh') === '1';
@@ -72,9 +71,9 @@ export async function GET(_req: Request, { params }: { params: Promise<{ id: str
         }
       }
       const usage = getAccountProfileUsage(id, provider, profile);
-      return NextResponse.json({ usage: provider === 'claude' ? usage : null,
+      return Response.json({ usage: provider === 'claude' ? usage : null,
         codexUsage: provider === 'codex' ? usage : undefined, byProvider: { [provider]: usage } });
-    } catch (e) { return NextResponse.json({ error: (e as Error).message }, { status: 400 }); }
+    } catch (e) { return Response.json({ error: (e as Error).message }, { status: 400 }); }
   }
 
   const byProvider: Partial<Record<SessionProvider, AccountUsage | null>> = {};
@@ -103,5 +102,5 @@ export async function GET(_req: Request, { params }: { params: Promise<{ id: str
     byProvider,
   };
   if ('codex' in byProvider) body.codexUsage = byProvider.codex ?? null;
-  return NextResponse.json(body);
+  return Response.json(body);
 }

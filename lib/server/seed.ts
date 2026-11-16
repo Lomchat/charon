@@ -15,7 +15,7 @@ import { rawSqlite } from '@/lib/db';
 import { CONVERSATION_INDEX_NAME, ensureConversationIndex } from '@/lib/db/conversationIndex';
 
 // ── Boot seed, retryable per sub-system (P1.6) ──────────────────────────────
-// Since §14.45 this is the GUARANTEED agent-arming path (instrumentation.ts
+// Since §14.45 this is the GUARANTEED agent-arming path (server/http/boot.ts
 // + the SSE/focus routes all call it). The old version latched a single
 // `initialized` flag BEFORE running anything: a transient failure (e.g.
 // SQLITE_BUSY in migrationV2 during a restart storm) was logged once and

@@ -1,4 +1,3 @@
-import { NextResponse } from 'next/server';
 import { eq } from 'drizzle-orm';
 import { db, vps } from '@/lib/db';
 import { requireApiSession } from '@/lib/server/session';
@@ -12,7 +11,7 @@ export async function POST(_req: Request, { params }: { params: Promise<{ id: st
   if (s instanceof Response) return s;
   const { id } = await params;
   const [v] = db.select().from(vps).where(eq(vps.id, id)).all();
-  if (!v) return NextResponse.json({ error: 'vps not found' }, { status: 404 });
+  if (!v) return Response.json({ error: 'vps not found' }, { status: 404 });
 
   // Install into a dedicated venv at ~/.charon/venv. Works around PEP 668
   // (Debian 12 / Ubuntu 23+ refuse `pip --user`) and keeps a stable python
@@ -39,7 +38,7 @@ export async function POST(_req: Request, { params }: { params: Promise<{ id: st
     `echo "[setup] checking import..."; ` +
     `${VENV_PY} -c "import claude_agent_sdk; print('version:', claude_agent_sdk.__version__)" 2>&1`;
   const r = await sshExec(v, cmd, { timeoutMs: 180_000 });
-  return NextResponse.json({
+  return Response.json({
     ok: r.ok,
     code: r.code,
     stdout: r.stdout.slice(-4000),

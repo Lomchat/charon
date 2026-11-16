@@ -1,4 +1,3 @@
-import { NextResponse } from 'next/server';
 import { eq } from 'drizzle-orm';
 import { db, agentSessions } from '@/lib/db';
 import { requireApiSession } from '@/lib/server/session';
@@ -21,18 +20,18 @@ export async function GET(req: Request, { params }: { params: Promise<{ id: stri
   const forceReload = new URL(req.url).searchParams.get('force') === '1';
   const [row] = db.select({ providerConfig: agentSessions.providerConfig, status: agentSessions.status })
     .from(agentSessions).where(eq(agentSessions.id, id)).all();
-  if (!row) return NextResponse.json({ error: 'session not found' }, { status: 404 });
+  if (!row) return Response.json({ error: 'session not found' }, { status: 404 });
   let configured: CodexSessionConfig = {};
   try { configured = row.providerConfig ? JSON.parse(row.providerConfig) : {}; } catch {}
   const running = ['active', 'thinking', 'starting', 'background'].includes(row.status);
   const runtime = running
     ? await callSessionRpc(id, 'codex_security_status', { force_reload: forceReload })
     : { ok: false, reason: 'sleeping', error: 'session is not running' };
-  if (runtime?.ok) return NextResponse.json(runtime);
+  if (runtime?.ok) return Response.json(runtime);
   // Reviewer is durable session config, not live telemetry. Keep it visible
   // while sleeping/offline/on an old agent; profiles/denials simply wait for
   // a runtime that can enumerate them.
-  return NextResponse.json({
+  return Response.json({
     ok: true,
     reviewer: configuredReviewer(configured),
     permission_profile: typeof configured.permissionProfile === 'string'
@@ -51,16 +50,16 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
   const body = parsed && typeof parsed === 'object' ? parsed : {};
   if (body?.action === 'approve_denial') {
     const reviewId = typeof body.reviewId === 'string' ? body.reviewId.trim() : '';
-    if (!reviewId) return NextResponse.json({ error: 'reviewId required' }, { status: 400 });
+    if (!reviewId) return Response.json({ error: 'reviewId required' }, { status: 400 });
     const result = await callSessionRpc(id, 'approve_codex_denial', { review_id: reviewId });
-    return NextResponse.json(result, { status: result?.ok ? 200 : 400 });
+    return Response.json(result, { status: result?.ok ? 200 : 400 });
   }
 
   // Reviewer and profile are independent. Accept a partial patch and preserve
   // the other durable field; reviewer defaults are configured globally.
   const [row] = db.select({ providerConfig: agentSessions.providerConfig, status: agentSessions.status })
     .from(agentSessions).where(eq(agentSessions.id, id)).all();
-  if (!row) return NextResponse.json({ error: 'session not found' }, { status: 404 });
+  if (!row) return Response.json({ error: 'session not found' }, { status: 404 });
   let current: CodexSessionConfig = {};
   try { current = row.providerConfig ? JSON.parse(row.providerConfig) : {}; } catch {}
 
@@ -74,7 +73,7 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
       : typeof body.permissionProfile === 'string' ? body.permissionProfile.trim().slice(0, 256) : undefined)
     : typeof current.permissionProfile === 'string' ? current.permissionProfile : null;
   if (!reviewer || permissionProfile === undefined || (!hasReviewer && !hasProfile)) {
-    return NextResponse.json({ error: 'provide a valid reviewer or permissionProfile' }, { status: 400 });
+    return Response.json({ error: 'provide a valid reviewer or permissionProfile' }, { status: 400 });
   }
   // Agent state survives daemon restarts, while this copy is what recreates a
   // missing agent session after a VPS/hub restart. Keep both sources aligned.
@@ -88,10 +87,10 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
       reviewer, permission_profile: permissionProfile || null,
     })
     : { ok: false, reason: 'sleeping', error: 'session is not running' };
-  if (result?.ok) return NextResponse.json(result);
+  if (result?.ok) return Response.json(result);
   // Sleeping/offline/old-agent sessions still accept the durable setting. It
   // is passed through start_session on resume or after the agent upgrades.
-  return NextResponse.json({
+  return Response.json({
     ok: true, reviewer, permission_profile: permissionProfile || null,
     profiles: [], denials: [], applied: false,
     runtime_reason: result?.reason, runtime_error: result?.error,

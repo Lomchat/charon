@@ -1,4 +1,3 @@
-import { NextResponse } from 'next/server';
 import { requireApiSession } from '@/lib/server/session';
 import { syncAfter } from '@/lib/server/sync/sessionSummaries';
 import { markSessionRead } from '@/lib/server/agent/sessionOps';
@@ -11,5 +10,5 @@ export async function POST(_req: Request, { params }: { params: Promise<{ id: st
   if (s instanceof Response) return s;
   const { id } = await params;
   markSessionRead(id);
-  return NextResponse.json({ ok: true, sync: syncAfter([id]) });
+  return Response.json({ ok: true, sync: syncAfter([id]) });
 }

@@ -1,4 +1,3 @@
-import { NextResponse } from 'next/server';
 import { eq } from 'drizzle-orm';
 import { db, vps } from '@/lib/db';
 import { requireApiSession } from '@/lib/server/session';
@@ -12,7 +11,7 @@ export async function GET(_req: Request, { params }: { params: Promise<{ id: str
   if (s instanceof Response) return s;
   const { id } = await params;
   const [v] = db.select().from(vps).where(eq(vps.id, id)).all();
-  if (!v) return NextResponse.json({ error: 'vps not found' }, { status: 404 });
+  if (!v) return Response.json({ error: 'vps not found' }, { status: 404 });
 
   // Bash one-liner: emit lines "KEY=value" then we parse.
   //
@@ -61,7 +60,7 @@ export async function GET(_req: Request, { params }: { params: Promise<{ id: str
 
   const r = await sshExec(v, script, { timeoutMs: 15000 });
   if (!r.ok && !r.stdout) {
-    return NextResponse.json({ ok: false, error: 'ssh failed', stderr: r.stderr });
+    return Response.json({ ok: false, error: 'ssh failed', stderr: r.stderr });
   }
   const out: Record<string, string> = {};
   for (const line of r.stdout.split('\n')) {
@@ -79,7 +78,7 @@ export async function GET(_req: Request, { params }: { params: Promise<{ id: str
   // but the session works if credentials exist in ~/.claude/.
   // These two pieces of info remain exposed (cliInstalled, authOk) for
   // informational display in the UI.
-  return NextResponse.json({
+  return Response.json({
     ok: sdkOk,
     python: out.python ?? null,
     pythonOk: out.python_ok === 'yes',

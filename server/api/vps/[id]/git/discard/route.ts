@@ -1,4 +1,3 @@
-import { NextResponse } from 'next/server';
 import { eq } from 'drizzle-orm';
 import { db, vps } from '@/lib/db';
 import { requireApiSession } from '@/lib/server/session';
@@ -17,7 +16,7 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
   if (s instanceof Response) return s;
   const { id } = await params;
   const [v] = db.select().from(vps).where(eq(vps.id, id)).all();
-  if (!v) return NextResponse.json({ error: 'vps not found' }, { status: 404 });
+  if (!v) return Response.json({ error: 'vps not found' }, { status: 404 });
 
   let cwd = '';
   let paths: string[] = [];
@@ -29,10 +28,10 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
     paths = Array.isArray(body?.paths) ? body.paths.map(String) : [];
     repo = body?.repo ? String(body.repo) : null;
   } catch { /* empty */ }
-  if (!cwd) return NextResponse.json({ ok: false, error: 'cwd required' }, { status: 400 });
+  if (!cwd) return Response.json({ ok: false, error: 'cwd required' }, { status: 400 });
   if (paths.length === 0) {
-    return NextResponse.json({ ok: false, error: 'no files selected', reason: 'bad_paths' });
+    return Response.json({ ok: false, error: 'no files selected', reason: 'bad_paths' });
   }
 
-  return NextResponse.json(await gitDiscard(id, cwd, paths, repo));
+  return Response.json(await gitDiscard(id, cwd, paths, repo));
 }

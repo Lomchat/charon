@@ -1,4 +1,3 @@
-import { NextResponse } from 'next/server';
 import { requireApiSession } from '@/lib/server/session';
 import { callSessionRpc } from '@/lib/server/hub/sessionRpc';
 import {
@@ -16,7 +15,7 @@ export async function GET(req: Request, { params }: { params: Promise<{ id: stri
   if (auth instanceof Response) return auth;
   const { id } = await params;
   const force = new URL(req.url).searchParams.get('force') === '1';
-  return NextResponse.json(readSessionInsightSnapshot(
+  return Response.json(readSessionInsightSnapshot(
     id, 'mcp', () => callSessionRpc(id, 'mcp_status'),
     { force, maxAgeMs: 30_000 },
   ));
@@ -28,20 +27,20 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
   const { id } = await params;
   const body = await req.json().catch(() => ({}));
   const name = typeof body?.name === 'string' ? body.name : '';
-  if (!name) return NextResponse.json({ ok: false, error: 'name required' }, { status: 400 });
+  if (!name) return Response.json({ ok: false, error: 'name required' }, { status: 400 });
   if (body?.action === 'toggle') {
     const result = await callSessionRpc(id, 'mcp_toggle', { name, enabled: !!body.enabled });
     invalidateSessionInsightSnapshot(id, 'mcp');
-    return NextResponse.json(result);
+    return Response.json(result);
   }
   if (body?.action === 'oauth') {
     const result = await callSessionRpc(id, 'mcp_oauth_login', { name });
     invalidateSessionInsightSnapshot(id, 'mcp');
-    return NextResponse.json(result, {
+    return Response.json(result, {
       status: result?.ok ? 200 : result?.reason === 'unsupported' ? 501 : 400,
     });
   }
   const result = await callSessionRpc(id, 'mcp_reconnect', { name });
   invalidateSessionInsightSnapshot(id, 'mcp');
-  return NextResponse.json(result);
+  return Response.json(result);
 }

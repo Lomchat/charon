@@ -1,6 +1,6 @@
 name: CI
 
-# Runs the protocol drift check, the Next build, the Drizzle migration suite
+# Runs the protocol drift check, the hub build, the Drizzle migration suite
 # against a temp DB, the Python agent compile + zipapp build, a strict
 # `tsc --noEmit` pass, AND the unit test suites: vitest (TS server/runtime
 # logic) + python unittest (agent event log, state, protocol, daemon
@@ -51,14 +51,14 @@ jobs:
         run: npm ci --no-audit
 
       - name: Typecheck
-        # tsc --noEmit, isolated from the Next build so failures are easy to
-        # read. `next build` also runs the compiler but its output mixes TS
+        # tsc --noEmit, isolated from the build so failures are easy to
+        # read. The build also bundles the code but its output mixes TS
         # errors with bundler chatter.
         run: npm run typecheck
 
       - name: Unit tests (TypeScript)
         # vitest — server/runtime logic (event-log replay dedup, permission
-        # isolation, login rate-limit, …). Pure modules, no Next lifecycle.
+        # isolation, login rate-limit, …). Pure modules, no HTTP server.
         run: npm test
 
       - name: Agent tests (Python)
@@ -70,7 +70,7 @@ jobs:
         # error (catches duplicate column adds, broken FK, etc.).
         run: DATABASE_URL=/tmp/charon-ci.db npm run db:migrate
 
-      - name: Build Next.js
+      - name: Build (Vite + server bundle)
         # `build` also runs `check-protocol-sync.mjs` (prebuild via the npm
         # script). Covers TS + the Python↔TS protocol union check.
         env:

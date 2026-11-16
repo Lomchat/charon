@@ -1,4 +1,3 @@
-import { NextResponse } from 'next/server';
 import { eq } from 'drizzle-orm';
 import { db, agentSessions, vps as vpsTable } from '@/lib/db';
 import { requireApiSession } from '@/lib/server/session';
@@ -40,14 +39,14 @@ export async function GET(_req: Request, { params }: { params: Promise<{ id: str
   if (s instanceof Response) return s;
   const { id } = await params;
   try {
-    return NextResponse.json({ attachments: listAttachments(id).map(toPayload) });
+    return Response.json({ attachments: listAttachments(id).map(toPayload) });
   } catch (e: any) {
     // Same posture as the other read paths: a transient DB failure is a
     // retryable 503, never an unhandled 500 (which would serve an HTML error
     // page into a JSON parse on the client).
     // eslint-disable-next-line no-console
     console.error(`[api/sessions/${id}/attachments GET] failed:`, e?.stack ?? e);
-    return NextResponse.json({ error: e?.message ?? String(e) }, { status: 503 });
+    return Response.json({ error: e?.message ?? String(e) }, { status: 503 });
   }
 }
 
@@ -57,25 +56,25 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
   const { id } = await params;
 
   const [sess] = db.select().from(agentSessions).where(eq(agentSessions.id, id)).all();
-  if (!sess) return NextResponse.json({ error: 'session not found' }, { status: 404 });
+  if (!sess) return Response.json({ error: 'session not found' }, { status: 404 });
   const [v] = db.select().from(vpsTable).where(eq(vpsTable.id, sess.vpsId)).all();
-  if (!v) return NextResponse.json({ error: 'vps not found' }, { status: 404 });
+  if (!v) return Response.json({ error: 'vps not found' }, { status: 404 });
 
   let form: FormData;
   try {
     form = await req.formData();
   } catch {
-    return NextResponse.json({ error: 'expected multipart/form-data' }, { status: 400 });
+    return Response.json({ error: 'expected multipart/form-data' }, { status: 400 });
   }
   const file = form.get('file');
   if (!file || typeof file === 'string') {
-    return NextResponse.json({ error: 'missing `file` field' }, { status: 400 });
+    return Response.json({ error: 'missing `file` field' }, { status: 400 });
   }
 
   // Reject on the declared size BEFORE buffering, so a 2 GB drop doesn't get
   // read into hub memory just to be refused afterwards.
   if (typeof file.size === 'number' && file.size > MAX_ATTACHMENT_BYTES) {
-    return NextResponse.json(
+    return Response.json(
       { error: `file too large (${fmtBytes(file.size)} > ${fmtBytes(MAX_ATTACHMENT_BYTES)})` },
       { status: 413 },
     );
@@ -88,7 +87,7 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
       mime: file.type || '',
       bytes,
     });
-    return NextResponse.json({ attachment: toPayload(att) });
+    return Response.json({ attachment: toPayload(att) });
   } catch (e: any) {
     const msg = e?.message ?? String(e);
     // "too large" is the client's fault (413); anything else is an upload
@@ -99,6 +98,6 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
       // eslint-disable-next-line no-console
       console.error(`[api/sessions/${id}/attachments POST] failed:`, e?.stack ?? e);
     }
-    return NextResponse.json({ error: msg }, { status });
+    return Response.json({ error: msg }, { status });
   }
 }

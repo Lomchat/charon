@@ -1,4 +1,4 @@
-import { NextResponse } from 'next/server';
+import { json } from '@/lib/server/http/json';
 import { requireApiSession } from '@/lib/server/session';
 import { emitGlobalTabsChanged } from '@/lib/server/agent/sessionOps';
 import { activateTab, closeTab, listTabs, pinTab } from '@/lib/server/hub/tabs';
@@ -17,9 +17,9 @@ export async function PATCH(req: Request, { params }: { params: Promise<{ id: st
 
   let tab = body.pin ? pinTab(id) : null;
   if (body.activate !== false) tab = activateTab(id) ?? tab;
-  if (!tab) return NextResponse.json({ error: 'tab not found' }, { status: 404 });
+  if (!tab) return Response.json({ error: 'tab not found' }, { status: 404 });
   emitGlobalTabsChanged();
-  return NextResponse.json({ tab, tabs: listTabs() });
+  return Response.json({ tab, tabs: listTabs() });
 }
 
 export async function DELETE(req: Request, { params }: { params: Promise<{ id: string }> }) {
@@ -29,9 +29,9 @@ export async function DELETE(req: Request, { params }: { params: Promise<{ id: s
   // `?next=` is the client's focus history — see closeTab().
   const next = new URL(req.url).searchParams.get('next');
   const r = closeTab(id, next);
-  if (!r.closed) return NextResponse.json({ error: 'tab not found' }, { status: 404 });
+  if (!r.closed) return Response.json({ error: 'tab not found' }, { status: 404 });
   emitGlobalTabsChanged();
-  return NextResponse.json<CloseTabResponse & { tabs: ReturnType<typeof listTabs> }>({
+  return json<CloseTabResponse & { tabs: ReturnType<typeof listTabs> }>({
     ok: true, nextActiveId: r.nextActiveId, tabs: listTabs(),
   });
 }

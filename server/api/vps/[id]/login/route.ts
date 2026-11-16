@@ -1,4 +1,3 @@
-import { NextResponse } from 'next/server';
 import { requireApiSession } from '@/lib/server/session';
 import { startLoginSession, stopLoginSession, getLoginSession } from '@/lib/server/agent/loginSession';
 
@@ -20,8 +19,8 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
   const profile = new URL(req.url).searchParams.get("profile") ?? "default";
   try {
     const sess = startLoginSession(id, profile);
-    return NextResponse.json({ ok: true, ...sess.status() });
-  } catch (e) { return NextResponse.json({ ok: false, error: (e as Error).message }, { status: 400 }); }
+    return Response.json({ ok: true, ...sess.status() });
+  } catch (e) { return Response.json({ ok: false, error: (e as Error).message }, { status: 400 }); }
 }
 
 export async function GET(req: Request, { params }: { params: Promise<{ id: string }> }) {
@@ -31,9 +30,9 @@ export async function GET(req: Request, { params }: { params: Promise<{ id: stri
   const profile = new URL(req.url).searchParams.get("profile") ?? "default";
   const sess = getLoginSession(id, profile);
   if (!sess) {
-    return NextResponse.json({ ok: false, error: 'no active login attempt' }, { status: 404 });
+    return Response.json({ ok: false, error: 'no active login attempt' }, { status: 404 });
   }
-  return NextResponse.json({ ok: true, ...sess.status() });
+  return Response.json({ ok: true, ...sess.status() });
 }
 
 export async function DELETE(req: Request, { params }: { params: Promise<{ id: string }> }) {
@@ -42,5 +41,5 @@ export async function DELETE(req: Request, { params }: { params: Promise<{ id: s
   const { id } = await params;
   const profile = new URL(req.url).searchParams.get("profile") ?? "default";
   stopLoginSession(id, profile);
-  return NextResponse.json({ ok: true });
+  return Response.json({ ok: true });
 }

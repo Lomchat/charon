@@ -1,4 +1,3 @@
-import { NextResponse } from 'next/server';
 import { requireApiSession } from '@/lib/server/session';
 import { updateLocalAgent } from '@/lib/server/agent/localAgent';
 
@@ -13,7 +12,7 @@ export async function POST() {
   if (s instanceof Response) return s;
   const result = await updateLocalAgent();
   if (!result.ok) {
-    return NextResponse.json({ ok: false, error: result.detail }, { status: 500 });
+    return Response.json({ ok: false, error: result.detail }, { status: 500 });
   }
-  return NextResponse.json(result);
+  return Response.json(result);
 }

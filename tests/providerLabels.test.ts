@@ -39,6 +39,7 @@ function sourceFiles(): string[] {
   };
   walk(path.join(ROOT, 'app'));
   walk(path.join(ROOT, 'lib'));
+  walk(path.join(ROOT, 'server'));
   return out;
 }
 
@@ -71,8 +72,6 @@ const PROVIDER_OWNED = [
   'lib/authExpired.ts', 'lib/server/agent/loginSession.ts',
   'lib/server/agent/claudeLoginCheck.ts', 'app/ClaudeLoginModal.tsx',
   'server/api/vps/[id]/claude/account/route.ts',
-  // The product's own name in metadata, and the wizard's per-backend rows.
-  'app/layout.tsx',
   // The providers' own OAuth endpoints, driven by the hub (§14.115).
   'lib/server/accounts/oauth.ts',
 ];

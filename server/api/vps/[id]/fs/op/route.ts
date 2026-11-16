@@ -1,4 +1,4 @@
-import { NextResponse } from 'next/server';
+import { json } from '@/lib/server/http/json';
 import { eq } from 'drizzle-orm';
 import { db, vps } from '@/lib/db';
 import { requireApiSession } from '@/lib/server/session';
@@ -22,17 +22,17 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
   if (s instanceof Response) return s;
   const { id } = await params;
   const [v] = db.select().from(vps).where(eq(vps.id, id)).all();
-  if (!v) return NextResponse.json({ error: 'vps not found' }, { status: 404 });
+  if (!v) return Response.json({ error: 'vps not found' }, { status: 404 });
 
   let body: FsOpBody;
   try { body = await req.json(); } catch {
-    return NextResponse.json<FsOpResponse>({ ok: false, error: 'invalid body' }, { status: 400 });
+    return json<FsOpResponse>({ ok: false, error: 'invalid body' }, { status: 400 });
   }
   const root = String(body?.root ?? '');
   const path = String(body?.path ?? '');
   const op = String(body?.op ?? '');
   if (!root || !path || !['mkdir', 'rename', 'symlink', 'delete'].includes(op)) {
-    return NextResponse.json<FsOpResponse>({ ok: false, error: 'root, path and a valid op are required' }, { status: 400 });
+    return json<FsOpResponse>({ ok: false, error: 'root, path and a valid op are required' }, { status: 400 });
   }
 
   const method = op === 'mkdir'
@@ -49,15 +49,15 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
   try {
     const client = getAgentClientForVpsId(id);
     if (!client || client.status !== 'connected') {
-      return NextResponse.json<FsOpResponse>({ ok: false, reason: 'offline', error: 'the agent is not connected' });
+      return json<FsOpResponse>({ ok: false, reason: 'offline', error: 'the agent is not connected' });
     }
     const r = await client.call<FsOpResponse>(method, rpcParams);
     // The tree just changed shape, so the repo's dirty set did too.
     if (r?.ok) invalidateGitStatus(id, root);
-    return NextResponse.json<FsOpResponse>(r);
+    return json<FsOpResponse>(r);
   } catch (e: unknown) {
     if (e instanceof AgentRpcError && e.code === -32601) {
-      return NextResponse.json<FsOpResponse>({
+      return json<FsOpResponse>({
         ok: false, reason: 'unsupported',
         error: op === 'symlink'
           ? 'this VPS runs an agent older than 0.75.0 — update it to create symlinks'
@@ -65,6 +65,6 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
       });
     }
     const msg = e instanceof Error ? e.message : String(e);
-    return NextResponse.json<FsOpResponse>({ ok: false, reason: 'error', error: msg.slice(0, 200) });
+    return json<FsOpResponse>({ ok: false, reason: 'error', error: msg.slice(0, 200) });
   }
 }

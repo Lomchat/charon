@@ -1,5 +1,4 @@
 import { accountProfileId, accountProfileNumber } from '@/lib/accountProfiles';
-import { NextResponse } from 'next/server';
 import { desc, eq, and } from 'drizzle-orm';
 import { db, agentSessions, vps as vpsTable } from '@/lib/db';
 import { requireApiSession } from '@/lib/server/session';
@@ -76,7 +75,7 @@ export async function GET(req: Request) {
       }
     }
     const sync = currentRev();
-    return NextResponse.json({
+    return Response.json({
       sessions,
       // SSE is the fast path for VPS state, but it is intentionally live-only.
       // A suspended tab can miss an update event, so every list poll also
@@ -107,7 +106,7 @@ export async function GET(req: Request) {
     // retryable 503 — the client's 5s poll / sidebar refresh will retry.
     // eslint-disable-next-line no-console
     console.error('[api/sessions GET] failed:', e?.stack ?? e);
-    return NextResponse.json({ error: e?.message ?? String(e), sessions: [] }, { status: 503 });
+    return Response.json({ error: e?.message ?? String(e), sessions: [] }, { status: 503 });
   }
   });
 }
@@ -218,11 +217,11 @@ export async function POST(req: Request) {
   const vpsId = String(body.vpsId ?? '').trim();
   let cwd = String(body.cwd ?? '').trim();
   if (!vpsId || !cwd) {
-    return NextResponse.json({ error: 'vpsId, cwd required' }, { status: 400 });
+    return Response.json({ error: 'vpsId, cwd required' }, { status: 400 });
   }
-  if (cwd.length > 4096 || cwd.includes('\0')) return NextResponse.json({ error: 'invalid path' }, { status: 400 });
+  if (cwd.length > 4096 || cwd.includes('\0')) return Response.json({ error: 'invalid path' }, { status: 400 });
   const [v] = db.select().from(vpsTable).where(eq(vpsTable.id, vpsId)).all();
-  if (!v) return NextResponse.json({ error: 'vps not found' }, { status: 404 });
+  if (!v) return Response.json({ error: 'vps not found' }, { status: 404 });
 
   // Agent-type discriminator (multi-agent). A Codex session needs the VPS to
   // actually run Codex (openai-codex importable, agent >= 0.15.0) — reject
@@ -231,7 +230,7 @@ export async function POST(req: Request) {
   const backend = PROVIDERS[kind].backend;
   if (backend.availability.blocksLaunch
       && providerBackendState(v as any, kind).available !== 1) {
-    return NextResponse.json(
+    return Response.json(
       { error: `${PROVIDERS[kind].label} is not available on this VPS (the agent is too old to report it, or ${backend.packageName} is not installed).` },
       { status: 400 },
     );
@@ -258,7 +257,7 @@ export async function POST(req: Request) {
     // running a bundle from before a deploy; current UIs send `sessionConfig`.
     sessionConfig = normalizeProviderConfig(kind, body.sessionConfig ?? body.providerConfig ?? body.codexConfig);
   } catch (e) {
-    return NextResponse.json({ error: (e as Error).message }, { status: 400 });
+    return Response.json({ error: (e as Error).message }, { status: 400 });
   }
   // `endpoint: { savedId, model? }` = the session is BORN on a saved custom
   // endpoint. Applying one after create needs an idle resume, which a session
@@ -267,7 +266,7 @@ export async function POST(req: Request) {
   if (body.endpoint != null) {
     const raw = body.endpoint;
     if (typeof raw !== 'object' || Array.isArray(raw) || typeof raw.savedId !== 'string') {
-      return NextResponse.json({ error: 'endpoint must be { savedId, model? }' }, { status: 400 });
+      return Response.json({ error: 'endpoint must be { savedId, model? }' }, { status: 400 });
     }
     try {
       const { endpointForNewSession } = await import('@/lib/server/agent/endpointOps');
@@ -278,7 +277,7 @@ export async function POST(req: Request) {
     } catch (e) {
       const message = (e as Error).message;
       // An agent predating endpoints answers the capability probe -32601.
-      return NextResponse.json({
+      return Response.json({
         error: /unknown method|no such method|method not found|-32601/i.test(message)
           ? 'Update the agent on this VPS to use custom endpoints.' : message,
       }, { status: 400 });
@@ -288,12 +287,12 @@ export async function POST(req: Request) {
   // `strictModel` (API) = no fallback model, another model stops the turn.
   for (const key of ['hidden', 'strictModel'] as const) {
     if (body[key] != null && typeof body[key] !== 'boolean') {
-      return NextResponse.json({ error: `${key} must be true or false` }, { status: 400 });
+      return Response.json({ error: `${key} must be true or false` }, { status: 400 });
     }
   }
   try {
     const directory = await checkSessionPath(v, cwd, true);
-    if (!directory.ok) return NextResponse.json({ error: directory.error }, { status: 400 });
+    if (!directory.ok) return Response.json({ error: directory.error }, { status: 400 });
     cwd = directory.resolved ?? cwd;
     const stream = await startNewSession({
       vpsId, cwd,
@@ -304,7 +303,7 @@ export async function POST(req: Request) {
       hidden: body.hidden === true, strictModel: body.strictModel === true, unattended: body.unattended === true,
     });
     const stored = db.select({ config: agentSessions.providerConfig }).from(agentSessions).where(eq(agentSessions.id, stream.id)).get();
-    return NextResponse.json({
+    return Response.json({
       accountProfile: accountProfileId(stored?.config), accountProfileNumber: accountProfileNumber(stored?.config),
       id: stream.id, kind: stream.kind, status: stream.status, nativeSessionId: stream.nativeSessionId,
       vpsId, cwd, name: stream.name, permissionMode: stream.permissionMode,
@@ -312,6 +311,6 @@ export async function POST(req: Request) {
       hidden: body.hidden === true, strictModel: body.strictModel === true, unattended: body.unattended === true,
     });
   } catch (e: any) {
-    return NextResponse.json({ error: e?.message ?? String(e) }, { status: 500 });
+    return Response.json({ error: e?.message ?? String(e) }, { status: 500 });
   }
 }

@@ -1,4 +1,3 @@
-import { NextResponse } from 'next/server';
 import { requireApiSession } from '@/lib/server/session';
 
 export const runtime = 'nodejs';
@@ -21,5 +20,5 @@ export const dynamic = 'force-dynamic';
 export async function GET() {
   const s = await requireApiSession();
   if (s instanceof Response) return s;
-  return NextResponse.json({ ok: true });
+  return Response.json({ ok: true });
 }

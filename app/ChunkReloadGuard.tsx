@@ -7,7 +7,7 @@ import { isChunkLoadError, reloadOnceForChunkError } from './chunkReload';
 // see (§14.57): a rejected dynamic `import()` inside an async handler (e.g. the
 // xterm load in ShellTerminal) becomes an unhandledrejection, and
 // a failed <script> chunk fires a window 'error' — neither reaches
-// global-error.tsx / error.tsx. Mounted once in the root layout.
+// the page error boundary (AppError). Mounted once per page (web/mount.tsx).
 export default function ChunkReloadGuard() {
   useEffect(() => {
     const onRejection = (e: PromiseRejectionEvent) => {

@@ -1,5 +1,4 @@
 import { requireAccountProfile } from '@/lib/server/agent/accountProfiles';
-import { NextResponse } from 'next/server';
 import { requireApiSession } from '@/lib/server/session';
 import { getCodexModelsForVps } from '@/lib/server/hub/codexModels';
 import { CODEX_CANONICAL_EFFORTS } from '@/lib/types/api';
@@ -18,14 +17,14 @@ export async function GET(req: Request) {
   const url = new URL(req.url);
   const vpsId = url.searchParams.get('vpsId');
   if (!vpsId) {
-    return NextResponse.json(
+    return Response.json(
       { ok: false, models: [], efforts: [...CODEX_CANONICAL_EFFORTS], error: 'vpsId required' },
       { status: 400 },
     );
   }
   const profile = url.searchParams.get('profile') ?? 'default';
   try { requireAccountProfile(vpsId, 'codex', profile); }
-  catch (e) { return NextResponse.json({ error: (e as Error).message }, { status: 400 }); }
+  catch (e) { return Response.json({ error: (e as Error).message }, { status: 400 }); }
   const data = await getCodexModelsForVps(vpsId, profile);
-  return NextResponse.json(data);
+  return Response.json(data);
 }

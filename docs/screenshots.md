@@ -50,8 +50,9 @@ The setup script resets `/srv/checkout-service` and the dedicated `charondemo`
 user's agent state; reserve both for this demonstration.
 
 1. Use a current production build. On a separate checkout, run
-   `node node_modules/next/dist/bin/next build`. The repository's `npm run build`
-   also migrates and triggers deployment; the demo only needs the build output.
+   `node scripts/build-client.mjs && node scripts/build-server.mjs`. The
+   repository's `npm run build` also migrates and triggers deployment; the demo
+   only needs the build output.
 2. Install the optional capture dependency without changing the lockfile:
    `npm install --no-save --package-lock=false playwright`, then
    `npx playwright install chromium`.

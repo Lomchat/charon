@@ -1,4 +1,3 @@
-import { NextResponse } from 'next/server';
 import { and, eq, ne } from 'drizzle-orm';
 import { db, agentSessions, sessionNotificationSettings, vps } from '@/lib/db';
 import { requireApiSession } from '@/lib/server/session';
@@ -11,5 +10,5 @@ export async function GET() {
     .from(agentSessions).innerJoin(vps, eq(vps.id, agentSessions.vpsId))
     .leftJoin(sessionNotificationSettings, eq(sessionNotificationSettings.sessionId, agentSessions.id))
     .where(and(eq(agentSessions.archived, 0), ne(agentSessions.status, 'killed'))).all();
-  return NextResponse.json(rows.map(({ telegram, ...session }) => ({ ...session, telegramException: telegram !== null })));
+  return Response.json(rows.map(({ telegram, ...session }) => ({ ...session, telegramException: telegram !== null })));
 }

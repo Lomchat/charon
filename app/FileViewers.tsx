@@ -1,6 +1,6 @@
 'use client';
 import { useEffect, useRef, useState } from 'react';
-import dynamic from 'next/dynamic';
+import dynamic from '@/app/dynamic';
 import ImageViewer from './ImageViewer';
 import MarkdownFileView from './MarkdownFileView';
 import type { ByteViewerProps, TextViewerProps, ViewerKind } from './fileViews';

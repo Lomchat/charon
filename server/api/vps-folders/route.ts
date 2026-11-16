@@ -1,4 +1,3 @@
-import { NextResponse } from 'next/server';
 import crypto from 'node:crypto';
 import { db, vpsFolders } from '@/lib/db';
 import { requireApiSession } from '@/lib/server/session';
@@ -15,7 +14,7 @@ export async function GET() {
   const s = await requireApiSession();
   if (s instanceof Response) return s;
   const rows = db.select().from(vpsFolders).orderBy(asc(vpsFolders.position), asc(vpsFolders.createdAt)).all();
-  return NextResponse.json({ folders: rows });
+  return Response.json({ folders: rows });
 }
 
 // POST /api/vps-folders — creates a new folder. By default we insert it
@@ -27,9 +26,9 @@ export async function POST(req: Request) {
   const s = await requireApiSession();
   if (s instanceof Response) return s;
   const body = await req.json().catch(() => null) as { name?: string; position?: number } | null;
-  if (!body) return NextResponse.json({ error: 'invalid json' }, { status: 400 });
+  if (!body) return Response.json({ error: 'invalid json' }, { status: 400 });
   const name = String(body.name ?? '').trim();
-  if (!name) return NextResponse.json({ error: 'name required' }, { status: 400 });
+  if (!name) return Response.json({ error: 'name required' }, { status: 400 });
 
   let position: number;
   if (typeof body.position === 'number' && Number.isFinite(body.position)) {
@@ -61,5 +60,5 @@ export async function POST(req: Request) {
   });
 
   const [created] = db.select().from(vpsFolders).where(eq(vpsFolders.id, id)).all();
-  return NextResponse.json(created);
+  return Response.json(created);
 }

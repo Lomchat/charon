@@ -1,4 +1,3 @@
-import { NextResponse } from 'next/server';
 import { sql } from 'drizzle-orm';
 import { db } from '@/lib/db';
 import { requireApiSession } from '@/lib/server/session';
@@ -100,7 +99,7 @@ export async function GET(_req: Request, { params }: { params: Promise<{ id: str
       edits.push(e);
     }
 
-    const response = NextResponse.json({ edits, truncatedList });
+    const response = Response.json({ edits, truncatedList });
     const totalMs = performance.now() - perfStarted;
     response.headers.set('server-timing', `edits;dur=${totalMs.toFixed(1)}`);
     if (totalMs > 250) {
@@ -114,6 +113,6 @@ export async function GET(_req: Request, { params }: { params: Promise<{ id: str
     // JSON parse failure). Diffs are non-critical UI; the client retries.
     // eslint-disable-next-line no-console
     console.error(`[api/sessions/${id}/edits GET] failed:`, e?.stack ?? e);
-    return NextResponse.json({ error: e?.message ?? String(e) }, { status: 503 });
+    return Response.json({ error: e?.message ?? String(e) }, { status: 503 });
   }
 }

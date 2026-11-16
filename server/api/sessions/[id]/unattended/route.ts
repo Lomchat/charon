@@ -1,4 +1,3 @@
-import { NextResponse } from 'next/server';
 import { and, eq } from 'drizzle-orm';
 import { db, agentSessions, sessionPendingPermissions, sessionPendingQuestions } from '@/lib/db';
 import { requireApiSession } from '@/lib/server/session';
@@ -15,12 +14,12 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
   const { id } = await params;
   const body = await req.json().catch(() => null);
   if (typeof body?.unattended !== 'boolean') {
-    return NextResponse.json({ error: 'unattended must be true or false' }, { status: 400 });
+    return Response.json({ error: 'unattended must be true or false' }, { status: 400 });
   }
   const on = body.unattended as boolean;
   const changed = db.update(agentSessions).set({ unattended: on ? 1 : 0 })
     .where(eq(agentSessions.id, id)).run().changes;
-  if (!changed) return NextResponse.json({ error: 'session not found' }, { status: 404 });
+  if (!changed) return Response.json({ error: 'session not found' }, { status: 404 });
   markSummaryDirty(id);
   let declined = 0;
   if (on) {
@@ -39,5 +38,5 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
       if (declined) markSummaryDirty(id);
     }
   }
-  return NextResponse.json({ ok: true, unattended: on, declined, sync: syncAfter([id]) });
+  return Response.json({ ok: true, unattended: on, declined, sync: syncAfter([id]) });
 }

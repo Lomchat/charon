@@ -13,14 +13,15 @@ npm run db:migrate
 npm run dev           # http://127.0.0.1:10556
 ```
 
-`npm run dev` (like `npm start`) runs `server.js`, a custom Next server that also
-handles the shell WebSocket upgrade (App Router routes can't). `HOST` / `PORT`
-override the defaults. You also need one VPS to test against: a throwaway
+`npm run dev` runs `server.js` with the UI served by Vite (hot reload) and the
+server bundle rebuilt on every change; `npm start` runs the production build.
+`HOST` / `PORT` override the defaults. You also need one VPS to test against: a throwaway
 Ubuntu/Debian box with your key in `authorized_keys` is enough.
 
 ## Repo map
 
-- `app/` — the UI (Next.js App Router): one responsive UI at `/`.
+- `app/` — the UI (React): one responsive UI at `/`; `web/` — the page entries
+  (HTML + mount) Vite builds.
 - `server/api/**/route.ts` — the API routes, served by the Hono router
   (`server/apiRouter.ts`).
 - `lib/` — server logic (DB, auth, crypto, agent client pool, bootstrap) and
@@ -28,9 +29,10 @@ Ubuntu/Debian box with your key in `authorized_keys` is enough.
 - `agent/charon_agent/` — the Python daemon run on each VPS; `agent/tests/` its
   `unittest` suites; `agent/dist/charon-agent.pyz` the built zipapp,
   **committed** and diffed by CI.
-- `server.js` — custom server; the shell WebSocket at `/api/shells/<id>/ws`
-  authenticates against SQLite itself (middleware doesn't run on upgrades).
-- `middleware.ts` — auth gate plus the CSRF `Origin` check.
+- `server/http/` — the HTTP app (Hono): auth gate + CSRF `Origin` check
+  (`gate.ts`), pages, login, client build files.
+- `server.js` — the process; the shell WebSocket at `/api/shells/<id>/ws`
+  authenticates against SQLite itself (the gate never sees an upgrade).
 - `tests/` — Vitest suites for the hub.
 - `drizzle/` — SQL migrations + journal.
 - `scripts/` — `migrate.mjs`, the prebuild `check-protocol-sync.mjs`, CI's
@@ -99,7 +101,7 @@ npm run test:py     # stdlib unittest — agent/tests/ (newest python3.13…3.10
 ```
 
 Add a regression test with a bug fix and coverage for new pure logic. What needs
-the Next request lifecycle or a live VPS isn't unit-testable: describe your
+a browser or a live VPS isn't unit-testable: describe your
 manual verification in the PR.
 
 ## Submitting a PR
@@ -113,7 +115,7 @@ manual verification in the PR.
    npm run typecheck
    npm test && npm run test:py
    DATABASE_URL=/tmp/charon-ci.db npm run db:migrate   # fresh DB
-   npm run build                                        # protocol sync + Next build
+   npm run build                                        # protocol sync + Vite + server bundle
    bash agent/build.sh                                  # if you touched agent/
    git diff --exit-code agent/dist/charon-agent.pyz     # must be clean
    ```

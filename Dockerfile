@@ -1,7 +1,7 @@
 # syntax=docker/dockerfile:1.7
 
 # -----------------------------------------------------------------------------
-# Stage 1 : install deps + build the Next app.
+# Stage 1 : install deps + build the hub (Vite client + server bundle).
 #
 # Uses Debian-slim because `better-sqlite3` ships native modules that require
 # build-essential + python at install time (no precompiled prebuilds for every
@@ -37,17 +37,15 @@ ENV NODE_ENV=production \
 
 RUN npm run build
 
-# Trim what the runner stage will copy:
-# - .next/cache is webpack build cache, useless at runtime and huge.
-# - devDependencies are only needed for the build above.
-RUN rm -rf .next/cache \
-  && npm prune --omit=dev --no-audit --no-fund
+# devDependencies (Vite, esbuild, TypeScript…) are only needed for the build
+# above: the runner stage copies a pruned node_modules.
+RUN npm prune --omit=dev --no-audit --no-fund
 
 
 # -----------------------------------------------------------------------------
 # Stage 2 : minimal runtime image.
 #
-# Includes: Node 20, openssh-client (Charon spawns ssh), the prebuilt .next,
+# Includes: Node 20, openssh-client (Charon spawns ssh), the built dist/,
 # the agent zipapp (charon-agent.pyz), and node_modules pruned to production.
 # -----------------------------------------------------------------------------
 FROM node:20-bookworm-slim AS runner
@@ -82,16 +80,13 @@ RUN apt-get update \
 
 COPY --from=builder --chown=charon:charon /app/package.json /app/package-lock.json ./
 COPY --from=builder --chown=charon:charon /app/node_modules ./node_modules
-COPY --from=builder --chown=charon:charon /app/.next ./.next
-COPY --from=builder --chown=charon:charon /app/public ./public
-COPY --from=builder --chown=charon:charon /app/next.config.mjs ./next.config.mjs
+COPY --from=builder --chown=charon:charon /app/dist ./dist
 COPY --from=builder --chown=charon:charon /app/drizzle ./drizzle
 COPY --from=builder --chown=charon:charon /app/scripts ./scripts
 COPY --from=builder --chown=charon:charon /app/lib ./lib
 COPY --from=builder --chown=charon:charon /app/agent ./agent
-# server.js is the REAL entrypoint: custom Next server + the WebSocket
-# upgrade for /api/shells/[id]/ws. `next start` alone would silently ship
-# an app with broken shells.
+# server.js is THE entrypoint: the HTTP app (dist/server) + the WebSocket
+# upgrade for /api/shells/[id]/ws.
 COPY --from=builder --chown=charon:charon /app/server.js ./server.js
 
 # Entrypoint: repairs bind-mount ownership, preflights the config, applies the
@@ -113,7 +108,7 @@ EXPOSE 10556
 HEALTHCHECK --interval=30s --timeout=5s --start-period=15s --retries=3 \
   CMD node -e "fetch('http://127.0.0.1:'+(process.env.PORT||10556)+'/api/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"
 
-# node server.js — NOT `next start`: server.js hosts the WS shell bridge.
+# node server.js: the HTTP app and the WS shell bridge.
 # HOST/PORT come from the env (defaults above).
 ENTRYPOINT ["/usr/bin/tini", "--", "/usr/local/bin/entrypoint.sh"]
 CMD ["node", "server.js"]

@@ -2,11 +2,12 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties } from 'react';
 import type { PDFDocumentLoadingTask, PDFDocumentProxy, RenderTask } from 'pdfjs-dist';
 import { wheelFactor } from './fileViews';
+import pdfWorkerUrl from 'pdfjs-dist/legacy/build/pdf.worker.min.mjs?url';
 
 // The PDF pane (§14.110). The browser's own viewer cannot be the answer here:
 // Chrome refuses it inside a sandboxed response, Android has none at all, and
 // iOS paints one page as a picture. pdf.js renders the same pages everywhere.
-// Lazy twice over: this module is a next/dynamic chunk, and pdf.js itself
+// Lazy twice over: this module is a lazy chunk (app/dynamic.tsx), and pdf.js itself
 // (~1MB + its worker) is imported only once a PDF is actually opened.
 
 type PdfJs = typeof import('pdfjs-dist/legacy/build/pdf.mjs');
@@ -16,9 +17,7 @@ function loadPdfJs(): Promise<PdfJs> {
   pdfjsPromise ??= import('pdfjs-dist/legacy/build/pdf.mjs').then((m) => {
     // The worker is emitted as a plain asset (never re-bundled): pdf.js loads
     // it as a module worker from this URL.
-    m.GlobalWorkerOptions.workerSrc = new URL(
-      'pdfjs-dist/legacy/build/pdf.worker.min.mjs', import.meta.url,
-    ).toString();
+    m.GlobalWorkerOptions.workerSrc = pdfWorkerUrl;
     return m;
   }).catch((e: unknown) => { pdfjsPromise = null; throw e; });
   return pdfjsPromise;

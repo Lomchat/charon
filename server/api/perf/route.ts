@@ -1,4 +1,3 @@
-import { NextResponse } from 'next/server';
 import { requireApiSession } from '@/lib/server/session';
 import { loopLagSnapshot } from '@/lib/server/perf/loopLag';
 import { syncStats } from '@/lib/server/sync/syncBus';
@@ -15,7 +14,7 @@ export const dynamic = 'force-dynamic';
 export async function GET() {
   const s = await requireApiSession();
   if (s instanceof Response) return s;
-  return NextResponse.json(
+  return Response.json(
     { loop: loopLagSnapshot(), sync: syncStats() },
     { headers: { 'cache-control': 'no-store' } },
   );

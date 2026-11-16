@@ -1,4 +1,3 @@
-import { NextResponse } from 'next/server';
 import { requireApiSession } from '@/lib/server/session';
 import { getOrCreateStream, resumeSession } from '@/lib/server/agent/sessionOps';
 import { getAgentClientForVpsId } from '@/lib/server/agent/AgentClientPool';
@@ -21,21 +20,21 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
   if (auth instanceof Response) return auth;
   const { id } = await params;
   const stream = getOrCreateStream(id);
-  if (!stream) return NextResponse.json({ error: 'session not found' }, { status: 404 });
+  if (!stream) return Response.json({ error: 'session not found' }, { status: 404 });
   const kind = asSessionProvider(stream.kind);
   const body = await req.json().catch(() => null) as
     { objective?: unknown; tokenBudget?: unknown; dismiss?: unknown } | null;
 
   if (body?.dismiss === true) {
     if (dismissGoal(id)) markSummaryDirty(id);
-    return NextResponse.json({ ok: true, sync: syncAfter([id]) });
+    return Response.json({ ok: true, sync: syncAfter([id]) });
   }
   if (!supportsSessionCapability(kind, 'goal')) {
-    return NextResponse.json({ error: 'This backend has no goals.' }, { status: 400 });
+    return Response.json({ error: 'This backend has no goals.' }, { status: 400 });
   }
   const raw = body?.objective;
   if (raw !== null && (typeof raw !== 'string' || !raw.trim())) {
-    return NextResponse.json({ error: 'objective must be a non-empty string or null' }, { status: 400 });
+    return Response.json({ error: 'objective must be a non-empty string or null' }, { status: 400 });
   }
   const objective = typeof raw === 'string' ? raw.trim().slice(0, 4000) : null;
   const budget = typeof body?.tokenBudget === 'number' && Number.isInteger(body.tokenBudget) && body.tokenBudget > 0
@@ -46,19 +45,19 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
       // A reached / impossible goal has no hook left to clear: just close it.
       if (objective === null && !goalIsLive(readGoal(id))) {
         if (dismissGoal(id)) markSummaryDirty(id);
-        return NextResponse.json({ ok: true, sync: syncAfter([id]) });
+        return Response.json({ ok: true, sync: syncAfter([id]) });
       }
       await stream.sendUserMessage(claudeGoalCommand(objective));
-      return NextResponse.json({ ok: true, sync: syncAfter([id]) });
+      return Response.json({ ok: true, sync: syncAfter([id]) });
     }
     const live = RUNNING.has(stream.status) ? stream : await resumeSession(id);
     const r = await getAgentClientForVpsId(live.vpsId).call<{ ok?: boolean; error?: string; goal?: WireSessionGoal | null }>(
       'set_goal', { session_id: id, objective, token_budget: budget },
     );
-    if (r?.ok === false) return NextResponse.json({ error: r.error || 'The goal was refused.' }, { status: 409 });
+    if (r?.ok === false) return Response.json({ error: r.error || 'The goal was refused.' }, { status: 409 });
     if (r && 'goal' in r && recordGoal(id, r.goal ?? null, Date.now())) markSummaryDirty(id);
-    return NextResponse.json({ ok: true, sync: syncAfter([id]) });
+    return Response.json({ ok: true, sync: syncAfter([id]) });
   } catch (e) {
-    return NextResponse.json({ error: (e as Error)?.message ?? String(e) }, { status: 500 });
+    return Response.json({ error: (e as Error)?.message ?? String(e) }, { status: 500 });
   }
 }

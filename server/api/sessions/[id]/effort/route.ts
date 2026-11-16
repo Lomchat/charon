@@ -2,7 +2,6 @@ import { db, agentSessions } from '@/lib/db';
 import { eq } from 'drizzle-orm';
 import { connectionConfig } from '@/lib/server/customEndpoints';
 import { queueEndpoint } from '@/lib/server/agent/endpointOps';
-import { NextResponse } from 'next/server';
 import { requireApiSession } from '@/lib/server/session';
 import { syncAfter } from '@/lib/server/sync/sessionSummaries';
 import { getOrCreateStream } from '@/lib/server/agent/sessionOps';
@@ -36,19 +35,19 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
   if (s instanceof Response) return s;
   const { id } = await params;
   const stream = getOrCreateStream(id);
-  if (!stream) return NextResponse.json({ error: 'session not found' }, { status: 404 });
+  if (!stream) return Response.json({ error: 'session not found' }, { status: 404 });
   const body = await req.json().catch(() => ({}));
   const raw = body?.effort;
   const kind = asSessionProvider(stream.kind);
   const row = db.select().from(agentSessions).where(eq(agentSessions.id, id)).get();
   const endpoint = connectionConfig(row?.providerConfig).customEndpoint;
   if (endpoint) {
-    if (row?.archived) return NextResponse.json({ error: 'Unarchive this session before changing parameters.' }, { status: 400 });
-    if (raw != null && typeof raw !== 'string') return NextResponse.json({ error: 'Invalid endpoint parameters.' }, { status: 400 });
+    if (row?.archived) return Response.json({ error: 'Unarchive this session before changing parameters.' }, { status: 400 });
+    if (raw != null && typeof raw !== 'string') return Response.json({ error: 'Invalid endpoint parameters.' }, { status: 400 });
     try {
       await queueEndpoint(id, endpoint, raw || null);
-      return NextResponse.json({ ok: true, sync: syncAfter([id]) });
-    } catch (e) { return NextResponse.json({ error: e instanceof Error ? e.message : 'Could not configure parameters.' }, { status: 400 }); }
+      return Response.json({ ok: true, sync: syncAfter([id]) });
+    } catch (e) { return Response.json({ error: e instanceof Error ? e.message : 'Could not configure parameters.' }, { status: 400 }); }
   }
   // Codex efforts are a different set (none/minimal/low/medium/high/xhigh/max/
   // ultra), catalog-gated per model; Claude uses isKnownEffort. The agent is
@@ -66,15 +65,15 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
   } else if (typeof raw === 'string' && isEffortAcceptable(kind, raw)) {
     effort = raw;
   } else {
-    return NextResponse.json(
+    return Response.json(
       { error: `invalid effort '${raw}'; expected a ${PROVIDERS[kind].label} effort level or null` },
       { status: 400 },
     );
   }
   try {
     await stream.setEffort(effort as any, kind === 'claude' ? ultracode : undefined);
-    return NextResponse.json({ ok: true, sync: syncAfter([id]) });
+    return Response.json({ ok: true, sync: syncAfter([id]) });
   } catch (e: any) {
-    return NextResponse.json({ error: e?.message ?? String(e) }, { status: 500 });
+    return Response.json({ error: e?.message ?? String(e) }, { status: 500 });
   }
 }

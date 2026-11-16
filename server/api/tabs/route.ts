@@ -1,4 +1,4 @@
-import { NextResponse } from 'next/server';
+import { json } from '@/lib/server/http/json';
 import { requireApiSession } from '@/lib/server/session';
 import { currentRev } from '@/lib/server/sync/syncBus';
 import { emitGlobalTabsChanged } from '@/lib/server/agent/sessionOps';
@@ -18,7 +18,7 @@ export async function GET() {
   const s = await requireApiSession();
   if (s instanceof Response) return s;
   // `sync`: the bus revision this layout reflects (a resync refetch compares it).
-  return NextResponse.json<TabsResponse>({ tabs: listTabs(), sync: currentRev() });
+  return json<TabsResponse>({ tabs: listTabs(), sync: currentRev() });
 }
 
 export async function POST(req: Request) {
@@ -26,7 +26,7 @@ export async function POST(req: Request) {
   if (s instanceof Response) return s;
 
   let body: OpenTabBody;
-  try { body = await req.json(); } catch { return NextResponse.json({ error: 'invalid body' }, { status: 400 }); }
+  try { body = await req.json(); } catch { return Response.json({ error: 'invalid body' }, { status: 400 }); }
   const vpsId = String(body?.vpsId ?? '');
   const kind = String(body?.kind ?? '');
   const ref = String(body?.ref ?? '');
@@ -34,12 +34,12 @@ export async function POST(req: Request) {
   // it is the only field not required to be non-empty.
   const path = String(body?.path ?? '');
   if (!vpsId || !ref || !isTabKind(kind)) {
-    return NextResponse.json({ error: 'vpsId, kind and ref are required' }, { status: 400 });
+    return Response.json({ error: 'vpsId, kind and ref are required' }, { status: 400 });
   }
 
   const tab = openTab({ vpsId, path, kind, ref, pin: !!body?.pin });
   emitGlobalTabsChanged();
-  return NextResponse.json({ tab, tabs: listTabs() });
+  return Response.json({ tab, tabs: listTabs() });
 }
 
 export async function DELETE(req: Request) {
@@ -51,9 +51,9 @@ export async function DELETE(req: Request) {
   const exceptId = url.searchParams.get('exceptId') ?? undefined;
   // A bare DELETE would close everything — make the caller be explicit.
   if (vpsId === undefined && path === undefined && exceptId === undefined) {
-    return NextResponse.json({ error: 'a filter is required' }, { status: 400 });
+    return Response.json({ error: 'a filter is required' }, { status: 400 });
   }
   const n = closeTabsWhere({ vpsId, path, exceptId });
   if (n) emitGlobalTabsChanged();
-  return NextResponse.json({ ok: true, closed: n, tabs: listTabs() });
+  return Response.json({ ok: true, closed: n, tabs: listTabs() });
 }

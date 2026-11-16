@@ -4,8 +4,8 @@
 //
 // Used by the login flow so an inactivity-logout from /m/... bounces the user
 // back to where they were instead of always landing on the desktop "/" UI.
-// `middleware.ts` writes the originating `pathname + search` into ?next=...,
-// and `app/login/{page.tsx,actions.ts}` read it back through this guard.
+// The HTTP gate (server/http/gate.ts) writes the originating `pathname + search`
+// into ?next=..., and the login page + POST (server/http/) read it back here.
 export function sanitizeNextPath(raw: unknown, fallback = '/'): string {
   if (typeof raw !== 'string') return fallback;
   const s = raw.trim();

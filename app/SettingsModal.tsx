@@ -1,5 +1,5 @@
 'use client';
-import dynamic from 'next/dynamic';
+import dynamic from '@/app/dynamic';
 const CustomEndpointsSettings = dynamic(() => import('./CustomEndpointsSettings'), { ssr: false });
 import PickerControl, { PickerOption } from './PickerControl';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
