@@ -122,6 +122,9 @@ _TOOLS = [
                 "mode": {"type": "string", "description": "Permission mode, capped at this session's"},
                 "cwd": {"type": "string",
                         "description": "Absolute path: this session's cwd (default) or a folder inside it"},
+                "unattended": {"type": "boolean",
+                               "description": "True when nobody will watch it: its permission requests and "
+                                              "questions are refused at once and it carries on without them"},
             },
             "required": ["task"],
             "additionalProperties": False,
@@ -255,7 +258,7 @@ def _handle(request: dict[str, Any], source_session_id: str, socket_path: str) -
                 })
             elif name == "start_sub_session":
                 spawn = {"source_session_id": source_session_id}
-                for key in ("task", "name", "provider", "model", "effort", "mode", "cwd"):
+                for key in ("task", "name", "provider", "model", "effort", "mode", "cwd", "unattended"):
                     if args.get(key) is not None:
                         spawn[key] = args[key]
                 # Hub answer (25 s) + child readiness (20 s) + slack.

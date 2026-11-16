@@ -98,6 +98,8 @@ type Props = {
   compacting?: boolean;
   compactDisabled?: boolean;
   compactError?: string | null;
+  /** What drives usage beyond the context (lib/usageDrivers.ts, §14.119). */
+  usage?: import('./SessionInsight').InsightUsage | null;
   /** The conversation is still downloading: hold the inspector's requests
    *  (one inventory can weigh a megabyte) until it lands, unless the user
    *  opens the Tools tab meanwhile. */
@@ -179,7 +181,7 @@ function ToolPanel({
   vpsId = null, cwd = null, repoBusy = false, requestedTab = null, onTabConsumed,
   onReveal, context = null, contextLoaded = false, contextLoading = false,
   onRefreshContext, onCompact, compacting = false, compactDisabled = true,
-  compactError = null, deferInsight = false,
+  compactError = null, deferInsight = false, usage = null,
 }: Props) {
   // The right sidebar belongs to the tab-row GROUP `(vpsId, cwd)`, not to the
   // entity currently filling the main pane. SessionView is keyed by
@@ -443,6 +445,7 @@ function ToolPanel({
             compacting={compacting}
             compactDisabled={compactDisabled}
             compactError={compactError}
+            usage={usage}
             deferLoad={deferInsight && activeTab !== 'calls'}
           />}
           <InsightSection

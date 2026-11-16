@@ -49,6 +49,18 @@ export function providerName(kind: Kind): string {
   return PROVIDERS[asSessionProvider(kind)].label;
 }
 
+/** Goal copy per backend that has goals (capability `goal`, §14.119). */
+const GOAL_TEXT: Partial<Record<SessionProvider, { how: string; where: string }>> = {
+  claude: {
+    how: 'After every turn Claude checks this condition, and keeps working until it holds.',
+    where: 'Claude\'s /goal: checked after every turn by a small model reading the transcript.',
+  },
+  codex: {
+    how: 'Codex keeps working toward it, turn after turn, until it is done or the budget is spent.',
+    where: 'Codex\'s thread goal: it keeps opening turns until done or out of budget.',
+  },
+};
+
 export const providerText = {
   /** Transient bar while a turn runs. */
   thinking: (kind: Kind) => `${providerName(kind)} is thinking`,
@@ -173,6 +185,13 @@ export const providerText = {
   /** The fleet default for a provider that owns its own approval reviewer. */
   autoReviewDefault: (kind: Kind) =>
     `let the ${providerName(kind)} reviewer decide approvals for new sessions`,
+  /** The goal editor's explanation (§14.119): how this backend pursues one. */
+  goalHow: (kind: Kind) => GOAL_TEXT[kind as SessionProvider]?.how ?? '',
+  /** The goal panel's foot: where the goal lives. */
+  goalWhere: (kind: Kind) => GOAL_TEXT[kind as SessionProvider]?.where ?? '',
+  /** Ultracode, in the new-session form (§14.56). */
+  ultracodeHint: (kind: Kind) =>
+    `${providerName(kind)} plans big tasks as dynamic workflows of parallel agents, at any effort.`,
   /** Its permission profiles, readable only from a live session (§14.96). */
   profilesUnavailable: (kind: Kind) =>
     `profiles unavailable until the ${providerName(kind)} session is running on a compatible agent`,
@@ -233,6 +252,8 @@ export const MODE_SWITCH_META: Record<string, { glyph: string; label: string; ti
 
 /** Background-work constellation: shared copy for all providers. */
 export const backgroundWorkText = {
+  timeLimit: 'time limit',
+  timeLimitHint: 'Claude Code stopped this command at its background time limit (30 min by default, 2 h at most in a Charon session). Use a Charon terminal for a server that must keep running.',
   activity: 'Activity', agentDetails: 'Agent details', outputResult: 'Output / result', savedActivity: 'Saved activity',
   mission: 'Mission', workflowMission: 'Workflow mission', missionExcerpt: 'Mission excerpt', model: 'Model', phase: 'Phase',
   lastActivity: 'Last activity', action: 'action', file: 'file', error: 'error', actions: 'actions', files: 'files', errors: 'errors', loadedHistory: 'Loaded history', partialHistory: 'Loaded portion of history',

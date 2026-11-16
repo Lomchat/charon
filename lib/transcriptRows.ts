@@ -89,6 +89,8 @@ export const FRAME_SNAPSHOT_CLASS: Record<KnownFrameType, SnapshotClass> = {
   structured_output: 'durable',
   compaction: 'durable',
   scheduled_fire: 'durable',
+  side_question: 'durable',
+  side_answer: 'durable',
   external_message: 'durable',
   peer_message_status: 'durable',
   plan_update: 'durable',

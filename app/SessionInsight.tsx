@@ -3,7 +3,10 @@ import PickerControl from './PickerControl';
 import { agentKindLabel } from './AgentLogo';
 import { providerText } from '@/lib/providerText';
 
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import {
+  coldResumeShare, fmtTokens, usageDrivers, type ColdResumeQuota, type DriverInput, type UsageDriver,
+} from '@/lib/usageDrivers';
 import type { AgentKind } from '@/lib/types/api';
 import { sessionCapabilities } from '@/lib/sessionCapabilities';
 import InsightSection from './InsightSection';
@@ -91,11 +94,43 @@ function compactNumber(value: number): string {
   return `${(value / 1_000_000).toFixed(1)}m`;
 }
 
+/** What drives usage beyond the context snapshot (lib/usageDrivers.ts). */
+export type InsightUsage = Omit<DriverInput, 'contextTokens' | 'breakdown' | 'fixed'>;
+
+/** The drivers, heaviest first, each with its share bar, numbers and remedy. */
+function UsageDriversList({ drivers, quota, contextTokens }: {
+  drivers: UsageDriver[]; quota?: ColdResumeQuota | null; contextTokens: number | null;
+}) {
+  const top = Math.max(1, ...drivers.map((d) => d.tokens ?? 0));
+  const cold = contextTokens ? coldResumeShare(contextTokens, quota) : null;
+  return <>
+    {cold && <p className={`ud-cold${cold.worthSaying ? ' worth' : ''}`}>
+      A message after the cache expires re-sends {fmtTokens(contextTokens!)} tokens:
+      about <b>{cold.percent < 1 ? '<1' : Math.round(cold.percent)}%</b> of your 5-hour limit.
+    </p>}
+    {drivers.length ? <ul className="ud-list">
+      {drivers.map((d) => <li key={d.key} className={`ud-row ${d.tone}`}>
+        <div className="ud-head">
+          <i className="ud-dot" aria-hidden />
+          <b>{d.label}</b>
+          {d.tokens != null && <span className="ud-tokens">{fmtTokens(d.tokens)}</span>}
+        </div>
+        {d.tokens != null && <span className="ud-bar" aria-hidden>
+          <span style={{ width: `${Math.max(2, Math.round(((d.tokens ?? 0) / top) * 100))}%` }} />
+        </span>}
+        <p className="ud-detail">{d.detail}</p>
+        <p className="ud-advice">{d.advice}</p>
+      </li>)}
+    </ul> : <p className="si-none">nothing notable yet</p>}
+  </>;
+}
+
 export default function SessionInsight({
   sessionId, kind, context: ctx, contextLoaded, contextLoading,
   onRefreshContext, onCompact, compacting, compactDisabled, compactError,
-  deferLoad = false,
+  deferLoad = false, usage = null,
 }: {
+  usage?: InsightUsage | null;
   /** Hold the first load (the transcript is still downloading). One-way:
    *  once started, flipping back never cancels it. */
   deferLoad?: boolean;
@@ -112,6 +147,10 @@ export default function SessionInsight({
 }) {
   const isCodex = kind === 'codex';
   const capabilities = sessionCapabilities(kind);
+  const contextTokens = Number(ctx?.total_tokens) > 0 ? Number(ctx?.total_tokens) : null;
+  const drivers = useMemo(() => usage ? usageDrivers({
+    ...usage, contextTokens, breakdown: ctx?.breakdown ?? null, fixed: ctx?.fixed ?? null,
+  }) : [], [usage, contextTokens, ctx?.breakdown, ctx?.fixed]);
   const hasSecurity = capabilities.permissionProfiles !== 'none';
   // `session_resources` is the skills/commands/apps inventory — asked only
   // where at least one of them exists.
@@ -550,6 +589,11 @@ export default function SessionInsight({
         )}
         </>}
       </InsightSection>
+
+      {usage && <InsightSection title="what drives usage" defaultOpen
+        meta={(() => { const n = drivers.filter((d) => d.tone !== 'calm').length; return drivers.length ? (n ? `${n} to watch` : 'all calm') : '—'; })()}>
+        <UsageDriversList drivers={drivers} quota={ctx?.cold_resume_quota} contextTokens={contextTokens} />
+      </InsightSection>}
 
       {capabilities.mcp === 'native' && <InsightSection title="MCP servers" defaultOpen loading={!loaded.mcp}
         meta={!loaded.mcp ? 'loading…' : (mcp?.ok

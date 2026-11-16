@@ -696,6 +696,15 @@ export const api = {
   unarchiveSession: (id: string) =>
     send<OkResponse & ActionSyncStamp>('DELETE', `/api/sessions/${id}/archive`),
   /** Hide or show a session with its sub-sessions (§14.118). */
+  askSideQuestion: (id: string, question: string) =>
+    send<OkResponse & ActionSyncStamp & { rowId: number }>('POST', `/api/sessions/${id}/side`, { question }),
+  setSessionGoal: (id: string, objective: string | null, tokenBudget?: number | null) =>
+    send<OkResponse & ActionSyncStamp>('POST', `/api/sessions/${id}/goal`,
+      { objective, ...(tokenBudget ? { tokenBudget } : {}) }),
+  dismissSessionGoal: (id: string) =>
+    send<OkResponse & ActionSyncStamp>('POST', `/api/sessions/${id}/goal`, { dismiss: true }),
+  setSessionUnattended: (id: string, unattended: boolean) =>
+    send<OkResponse & ActionSyncStamp & { unattended: boolean; declined: number }>('POST', `/api/sessions/${id}/unattended`, { unattended }),
   setSessionHidden: (id: string, hidden: boolean) =>
     send<OkResponse & ActionSyncStamp & { hidden: boolean; ids: string[] }>('POST', `/api/sessions/${id}/hidden`, { hidden }),
   renameAgentSession: (id: string, name: string | null) =>
@@ -812,9 +821,9 @@ export const api = {
   setSessionModel: (id: string, model: string | null, fallbackModel: string | null = null) =>
     send<SetSessionModelResponse>('POST', `/api/sessions/${id}/model`,
       { model, fallbackModel } as SetSessionModelBody),
-  setSessionEffort: (id: string, effort: string | null) =>
+  setSessionEffort: (id: string, effort: string | null, ultracode?: boolean) =>
     send<SetSessionEffortResponse>('POST', `/api/sessions/${id}/effort`,
-      { effort } as SetSessionEffortBody),
+      (typeof ultracode === 'boolean' ? { effort, ultracode } : { effort }) as SetSessionEffortBody),
   // Codex model catalog for a VPS (account-driven, per-VPS). Mirrors
   // getClaudeModels but sourced from the agent's list_codex_models RPC.
   getCodexModels: (vpsId: string, profile = "default") =>

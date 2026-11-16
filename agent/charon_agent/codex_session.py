@@ -639,6 +639,42 @@ async def fetch_codex_usage(account_profile: str = "default") -> dict[str, Any]:
                 pass
 
 
+
+# Codex goal status → Charon's (lib/sessionGoal.ts): `complete` reads `met`.
+_CODEX_GOAL_STATUS = {
+    "active": "active", "paused": "paused", "blocked": "blocked",
+    "usageLimited": "usage_limited", "budgetLimited": "budget_limited", "complete": "met",
+}
+
+
+def codex_goal_wire(goal: Any) -> dict[str, Any] | None:
+    """A ThreadGoal as the `goal` event carries it (§14.119)."""
+    if goal is None:
+        return None
+    objective = getattr(goal, "objective", None)
+    if not isinstance(objective, str) or not objective:
+        return None
+    status = getattr(goal, "status", None)
+    status = getattr(status, "value", status)
+
+    def _int(name: str) -> int | None:
+        v = getattr(goal, name, None)
+        return int(v) if isinstance(v, (int, float)) and not isinstance(v, bool) else None
+
+    def _ms(v: int | None) -> int | None:  # unix seconds; tolerate ms
+        return None if v is None else v if v > 10**12 else v * 1000
+
+    created, updated = _ms(_int("created_at")), _ms(_int("updated_at"))
+    return {
+        "objective": objective[:4000],
+        "status": _CODEX_GOAL_STATUS.get(str(status), "active"),
+        "tokens_used": _int("tokens_used"),
+        "token_budget": _int("token_budget"),
+        "time_used_s": _int("time_used_seconds"),
+        "set_at": created,
+        "updated_at": updated,
+    }
+
 class CodexSession:
     """An OpenAI Codex session isolated within the agent.
 
@@ -1018,6 +1054,46 @@ class CodexSession:
             apps_error = str(e)
         return {"ok": True, "skills": skills, "skill_errors": errors,
                 "apps": apps, "apps_error": apps_error}
+
+    async def set_goal(self, objective: str | None, token_budget: int | None = None) -> dict[str, Any]:
+        """Set (or clear, `objective=None`) the thread's goal: Codex keeps
+        working toward it across turns until met or its budget is spent."""
+        if self._client is None:
+            return {"ok": False, "error": "Codex thread is not running"}
+        tid = self.claude_session_id
+        if not tid or getattr(self, "_thread_unmaterialized", False):
+            return {"ok": False, "error": "send a first message before setting a goal"}
+        from openai_codex.generated.v2_all import ThreadGoalClearResponse, ThreadGoalSetResponse
+        if objective is None:
+            await self._client._client.request(
+                "thread/goal/clear", {"threadId": tid, "origin": "user"},
+                response_model=ThreadGoalClearResponse,
+            )
+            self._emit("goal", goal=None)
+            return {"ok": True, "goal": None}
+        params: dict[str, Any] = {"threadId": tid, "objective": objective, "status": "active", "origin": "user"}
+        if token_budget:
+            params["tokenBudget"] = token_budget
+        response = await self._client._client.request(
+            "thread/goal/set", params, response_model=ThreadGoalSetResponse,
+        )
+        goal = codex_goal_wire(getattr(response, "goal", None))
+        self._emit("goal", goal=goal)
+        return {"ok": True, "goal": goal}
+
+    async def _sync_goal(self) -> None:
+        tid = self.claude_session_id
+        if self._client is None or not tid:
+            return
+        try:
+            from openai_codex.generated.v2_all import ThreadGoalGetResponse
+            response = await self._client._client.request(
+                "thread/goal/get", {"threadId": tid}, response_model=ThreadGoalGetResponse,
+            )
+        except Exception as e:
+            print(f"[goal] {self.session_id}: thread/goal/get failed: {e}", file=sys.stderr)
+            return
+        self._emit("goal", goal=codex_goal_wire(getattr(response, "goal", None)))
 
     async def set_skill_enabled(self, path: str, enabled: bool) -> dict[str, Any]:
         if self._client is None:
@@ -2681,11 +2757,10 @@ class CodexSession:
                     out.append({"event": "tool_progress", "tool_use_id": item_id, "delta": stdin})
 
             elif pt == "ThreadGoalUpdatedNotification":
-                out.append({
-                    "event": "tool_activity", "kind": "goal",
-                    "id": getattr(payload, "thread_id", None) or "goal",
-                    "status": "updated", "detail": self._json_safe(getattr(payload, "goal", None)),
-                })
+                out.append({"event": "goal", "goal": codex_goal_wire(getattr(payload, "goal", None))})
+
+            elif pt == "ThreadGoalClearedNotification":
+                out.append({"event": "goal", "goal": None})
 
             elif pt == "TurnCompletedNotification":
                 turn = getattr(payload, "turn", None)
@@ -3340,6 +3415,8 @@ class CodexSession:
             # first user message is invalid in app-server.
             if resuming_known_thread:
                 self._schedule_external_turn_probe()
+                # The thread's goal survives in app-server; report it (§14.119).
+                asyncio.create_task(self._sync_goal())
             await self._start_fs_watch()
 
             # ── Turn loop ─────────────────────────────────────────────────────

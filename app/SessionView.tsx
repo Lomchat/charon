@@ -12,7 +12,11 @@ import EndpointEffortPicker, { EndpointEffortSummary } from './EndpointEffortPic
 import { isOpenCodeGo } from '@/lib/opencodeModels';
 
 import SessionSettingsModal from './SessionSettingsModal';
-import { IconGear, IconPause, IconPlay, IconStop, IconRewind, IconGitBranch } from './icons';
+import { IconGear, IconPause, IconPlay, IconStop, IconRewind, IconGitBranch, IconBullseye, IconChatSide } from './icons';
+import { goalIsLive, shownGoal } from '@/lib/sessionGoal';
+import { coldResumeShare, fmtTokens as fmtDriverTokens } from '@/lib/usageDrivers';
+import type { InsightUsage } from './SessionInsight';
+import type { TurnLedger } from '@/lib/promptCache';
 import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
 import type { Vps } from '@/lib/db/schema';
 import { addOverlay, getSummary, subscribeSummaries } from './sync/summaryStore';
@@ -30,6 +34,7 @@ import Message, { type Msg, summarizeToolInput } from './Message';
 import ToolPanel from './ToolPanel';
 import BgTasksBar from './BgTasksBar';
 import ScheduledTasksBar from './ScheduledTasksBar';
+import GoalBar, { GoalEditor } from './GoalBar';
 import UsageMeter, { UsageRings } from './UsageMeter';
 import SessionTokenMeter from './SessionTokenMeter';
 import type { SessionTokenUsage } from '@/lib/sessionTokenUsage';
@@ -208,13 +213,13 @@ export default function SessionView({
   });
   const {
     messages, currentAssistant, streamingInto, status, compacting: liveCompacting, runtimeOutdated, runtimeVersions, permissionMode,
-    model, fallbackModel, effort, modelPendingApply, effortPendingApply,
+    model, fallbackModel, effort, ultracode, modelPendingApply, effortPendingApply,
     effectiveModel, liveUsage, tokenUsage, responseSpeed,
     toolCalls, toolCallCount, edits, bgTasks,
     permQueue, questionQueue, exitPlanQueue,
     prefillInput, error, isLoadingHistory, isSyncing, historyReady,
     hasMore, isLoadingMore, view: transcriptView, windowInFlight, requestWindow,
-    send: streamSend, interrupt, forceStop, setMode, setModel, setEffort,
+    send: streamSend, interrupt, forceStop, setMode, setModel, setEffort, setUltracode,
     doSleep, doResume, doRestart,
     respondPermission, respondQuestion, respondExitPlan,
     clearPrefillInput, loadMoreHistory, setHistoryHold, clearError,
@@ -262,6 +267,22 @@ export default function SessionView({
   const compactAllowed = canCompactSession(status, sessionKind);
   // The prompt cache the last turn left, on the shared 30 s clock (§ prompt cache).
   const promptCache = useSessionCacheReading(selected);
+  // What drives usage (lib/usageDrivers.ts, §14.119): the loaded turns' cache
+  // ledgers and background work's own tokens. Recomputed on row changes only
+  // (never per token), and stable between them for the memo'd Tools panel.
+  const usageInput = useMemo((): InsightUsage => {
+    const ledgers: TurnLedger[] = [];
+    for (const m of messages) if (m.role === 'assistant' && m.turnUsage) ledgers.push(m.turnUsage);
+    let tokens = 0, items = 0, workflows = 0;
+    for (const t of bgTasks) {
+      const n = t.usage?.tokens ?? 0;
+      if (n > 0) { tokens += n; items++; if (t.taskType === 'local_workflow') workflows++; }
+    }
+    return {
+      ledgers: ledgers.slice(-40), background: { tokens, items, workflows },
+      effort, ultracode, ttlS: selected.promptCache?.ttlS ?? null,
+    };
+  }, [messages, bgTasks, effort, ultracode, selected.promptCache?.ttlS]);
   // The model's window, for the turn ledgers' "context N%" (PromptCacheMarks).
   const contextWindowTokens = Number(sessionContext?.max_tokens) > 0 ? Number(sessionContext?.max_tokens) : null;
 
@@ -317,6 +338,15 @@ export default function SessionView({
   const [compacting, setCompacting] = useState(false);
   const [compactError, setCompactError] = useState<string | null>(null);
   const [rewindOpen, setRewindOpen] = useState(false);
+  const [goalEditorOpen, setGoalEditorOpen] = useState(false);
+  // A question beside the conversation (§14.119): the row and its answer
+  // arrive as frames; a refusal puts the text back in the box (the caller).
+  const [asideError, setAsideError] = useState<string | null>(null);
+  const askAside = useCallback(async (question: string) => {
+    setAsideError(null);
+    try { await api.askSideQuestion(sessionId, question); }
+    catch (e) { setAsideError(e instanceof Error ? e.message : String(e)); throw e; }
+  }, [sessionId]);
   const [rewinding, setRewinding] = useState(false);
   const [rewindError, setRewindError] = useState<string | null>(null);
   const doCompact = useCallback(async () => {
@@ -928,6 +958,7 @@ export default function SessionView({
             usageAccountLabel={usageAccountLabel} accountSwitch={accountSwitch}
             kind={sessionKind} accountProfile={usageProfile} profileNumber={profileNumber} vpsId={vpsId} sessionId={sessionId} endpoint={endpoint} onEndpointChanged={refreshEndpoint}
             model={model} fallbackModel={fallbackModel} effort={effort}
+            ultracode={ultracode} onSetUltracode={sessionKind === 'claude' ? setUltracode : undefined}
             modelPendingApply={modelPendingApply} effortPendingApply={effortPendingApply}
             effectiveModel={effectiveModel}
             onSetModel={setModel} onSetEffort={setEffort}
@@ -971,6 +1002,11 @@ export default function SessionView({
                   disabled={rewinding || status === 'thinking' || status === 'starting' || status === 'sleeping' || status === 'error'}
                   aria-label="Rewind session" aria-busy={rewinding}
                   title={status === 'sleeping' || status === 'error' ? 'Resume the session before rewinding' : 'Rewind to an earlier turn'}><IconRewind /></button>
+              )}
+              {supportsSessionCapability(sessionKind, 'goal') && (
+                <button type="button" className={`session-action${goalIsLive(shownGoal(selected.goal)) ? ' has-goal' : ''}`}
+                  onClick={() => setGoalEditorOpen(true)}
+                  aria-label="Session goal" title={goalIsLive(shownGoal(selected.goal)) ? 'Change the goal' : 'Set a goal the session keeps working toward'}><IconBullseye /></button>
               )}
               <button type="button" className="session-action session-settings-button" onClick={() => setSessionSettingsOpen(true)} aria-label="Session settings" title="Session settings"><IconGear /></button>
             </div>
@@ -1199,6 +1235,12 @@ export default function SessionView({
         {/* What will wake the session later (CronCreate / ScheduleWakeup /
             /loop), from its summary. Same placement, same reason. */}
         <ScheduledTasksBar state={selected.scheduledTasks} sessionStatus={status ?? 'sleeping'} />
+        {/* What the session keeps working toward (§14.119). */}
+        {supportsSessionCapability(sessionKind, 'goal') && (
+          <GoalBar goal={selected.goal} sessionId={sessionId} provider={asSessionProvider(sessionKind)} />
+        )}
+        {goalEditorOpen && <GoalEditor sessionId={sessionId} provider={asSessionProvider(sessionKind)}
+          initial={selected.goal} onClose={() => setGoalEditorOpen(false)} />}
 
         {/* Async questions: ONE strip above the composer slot and above the
             Resume CTA (answering auto-resumes), never in place of either.
@@ -1245,6 +1287,25 @@ export default function SessionView({
             )}
           </PendingZone>
         ) : (
+          <>
+          {promptCache?.phase === 'cold' && status === 'active' && (() => {
+            // The next message re-sends everything without the cache (§14.119):
+            // say how much, and — subscription accounts — what share of the
+            // 5-hour limit that is (the CLI's own rate).
+            const tokens = promptCache.promptTokens;
+            const share = coldResumeShare(tokens, sessionContext?.cold_resume_quota);
+            const why = promptCache.reason === 'model' ? 'the model changed'
+              : promptCache.reason === 'account' ? 'the account changed' : 'it expired';
+            return <div className="cold-resume-note" role="note">
+              <span className="crn-ico" aria-hidden>❄</span>
+              <span>Cache cold ({why}): your next message re-sends <b>{fmtDriverTokens(tokens)}</b> tokens without it
+                {share?.worthSaying ? <> — about <b>{Math.round(share.percent)}%</b> of your 5-hour limit</> : null}.</span>
+            </div>;
+          })()}
+          {asideError && <div className="aside-error" role="alert">
+            <span>aside: {asideError}</span>
+            <button type="button" onClick={() => setAsideError(null)} aria-label="dismiss">×</button>
+          </div>}
           <ChatInputBar
             sessionId={sessionId}
             kind={sessionKind}
@@ -1260,7 +1321,9 @@ export default function SessionView({
             clearInsertRequest={clearInsertRequest}
             siblings={siblings}
             compacting={liveCompacting}
+            onAside={status === 'thinking' && supportsSessionCapability(sessionKind, 'sideQuestion') ? askAside : undefined}
           />
+          </>
         )}
         </ComposerWithAsyncStrip>
       </main>
@@ -1291,6 +1354,7 @@ export default function SessionView({
         compacting={compacting || liveCompacting}
         compactDisabled={!compactAllowed}
         compactError={compactError}
+        usage={supportsSessionCapability(sessionKind, 'contextUsage') ? usageInput : null}
         deferInsight={!historyReady}
       />
       {forkModalOpen && (
@@ -1423,7 +1487,11 @@ const ParentChip = memo(function ParentChip({ parentId, onOpen }: {
 const ChatInputBar = memo(function ChatInputBar({
   sessionId, kind, permissionMode, onSetMode, onSend, prefillInput, clearPrefillInput,
   pending, onUploadFiles, onDismissPending, insertRequest, clearInsertRequest, siblings, compacting = false,
+  onAside,
 }: {
+  /** Ask beside the conversation (§14.119), offered while a turn runs; the
+   *  answer never enters the context. Absent = no button. */
+  onAside?: (question: string) => Promise<void>;
   sessionId: string;
   kind: AgentKind;
   permissionMode: SessionMode;
@@ -1772,6 +1840,16 @@ const ChatInputBar = memo(function ChatInputBar({
     await onSend(content);
   }, [input, onSend, setInput, compacting]);
 
+  const aside = useCallback(async () => {
+    const question = input.trim();
+    if (!question || !onAside) return;
+    setInput('');
+    inputRef.current = '';
+    caretRef.current = 0;
+    try { await onAside(question); }
+    catch { setInput(question); inputRef.current = question; }
+  }, [input, onAside, setInput]);
+
   return (
     <footer
       ref={footerRef}
@@ -1887,6 +1965,11 @@ const ChatInputBar = memo(function ChatInputBar({
             if (e.key === 'Escape') { e.preventDefault(); setMention(null); return; }
           }
           if (e.key !== 'Enter') return;
+          if (e.altKey && onAside && !e.shiftKey && !e.ctrlKey && !e.metaKey) {
+            e.preventDefault();
+            void aside();
+            return;
+          }
           if (e.shiftKey || e.ctrlKey || e.metaKey || e.altKey) return;
           e.preventDefault();
           send();
@@ -1909,6 +1992,13 @@ const ChatInputBar = memo(function ChatInputBar({
         >
           <IconPaperclip />
         </button>
+        {onAside && (
+          <button type="button" className="aside" onClick={() => void aside()} disabled={!input.trim()}
+            aria-label="ask aside"
+            title="Ask aside (Alt+Enter): answered now, from what the session knows, without stopping it — neither the question nor the answer enters the conversation">
+            <IconChatSide /><span className="aside-label">aside</span>
+          </button>
+        )}
         {/* The word on a desktop, the icon on a phone (app.css). */}
         <button className="send" onClick={send} disabled={!input.trim() || compacting} aria-label="send">
           <span className="send-label">send</span><IconSend className="send-icon" />
@@ -2138,9 +2228,13 @@ function LiveUsageRings({ vpsId, profile, kind, ...rest }: {
 /** Direct choices use the same provider catalogs as the creation/settings forms. */
 function SessionRuntimePanel({
   tokenUsage, vpsName, onUsageRefresh, usageAccountLabel, kind, accountProfile = "default", profileNumber, vpsId, model, fallbackModel, effort,
+  ultracode = false, onSetUltracode,
   modelPendingApply, effortPendingApply, effectiveModel,
   onSetModel, onSetEffort, onApplyNow, sessionId, endpoint, onEndpointChanged, context, accountSwitch,
 }: {
+  /** Claude's ultracode switch beside effort (§14.56); no setter = no switch. */
+  ultracode?: boolean;
+  onSetUltracode?: (on: boolean) => Promise<void>;
   accountSwitch: AccountSwitchTarget;
   profileNumber?: number;
   accountProfile?: string;
@@ -2253,6 +2347,7 @@ function SessionRuntimePanel({
   // `applied_at_next_start`, which is authoritative and already false for a
   // backend that applies per turn.
   const anyPending = modelPendingApply || effortPendingApply || !!endpoint.pending;
+  const showUltracode = ultracode && !endpoint.active && !!onSetUltracode;
   const title = `Model: ${model ?? 'default'}${effectiveModel ? ` · effective: ${effectiveModel}` : ''}${anyPending ? ' · pending until resume' : ''}`;
   const pickerProps = { presentation: 'list' as const, disabled: saving, onChange: choose };
   const toggle = (target: 'model' | 'effort') => {
@@ -2276,12 +2371,13 @@ function SessionRuntimePanel({
             fills from the selection beside it. */}
         {hasEffortAxis(kind) && (!endpoint.active || customEfforts.length > 0) && (
           <button ref={effortButton} type="button" className={`runtime-cell runtime-effort${anyPending ? ' has-pending' : ''}`}
-            onClick={() => toggle('effort')} disabled={saving} title={`Effort: ${effort ?? 'default'}`} aria-label="Change effort" aria-haspopup="menu" aria-expanded={open === 'effort'}>
+            onClick={() => toggle('effort')} disabled={saving} title={`Effort: ${effort ?? 'default'}${showUltracode ? ' · ultracode on' : ''}`} aria-label="Change effort" aria-haspopup="menu" aria-expanded={open === 'effort'}>
             <span className="runtime-value">
               <span className="runtime-effort-symbol" aria-hidden="true">✦</span>
               {endpoint.active ? <EndpointEffortSummary endpoint={endpoint.active} kind={kind} model={model || ''} effort={customEffort} /> : EffortSummary
                 ? <EffortSummary vpsId={vpsId} modelId={model || effectiveModel || ''} effort={effort} />
                 : <span>{effort ?? 'Default'}</span>}
+              {showUltracode && <span className="runtime-ultracode-tag">ultracode</span>}
             </span>
           </button>
         )}
@@ -2324,6 +2420,17 @@ function SessionRuntimePanel({
                     modelId={model || effectiveModel || ''} />;
             })()}
           </div>
+          {open === 'effort' && onSetUltracode && !endpoint.active && <label className="pop-tile runtime-ultracode">
+            <input type="checkbox" role="switch" checked={ultracode} disabled={saving} onChange={async (e) => {
+              const on = e.currentTarget.checked;
+              setSaving(true); setSaveError(null);
+              try { await onSetUltracode(on); }
+              catch (err) { setSaveError(err instanceof Error ? err.message : 'Could not change ultracode.'); }
+              finally { setSaving(false); }
+            }} />
+            <span><b>Ultracode</b>
+              <small>Claude plans big tasks as dynamic workflows of parallel agents, at any effort. Applies at the next start.</small></span>
+          </label>}
           {open === 'model' && endpoint.active && isOpenCodeGo(endpoint.active.baseUrl) && <p className="runtime-choice-note">Catalog: Models.dev. Go limits, promotions and time-based rates may differ.</p>}
           {saveError && <p className="runtime-choice-error" role="alert">{saveError}</p>}
           {(modelPendingApply || effortPendingApply) && !endpoint.pending && onApplyNow && <button type="button" className="runtime-apply" disabled={saving} onClick={async () => {

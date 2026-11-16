@@ -212,6 +212,8 @@ async function createChild(
     parentSessionId: parent.id,
     // A hidden session's children are born hidden (§14.118).
     hidden: parent.hidden === 1,
+    // Asked for, or inherited: an unattended parent's children are too (§14.119).
+    unattended: ev.unattended === true || parent.unattended === 1,
   });
   const handle = db.select({ h: agentSessions.handle }).from(agentSessions)
     .where(eq(agentSessions.id, stream.id)).get()?.h ?? null;

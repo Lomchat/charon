@@ -9,7 +9,7 @@ import { createPortal } from 'react-dom';
 export default function TaskModal({ icon, tone, title, subtitle, onClose, children, foot, wide = false }: {
   icon: ReactNode;
   /** The bar's colour: background work vs scheduled tasks. */
-  tone: 'work' | 'scheduled';
+  tone: 'work' | 'scheduled' | 'goal';
   title: string;
   subtitle: ReactNode;
   onClose: () => void;

@@ -32,9 +32,22 @@ from typing import Any, Awaitable, Callable
 from .peer_mcp import PEER_MODEL_INSTRUCTIONS, sub_session_instructions, tag_peer_event
 from .crons import scheduled_tasks, local_tz
 from . import prompt_cache
+from .goal_watch import GoalReader, claude_transcript
+
+# Sentinel: no goal emitted yet this process (None is a real value: no goal).
+_UNSENT = object()
+
+
+class _QuestionDeclined:
+    """A question nobody will answer, with the reason the model reads."""
+
+    def __init__(self, message: str) -> None:
+        self.message = message
 
 # A CLI-opened turn's own prompt, when a stream message carries one.
 UNPROMPTED_PROMPT_MAX = 8000
+# One side question (`/btw`): a single model call over the whole context.
+SIDE_QUESTION_TIMEOUT_S = 240
 
 try:
     from claude_agent_sdk import (
@@ -191,6 +204,9 @@ def _num(v: Any) -> float:
 
 # Started tasks still waiting for their launcher's tool_result (§14.91).
 _BG_OUTPUT_WATCH_MAX = 64
+# The CLI's own words when it stops a background command at its `timeout`
+# ("Background command \"…\" was stopped after reaching its background time limit").
+_BG_TIME_LIMIT_RE = re.compile(r"stopped after reaching its background time limit", re.I)
 
 
 def _task_output_path(text: Any, task_id: str) -> str | None:
@@ -228,6 +244,72 @@ def _starts_turn(ev: Any) -> bool:
         return False
     content = getattr(ev, "content", None)
     return not (isinstance(content, str) and _LOCAL_COMMAND_ECHO.match(content))
+
+
+def _usage_drivers(r: dict[str, Any]) -> dict[str, Any]:
+    """What fills the context and what re-sending it costs, off the CLI's
+    `get_context_usage` answer (§14.119): the messages' make-up with the
+    heaviest tools, the fixed load re-sent every turn (memory files, MCP
+    tools, skills, agents), and the 5-hour-limit price of a cold resume
+    (`coldResumeQuota`, subscription accounts only)."""
+    def n(v: Any) -> int | None:
+        return int(v) if isinstance(v, (int, float)) and not isinstance(v, bool) else None
+
+    def total(rows: Any) -> int | None:
+        if not isinstance(rows, list):
+            return None
+        return sum(n(row.get("tokens")) or 0 for row in rows if isinstance(row, dict))
+
+    out: dict[str, Any] = {}
+    mb = r.get("messageBreakdown")
+    if isinstance(mb, dict):
+        tools = []
+        for t in mb.get("toolCallsByType") or []:
+            if isinstance(t, dict) and isinstance(t.get("name"), str):
+                call, result = n(t.get("callTokens")) or 0, n(t.get("resultTokens")) or 0
+                tools.append({"name": t["name"][:80], "call": call, "result": result})
+        tools.sort(key=lambda t: t["call"] + t["result"], reverse=True)
+        out["breakdown"] = {
+            "tool_calls": n(mb.get("toolCallTokens")), "tool_results": n(mb.get("toolResultTokens")),
+            "attachments": n(mb.get("attachmentTokens")), "assistant": n(mb.get("assistantMessageTokens")),
+            "user": n(mb.get("userMessageTokens")), "tools": tools[:8],
+        }
+    skills = r.get("skills")
+    out["fixed"] = {
+        "memory_files": total(r.get("memoryFiles")), "mcp_tools": total(r.get("mcpTools")),
+        "agents": total(r.get("agents")),
+        "skills": n(skills.get("tokens")) if isinstance(skills, dict) else None,
+    }
+    quota = r.get("coldResumeQuota")
+    if isinstance(quota, dict) and isinstance(quota.get("percentPerMillionTokens"), (int, float)):
+        out["cold_resume_quota"] = {
+            "percent_per_million": float(quota["percentPerMillionTokens"]),
+            "min_percent": float(quota.get("minPercent") or 1),
+        }
+    return out
+
+
+async def _send_prompt(client: Any, content: str, *, composed: bool) -> None:
+    """Write one user message. `composed` = text no human typed here (another
+    session's message, a sub-session's mission): the CLI must take it as
+    written — no `/command` dispatch, no `@path` file expansion — or another
+    agent could make this one run a slash command or read a file into its
+    context. The flag rides on the message itself (`client_composed`, CLI
+    2.1.248+; an older CLI ignores the key), so the human's own `/commands`
+    in the same session keep working."""
+    if not composed:
+        await client.query(content)
+        return
+
+    async def _one() -> Any:
+        yield {
+            "type": "user",
+            "message": {"role": "user", "content": content},
+            "parent_tool_use_id": None,
+            "client_composed": True,
+        }
+
+    await client.query(_one())
 
 
 def _is_request_start(ev: Any) -> bool:
@@ -469,8 +551,8 @@ class AgentSession:
     # If the SDK installed on this VPS is older and doesn't know one of these,
     # _run will catch the TypeError on ClaudeAgentOptions(**kwargs) and retry
     # without the offending field — see EFFORT_OPTIONAL_KEYS below.
-    # "ultracode" is a Charon pseudo-effort (xhigh + workflow orchestration),
-    # applied via options.settings rather than the SDK effort kwarg (§14.56).
+    # "ultracode" is the LEGACY pseudo-effort, read as xhigh + the ultracode
+    # switch (§14.56): an older hub may still send it.
     VALID_EFFORTS = ("low", "medium", "high", "xhigh", "max", "ultracode")
 
     # Which on-disk settings files the CLI reads (§14.100). The SDK's own
@@ -524,6 +606,9 @@ class AgentSession:
             "allowedTools": [str(v)[:1024] for v in raw_cfg.get("allowedTools")
                              if isinstance(v, str) and v.strip()][-MAX_ALLOWED_TOOLS:]
             if isinstance(raw_cfg.get("allowedTools"), list) else [],
+            # Ultracode: standing dynamic-workflow orchestration, a switch
+            # BESIDE effort since CLI 2.1.284 (§14.56). Read at construction.
+            "ultracode": raw_cfg.get("ultracode") is True,
         }
 
     def __init__(
@@ -565,6 +650,9 @@ class AgentSession:
             self.effort = effort
         else:
             self.effort = effort if effort in self.VALID_EFFORTS else None
+        if self.effort == "ultracode":
+            self.effort = "xhigh"
+            self.session_config["ultracode"] = True
         self._endpoint_proxy = None
         self._emit_to_server = lambda event: emit(redact(event, endpoint_of(self.session_config)))
         self._on_state_change = on_state_change
@@ -594,6 +682,11 @@ class AgentSession:
         self._bg_notified = False
         # launcher tool_use_id → task_id of a started task with no output file.
         self._bg_output_watch: dict[str, str] = {}
+        # The `/goal` as the transcript records it (goal_watch.py, §14.119);
+        # `_goal_sent` is the last value emitted, to emit on change only.
+        self._goal_reader = GoalReader()
+        self._goal_sent: Any = _UNSENT
+        self._goal_poll: asyncio.Task | None = None
         self._session_id_emitted = False
         self._current_assistant = ""
         # The model Anthropic actually used on the last AssistantMessage.
@@ -820,22 +913,27 @@ class AgentSession:
         )
         await self._save_state()
 
-    async def set_effort(self, effort: str | None) -> None:
-        """Update the effort level for this session.
+    async def set_effort(self, effort: str | None, ultracode: bool | None = None) -> None:
+        """Update the effort level (and the ultracode switch) for this session.
 
         Like model, takes effect at the next SDK start. Effort is part of
-        ClaudeAgentOptions, which the SDK reads at client construction —
-        there is no SDK-side runtime setter.
+        ClaudeAgentOptions and ultracode of its settings, both read at client
+        construction — there is no SDK-side runtime setter.
         """
         if endpoint_of(self.session_config):
             selected_params(endpoint_of(self.session_config), "claude", self.model or "", effort)
         elif effort is not None and effort not in self.VALID_EFFORTS:
             self._emit("error", msg=f"invalid effort {effort!r} (valid: {self.VALID_EFFORTS})")
             return
+        if effort == "ultracode":  # legacy pseudo-effort (§14.56)
+            effort, ultracode = "xhigh", True
         self.effort = effort or None
+        if ultracode is not None:
+            self.session_config["ultracode"] = bool(ultracode)
         self._emit(
             "effort_changed",
             effort=self.effort,
+            ultracode=bool(self.session_config.get("ultracode")),
             applied_at_next_start=self._client is not None,
         )
         await self._save_state()
@@ -961,20 +1059,21 @@ class AgentSession:
 
     def respond_permission(
         self, perm_id: str, allow: bool, always: bool = False,
-        suggestion: int | None = None,
+        suggestion: int | None = None, message: str | None = None,
     ) -> bool:
         # `always` is Codex's; Claude remembers through the CLI's own
-        # suggestions, picked by index (`_can_use_tool`).
+        # suggestions, picked by index (`_can_use_tool`). `message` = the
+        # refusal's reason as the model will read it.
         fut = self._pending_perms.pop(perm_id, None)
         if fut is not None and not fut.done():
-            fut.set_result({"allow": bool(allow), "suggestion": suggestion})
+            fut.set_result({"allow": bool(allow), "suggestion": suggestion, "message": message})
             return True
         return False
 
-    def respond_question(self, q_id: str, answers: dict | None) -> bool:
+    def respond_question(self, q_id: str, answers: dict | None, decline: str | None = None) -> bool:
         fut = self._pending_perms.pop(q_id, None)
         if fut is not None and not fut.done():
-            fut.set_result(answers)
+            fut.set_result(_QuestionDeclined(decline) if decline else answers)
             return True
         return False
 
@@ -984,6 +1083,88 @@ class AgentSession:
             fut.set_result({"decision": decision, "feedback": feedback})
             return True
         return False
+
+    async def side_question(self, question: str, history: list[dict[str, str]]) -> dict[str, Any]:
+        """A question beside the conversation (`/btw`): the CLI's own
+        `side_question` control request answers it on a cache-sharing fork
+        with no tools, one turn, nothing written to the transcript — and it
+        works while a turn runs. `history` = this session's earlier side
+        exchanges, oldest first, so a follow-up has its context."""
+        if self._client is None:
+            return {"ok": False, "error": "session not running"}
+        send = getattr(getattr(self._client, "_query", None), "_send_control_request", None)
+        if not callable(send):
+            return {"ok": False, "reason": "unsupported", "error": "SDK too old for side questions"}
+        try:
+            r = await send({"subtype": "side_question", "question": question, "history": history},
+                           timeout=SIDE_QUESTION_TIMEOUT_S)
+        except Exception as e:
+            return {"ok": False, "error": str(e)[:500] or type(e).__name__}
+        answer = r.get("response") if isinstance(r, dict) else None
+        if not isinstance(answer, str) or not answer.strip():
+            return {"ok": False, "error": "the side question got no answer"}
+        return {"ok": True, "answer": answer, "synthetic": bool(r.get("synthetic"))}
+
+    # ── /goal (§14.119) ──────────────────────────────────────────────────────
+    # The CLI never streams its goal to an SDK host; its transcript records
+    # every change (goal_watch.py). Read after each turn, and polled while a
+    # goal is active: its evaluator's verdicts land mid-turn, its check-ins
+    # open turns of their own.
+    def _goal_transcript(self) -> Path | None:
+        sid = self.claude_session_id
+        if not sid:
+            return None
+        homes: list[Path] = []
+        try:
+            homes.append(config_dir("claude", self.session_config.get("accountProfile")))
+        except Exception:
+            pass
+        homes.append(config_dir("claude", None))
+        for home in homes:
+            found = claude_transcript(home, sid)
+            if found is not None:
+                return found
+        return None
+
+    def _goal_active(self) -> bool:
+        goal = self._goal_reader.goal
+        return bool(goal) and goal.get("status") == "active"
+
+    async def _refresh_goal(self) -> None:
+        reader = self._goal_reader
+        try:
+            if reader.path is None or reader.path.stem != self.claude_session_id:
+                path = await asyncio.to_thread(self._goal_transcript)
+                if path is None:
+                    return
+                reader.reset(path)
+            await asyncio.to_thread(reader.scan)
+        except Exception as e:
+            print(f"[goal] {self.session_id}: transcript read failed: {e}", file=sys.stderr)
+            return
+        goal = reader.goal
+        if self._goal_sent is _UNSENT or goal != self._goal_sent:
+            self._goal_sent = dict(goal) if goal else None
+            self._emit("goal", goal=goal)
+        if self._goal_active() and (self._goal_poll is None or self._goal_poll.done()):
+            self._goal_poll = asyncio.create_task(self._poll_goal())
+
+    async def _poll_goal(self) -> None:
+        """Re-read while the goal is active and the CLI runs: fast in a turn
+        (its verdicts), slow between turns (a check-in opens one)."""
+        try:
+            while self._client is not None and self._goal_active():
+                await asyncio.sleep(5 if self.status == "thinking" else 30)
+                reader = self._goal_reader
+                before = reader.goal
+                await asyncio.to_thread(reader.scan)
+                if reader.goal != before:
+                    self._goal_sent = dict(reader.goal) if reader.goal else None
+                    self._emit("goal", goal=reader.goal)
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            print(f"[goal] {self.session_id}: poll stopped: {e}", file=sys.stderr)
 
     async def context_usage(self) -> dict[str, Any]:
         """How full the context window is, right now.
@@ -1027,6 +1208,7 @@ class AgentSession:
                 {"name": _field(c, "name", "category"), "tokens": _field(c, "tokens", "count")}
                 for c in cats[:20]
             ]
+        out.update(_usage_drivers(r))
         return out
 
     async def mcp_status(self) -> dict[str, Any]:
@@ -1478,6 +1660,8 @@ class AgentSession:
                     outcome="cancelled",
                 )
                 return PermissionResultDeny(message="session paused")
+            if isinstance(answers, _QuestionDeclined):
+                return PermissionResultDeny(message=answers.message)
             if not isinstance(answers, dict):
                 return PermissionResultDeny(message="invalid response from the dashboard")
             return PermissionResultAllow(
@@ -1512,7 +1696,7 @@ class AgentSession:
         if answer is None:
             return PermissionResultDeny(message="timeout (10min without response from the dashboard)")
         if not answer.get("allow"):
-            return PermissionResultDeny(message="denied by the dashboard")
+            return PermissionResultDeny(message=answer.get("message") or "denied by the dashboard")
         index = answer.get("suggestion")
         if isinstance(index, int) and not isinstance(index, bool) and 0 <= index < len(offered):
             update = offered[index][0]
@@ -1681,6 +1865,10 @@ class AgentSession:
             content = getattr(ev, "content", None)
             if isinstance(content, str) and content:
                 fields["prompt"] = content[:UNPROMPTED_PROMPT_MAX]
+        # An active /goal re-opens the session by itself ("Goal check-in"):
+        # the hub names that rather than a scheduled task (§14.119).
+        if self._goal_active():
+            fields["goal_active"] = True
         try:
             self._emit("unprompted_turn", **fields)
         except Exception:
@@ -1797,6 +1985,12 @@ class AgentSession:
                 # not read its absence there as "finished". Raw `data` only.
                 if isinstance(_data, dict) and _data.get("owned_by_subagent") is True:
                     payload["owned_by_subagent"] = True
+                # The CLI stops an unattended session's background command at
+                # its `timeout` (30 min by default, 2 h at most) and says so
+                # only in prose; no structured field carries the cause.
+                summary = payload.get("summary")
+                if isinstance(summary, str) and _BG_TIME_LIMIT_RE.search(summary):
+                    payload["stop_cause"] = "time_limit"
                 if payload.get("task_id"):
                     # Stamp the SDK's own verdict on terminal-ness. A kill emits
                     # BOTH vocabularies (updated:killed AND finished:stopped),
@@ -2402,19 +2596,21 @@ class AgentSession:
                 options_kwargs["model"] = self.model
             if self.fallback_model:
                 options_kwargs["fallback_model"] = self.fallback_model
-            if self.effort == "ultracode":
-                # "ultracode" is NOT an SDK EffortLevel — it's xhigh effort +
-                # STANDING dynamic-workflow orchestration (the Workflow tool on
-                # by default). It's enabled via the CLI `ultracode` settings key
-                # (apply_flag_settings), passed here as inline --settings JSON
-                # (merged on top of project settings). We deliberately DON'T set
-                # the `effort` kwarg — the setting pins xhigh itself. Requires an
-                # xhigh-capable model + the Workflows feature on the account;
-                # if unavailable the CLI just runs without it. §14.35 / §14.56.
+            if self.effort == "ultracode":  # legacy pseudo-effort (§14.56)
+                self.effort = "xhigh"
+                self.session_config["ultracode"] = True
+            if self.session_config.get("ultracode"):
+                # Ultracode = STANDING dynamic-workflow orchestration (the
+                # Workflow tool on by default), enabled by the CLI `ultracode`
+                # settings key as inline --settings JSON (merged on top of
+                # project settings). Since CLI 2.1.284 it is a switch BESIDE
+                # effort and no longer pins xhigh, so the effort below is sent
+                # as well. Needs the Workflows feature on the account; without
+                # it the CLI just runs without. §14.35 / §14.56.
                 options_kwargs["settings"] = json.dumps(
                     {"enableWorkflows": True, "ultracode": True}
                 )
-            elif self.effort:
+            if self.effort:
                 options_kwargs["effort"] = self.effort
             options_kwargs.update(self._advanced_option_kwargs())
             if self.session_config.get('accountProfile', 'default') != 'default':
@@ -2487,6 +2683,11 @@ class AgentSession:
                 self._emit("status", status="active")
                 self._ready_evt.set()
                 asyncio.create_task(self._emit_model_catalog(client))
+                # A resumed session's goal is in its transcript (§14.119).
+                self._goal_reader.reset(None)
+                self._goal_sent = _UNSENT
+                if self.claude_session_id:
+                    asyncio.create_task(self._refresh_goal())
 
                 # ── Continuous stream reader ─────────────────────────────────
                 # The CLI can start a turn WITHOUT user input: when a
@@ -2525,6 +2726,7 @@ class AgentSession:
                             if ev_type == "ResultMessage":
                                 self._end_turn()
                                 self._peer_note_result()
+                                asyncio.create_task(self._refresh_goal())
                     except asyncio.CancelledError:
                         raise
                     except Exception as e:
@@ -2569,7 +2771,7 @@ class AgentSession:
                             self._peer_turn_done.clear()
                             self._peer_pending_id = peer_id
                             try:
-                                await client.query(content)
+                                await _send_prompt(client, content, composed=True)
                             except Exception as e:
                                 self._emit("error", msg=self._format_err("query", e))
                                 self._drop_pending_peer(self._format_err("query", e))
@@ -2582,7 +2784,7 @@ class AgentSession:
                             self._peer_turn_done.clear()
                         self._begin_turn()
                         try:
-                            await client.query(content)
+                            await _send_prompt(client, content, composed=bool(peer_id))
                             if use_reader and self._active_peer_request_id:
                                 # query() only sends. Hold the input loop until
                                 # the sole reader sees this correlated turn's

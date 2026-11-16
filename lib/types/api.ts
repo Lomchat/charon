@@ -1167,6 +1167,10 @@ export type SessionListItem = AgentSession & {
   /** The prompt cache the last turn left (lib/promptCache.ts); null = none
    *  reported. The countdown runs on the browser's clock. */
   promptCache?: import('@/lib/promptCache').PromptCacheState | null;
+  /** The session's goal (lib/sessionGoal.ts, §14.119); null = none. */
+  goal?: import('@/lib/sessionGoal').SessionGoal | null;
+  /** Claude's ultracode switch (§14.56), off its private construction JSON. */
+  ultracode?: boolean;
 };
 
 // Non-sensitive VPS fields that can change while the dashboard stays open.
@@ -1307,6 +1311,9 @@ export type SessionBackgroundTask = {
   // A command a SUB-AGENT runs: a step of its owner, not work of its own
   // (`app/bgTasks.ts § bgWorkItems`). Absent = false.
   ownedBySubagent?: boolean;
+  // The CLI stopped it itself: 'time_limit' = an unattended (SDK) session's
+  // background command reached its `timeout` (30 min default, 2 h max).
+  stopCause?: 'time_limit' | null;
 };
 
 export type AgentSessionDetailResponse = {
@@ -1534,6 +1541,9 @@ export type ClaudeSessionConfig = SharedSessionConfig & {
    * own ['project'] default); [] = isolation, no settings file and no CLAUDE.md.
    */
   settingSources?: ClaudeSettingSource[] | null;
+  /** Standing dynamic-workflow orchestration, a switch beside effort (§14.56).
+   *  Absent at create = the fleet default (`claude.default_ultracode`). */
+  ultracode?: boolean;
 };
 
 export type CodexSessionConfig = SharedSessionConfig & {
@@ -1669,7 +1679,7 @@ export type SetSessionModelResponse = { ok: true } | { error: string };
 // POST /api/sessions/[id]/effort (effort validity depends on the
 // session's kind — Codex efforts are CodexEffortLevel).
 /** Native effort level or a validated per-model parameter set (Cursor/endpoints). */
-export type SetSessionEffortBody = { effort: string | null };
+export type SetSessionEffortBody = { effort: string | null; ultracode?: boolean };
 export type SetSessionEffortResponse = { ok: true } | { error: string };
 
 // GET /api/claude/models — short aliases plus API-discovered concrete models.

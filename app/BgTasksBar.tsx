@@ -68,6 +68,15 @@ const STATUS_META: Record<BgTaskStatus, { label: string; cls: string; hint?: str
   stale: { label: 'lost', cls: 'stale', hint: 'The session restarted while this ran: its outcome is unknown.' },
 };
 
+/** A task's pill: its status, except that a command the CLI stopped at its
+ *  background time limit says so rather than a bare "stopped". */
+function statusMeta(t: BgTask, status: BgTaskStatus): { label: string; cls: string; hint?: string } {
+  if (status === 'killed' && t.stopCause === 'time_limit') {
+    return { label: backgroundWorkText.timeLimit, cls: 'killed', hint: backgroundWorkText.timeLimitHint };
+  }
+  return STATUS_META[status] ?? STATUS_META.stale;
+}
+
 function fmtElapsed(fromS: number, toS: number): string {
   const d = Math.max(0, toS - fromS);
   if (d < 60) return `${d}s`;
@@ -244,7 +253,7 @@ function BgTasksBarImpl({ tasks, sessionId, provider, sessionStatus, vpsId, cwd 
   const newestTerminal = terminals[terminals.length - 1];
 
   function renderTask({ t, status }: { t: BgTask; status: BgTaskStatus }) {
-    const meta = STATUS_META[status] ?? STATUS_META.stale;
+    const meta = statusMeta(t, status);
     const end = t.endedAt ?? nowS;
     const kstate = killing[t.taskId];
     // A Codex row is stoppable only when it IS a background terminal (its
@@ -393,11 +402,11 @@ function BgTasksBarImpl({ tasks, sessionId, provider, sessionStatus, vpsId, cwd 
           {selectedTask && <div ref={detailRef} className="bgc-detail">
             {picks.length > 1 && <div className="bgc-picks" role="group" aria-label={backgroundWorkText.task}>
               {picks.map(({ t, status }) => {
-                const meta = STATUS_META[status] ?? STATUS_META.stale;
+                const meta = statusMeta(t, status);
                 const on = t.taskId === selectedTask.t.taskId;
                 return <button type="button" key={t.taskId} className={`bgc-pick ${meta.cls}${on ? ' selected' : ''}`} aria-pressed={on}
                   onClick={() => setSelectedTaskId(t.taskId)} title={taskTitle(t)}>
-                  <span className={`tm-pill ${meta.cls}`}><i aria-hidden />{meta.label}</span>
+                  <span className={`tm-pill ${meta.cls}`} title={meta.hint}><i aria-hidden />{meta.label}</span>
                   <span className="bgc-pick-kind">{taskKind(t)}</span>
                   <span className="bgc-pick-title">{taskTitle(t)}</span>
                   <span className="bgc-pick-time">{fmtElapsed(t.startedAt, t.endedAt ?? nowS)}</span>

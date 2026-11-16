@@ -147,6 +147,7 @@ const FIXTURES: { [K in AgentEvent['event']]: Scenario } = {
     },
   },
   session_info: { events: [{ event: 'session_info', capabilities: ['x'] }] },
+  goal: { events: [{ event: 'goal', goal: { objective: 'tests pass', status: 'active' } }] },
   turn_end: { events: [
     { event: 'bg_task', kind: 'started', task_id: 'task-hook', tool_use_id: 'tu' },
     { event: 'turn_end', background_tasks: [] },
