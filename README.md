@@ -497,6 +497,20 @@ After any change under `agent/charon_agent/`, bump `__version__` and run
 `reactStrictMode` is off on purpose (dev double-render duplicates SSE events).
 Unsaved editor buffers are per browser; closing a dirty tab warns you.
 
+### Keeping the database small
+
+Older Codex and Cursor sessions stored their reasoning one row per streamed
+token. `scripts/compact-thinking.mjs` merges those rows (the transcript renders
+the same) and can then `VACUUM` the file. It is an **offline** tool: stop the
+hub, and anything that could restart it, first.
+
+```bash
+node scripts/compact-thinking.mjs --db data/charon.db --dry-run        # what it would merge
+node scripts/compact-thinking.mjs --db data/charon.db --offline --backup-to /safe/place/charon.db
+node scripts/compact-thinking.mjs --db data/charon.db --offline --apply --verify
+node scripts/compact-thinking.mjs --db data/charon.db --offline --vacuum
+```
+
 ## Non-goals
 
 - Multi-user, RBAC, SSO — single-user by design.

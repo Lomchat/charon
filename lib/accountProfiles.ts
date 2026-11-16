@@ -64,7 +64,7 @@ export function sessionAccountProfile(
  *  (`accountGroups.ts`) and every usage gauge (`usageAccountLabel`) so they
  *  never diverge: the PROVIDER's display name (Claude `displayName`), else the
  *  verified login email. `name` = the short form (button text), `label` = the
- *  full form ("Chalom · c2@c2m2.ai"). Both null until a probe verified an
+ *  full form ("Ada · ada@example.com"). Both null until a probe verified an
  *  identity — only then may a caller fall back to the user-given profile name.
  *  Several profiles (one login across VPSes): pass them best-first. */
 export function accountIdentity(
@@ -93,7 +93,7 @@ export function sameLoginProfiles(
 /** Whose usage a gauge shows — THE full label of a login, identical on the
  *  header account popover (`accountGroups.ts`) and the session gauges: the
  *  provider + the login's OFFICIAL identity (`accountIdentity` over `login`,
- *  every profile of that login: "Claude · Chalom · c2@c2m2.ai"), never the
+ *  every profile of that login: "Claude · Ada · ada@example.com"), never the
  *  user-given profile name once that identity is known. Before a probe: the
  *  menus' `profileLabel` ("Claude 2 · work"); unknown profile ⇒ provider + number. */
 export function usageAccountLabel(

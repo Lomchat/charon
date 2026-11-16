@@ -23,7 +23,7 @@ import { groupShown, mergeVisibleOrder, visibleTabs } from './pausedTabs';
 //   Row 1  VPS        — the machines with something open
 //   Row 2  path       — the folders open on that machine. THE new level: a VPS
 //                       routinely holds several projects, and a flat list of
-//                       "everything open on chalco" tells you nothing about
+//                       "everything open on web-01" tells you nothing about
 //                       which one you're in.
 //   Row 3  tabs       — what is open in that folder: sessions, shells, files.
 //

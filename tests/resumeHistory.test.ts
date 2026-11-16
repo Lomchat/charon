@@ -83,8 +83,8 @@ describe('resume list: noise, search, projects', () => {
   });
 
   it('every word must match, accents and case aside', () => {
-    const it = item({ title: 'Réparer le déploiement', branch: 'fix/queue', cwd: '/srv/elevenduel' });
-    expect(matchesQuery(it, 'deploiement eleven')).toBe(true);
+    const it = item({ title: 'Réparer le déploiement', branch: 'fix/queue', cwd: '/srv/shop' });
+    expect(matchesQuery(it, 'deploiement shop')).toBe(true);
     expect(matchesQuery(it, 'QUEUE')).toBe(true);
     expect(matchesQuery(it, 'deploiement charon')).toBe(false);
     expect(matchesQuery(it, '   ')).toBe(true);

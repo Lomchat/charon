@@ -179,7 +179,7 @@ export function buildAccountGroups(input: {
   });
 
   // Two different logins that would read alike (two accounts both called
-  // "Chalom") fall back to their official email; still alike ⇒ their machine,
+  // "Ada") fall back to their official email; still alike ⇒ their machine,
   // then the numbered profile label (usageAccountLabel), then a key suffix.
   const clash = (g: AccountGroup) => groups.some((o) => o !== g && o.provider === g.provider && o.label === g.label);
   for (const g of groups.filter(clash)) if (g.email) g.label = g.email;

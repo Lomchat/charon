@@ -466,7 +466,7 @@ export async function pingAgent(
 // is idempotent and safe on a VPS whose agent is RUNNING (pip swaps
 // site-packages atomically enough; the process keeps its in-memory copy
 // until the restart that follows in every calling flow). On a VPS without a
-// venv (legacy install with the SDK in the system python — e.g. chalco), this
+// venv (legacy install with the SDK in the system python), this
 // NORMALIZES it: the venv gets created here and the systemd ExecStart, which
 // prefers the venv python, picks it up at the next restart.
 //

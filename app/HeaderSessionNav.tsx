@@ -644,7 +644,7 @@ function Row({ r, onPick, selectedId, vpsName }: RowProps & { r: NavRow }) {
       <span className="hnav-row-name">{label(r)}</span>
       {/* Machine and path are TWO facts, joined the way the session subtitle
           joins them (`CwdSubtitle`). Glued with a colon, a machine whose name
-          ends in a word — "chalco - new" — read as a prefix of the path. */}
+          ends in a word — "web - new" — read as a prefix of the path. */}
       <span className="hnav-row-where">
         <span className="hnav-row-vps">{machine}</span>
         <span className="hnav-row-cwd">

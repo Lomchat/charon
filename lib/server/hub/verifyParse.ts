@@ -9,7 +9,7 @@
 // echoed line CONTAINS the marker we grep for. A naive `/SDK=(\S+)/` matched
 // the crash and read the version as `"`.
 //
-// What that cost (real incident, ElevenDuel, agent 0.21.0): a fresh VPS on
+// What that cost (a real incident): a fresh VPS on
 // python3.13 reported `✓ verify — /usr/bin/python3.13 · claude sdk "`, so the
 // bootstrap took its fast path and SKIPPED install_sdk entirely. No venv was
 // ever created → install_codex bailed with "venv not ready" → the VPS ended up

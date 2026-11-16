@@ -287,7 +287,7 @@
 .hnav-row-vps { flex: none; max-width: 60%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text-faint); }
 /* The separator hangs off the PATH, not off the machine name: inside the
    truncating span it was eaten by the ellipsis exactly when it was needed
-   most — "chalco - new…  /srv/charon" reads as one broken string. */
+   most — "web-01…  /srv/app" reads as one broken string. */
 .hnav-row-cwd { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text-muted); }
 .hnav-row-cwd::before { content: '·'; margin-right: 6px; color: var(--text-faint); }
 .hnav-row-cwd-short, .hnav-row-cwd[data-compact] .hnav-row-cwd-full { display: none; }
@@ -2042,7 +2042,7 @@ html[data-density='small'] .cs-sub-fold { font-size: 8.5px; }
      the scrolling content (css-scroll-anchoring-1 §2.2) — and column-reverse
      flips the scroll ORIGIN, not block flow. So the browser "corrects" for a
      shift the bottom origin already absorbed, i.e. it corrects twice. Measured
-     (scripts/scroll-anchor-test.mjs): a bubble growing BELOW the reader — a
+     (a local scroll-anchoring repro): a bubble growing BELOW the reader — a
      turn ending and swapping plain text for markdown, an image landing —
      shoved the scroll position 292px; with anchoring off, 0px. Sticking to the
      bottom is unaffected either way, because that comes from the origin, not
@@ -8524,7 +8524,7 @@ html:not([data-file-icons='mono']) .tt-row:not(.ignored) > .tt-ico.fi { opacity:
 /* ⚠ `content-visibility: auto` on chat bubbles is REMOVED and must not come
    back — it is what made scrolling back through history crawl and snap
    backwards (CLAUDE.md §14.92). It was here to keep a long transcript cheap;
-   measured against 2334 bubbles it does not (scripts/scroll-perf.mjs), because
+   measured against 2334 bubbles it does not, because
    the rendering work it defers lands DURING the scroll it was meant to protect.
    Bubbles are plain flow content on purpose. */
 

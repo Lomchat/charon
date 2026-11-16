@@ -12,7 +12,7 @@ import { parseVerifyOutput, isVenvPython } from '../lib/server/hub/verifyParse';
 // the whole point is that the traceback ECHOES the probe's source line, which
 // contains the `SDK=` marker we grep for.
 
-// Python 3.13 (the incident: ElevenDuel, /usr/bin/python3.13, no SDK).
+// Python 3.13 (the incident: /usr/bin/python3.13, no SDK).
 // Note line 3 — the echoed source contains `SDK="`.
 const PY313_MISSING_SDK = `PY=/usr/bin/python3.13
 Traceback (most recent call last):

@@ -96,7 +96,7 @@ type SdkWatchState = {
   inFlight: Set<string>;
   // vpsId → the target it is known to be failing on. A transient failure is
   // retried every tick (see the regex at the bottom of tick()); without this
-  // ledger each retry re-sent the same "✗ ElevenDuel: restart failed" line.
+  // ledger each retry re-sent the same "✗ web-01: restart failed" line.
   failing: FailureLedger;
 };
 

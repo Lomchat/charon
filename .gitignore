@@ -33,3 +33,6 @@ CLAUDE.md
 # build` stat()s the repo root -> ENOENT -> CI build failure. See §14.63.
 AGENTS.md
 .charon/
+
+# Local investigation tools (scroll/perf repros): kept on the box, not published.
+/scripts/local/

@@ -19,7 +19,7 @@ WorkingDirectory=/opt/charon
 # Path to .env (MASTER_PASSWORD, MASTER_SALT, SESSION_SECRET, SYNC_TOKEN, ...).
 EnvironmentFile=/opt/charon/.env
 
-# Use the node binary that built the .next directory. nvm users often want
+# Use the node binary that built Charon (`npm run build`). nvm users often want
 # the full path to a specific Node ; system installs can usually use
 # /usr/bin/node.
 #
@@ -48,7 +48,7 @@ RestartSec=3
 NoNewPrivileges=true
 PrivateTmp=true
 ProtectSystem=strict
-ReadWritePaths=/opt/charon/data /opt/charon/.next /root/.ssh
+ReadWritePaths=/opt/charon/data /root/.ssh
 ProtectHome=read-only
 ProtectKernelTunables=true
 ProtectKernelModules=true

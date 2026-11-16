@@ -224,7 +224,7 @@ function floorSignTexture() {
 	ctx.fillText('THE DESK', 24, 104);
 	ctx.fillStyle = 'rgba(160,180,205,0.42)';
 	ctx.font = '42px "DejaVu Sans", system-ui, sans-serif';
-	ctx.fillText('charon.chalco.website/desk — read-only', 28, 178);
+	ctx.fillText(`${typeof location !== 'undefined' ? location.host : 'charon'}/desk — read-only`, 28, 178);
 	return toTexture(canvas, { anisotropy: 8 });
 }
 
