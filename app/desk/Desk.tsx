@@ -7,7 +7,8 @@
 //
 //  1. Le magasin de résumés de Charon (`app/sync/summaryStore.ts`, §14.108) —
 //     `useSessionList()`, LE MÊME que la barre latérale, l'en-tête et les
-//     onglets. Amorcé par le SSR de `page.tsx` (même constructeur que `/`),
+//     onglets. Amorcé par les données de la page (`server/http/pages.ts §
+//     deskPage`, même constructeur que `/`),
 //     tenu à jour par les trames `session_summary` (statut vivant, marque
 //     « fini non lu », barrières en attente, attention), réconcilié par une
 //     resynchronisation ou par le sondage de 60 s. Le desk ne patche rien :
@@ -15,8 +16,8 @@
 //  2. Le flux SSE global — `subscribeAll`, pour ce que le résumé ne porte
 //     pas : ce que le robot est en train de faire (son écran) et ce qui se
 //     dit entre robots (les bulles).
-//  3. Les accessoires du serveur (VPS, dossiers) — rendus en SSR par
-//     `page.tsx` ; l'état vivant des machines vient de la tranche VPS du même
+//  3. Les accessoires du serveur (VPS, dossiers) — fournis avec la page par
+//     `deskPage` ; l'état vivant des machines vient de la tranche VPS du même
 //     magasin (`useVpsRuntime()`).
 //
 // Rien n'est inventé. Le desk ne fabrique ni session, ni état, ni message : il
@@ -86,8 +87,8 @@ function emptyCounts(): Counts {
 }
 
 export default function Desk({ vpsList, folders, initialSummaries, initialSync }: Props) {
-  // Comme `HubPanel` : le magasin est amorcé du SSR au premier rendu, et la
-  // première connexion du flux reprend à la révision que ce SSR reflète (§9).
+  // Comme `HubPanel` : le magasin est amorcé des données de la page au premier
+  // rendu, et la première connexion du flux reprend à leur révision (§9).
   initSyncPosition(initialSync);
   hydrateSummaries(initialSummaries, initialSync);
 

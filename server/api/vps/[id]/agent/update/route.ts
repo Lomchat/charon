@@ -5,9 +5,6 @@ import { runAgentUpdateFlow } from '@/lib/server/hub/agentUpdate';
 import { getBuiltPyzSha } from '@/lib/server/agent/builtPyzSha';
 import { PROVIDER_VERSION_COLUMNS } from '@/lib/vpsRuntimeFields';
 
-export const runtime = 'nodejs';
-export const dynamic = 'force-dynamic';
-
 // POST /api/vps/[id]/agent/update
 // ONE unified update: redeploys the embedded .pyz, upgrades claude-agent-sdk
 // in the venv, restarts the service, re-arms the client hooks and re-resumes

@@ -1,7 +1,7 @@
 // THE sync bus (CLAUDE.md §14.14, §14.106). Pure: no DB, no `server-only`
 // module — every piece of state lives on ONE `globalThis.__charonSync` object
-// (Next evaluates server modules in ≥3 copies; a module-level `let` would be
-// per copy and the revision counter would fork).
+// (module copies (tests' `vi.resetModules()`, dev rebuilds): a module-level `let` would be per copy and the
+// revision counter would fork).
 //
 // publish(ev) stamps the next revision, encodes the frame ONCE
 // (`id: <epoch>.<rev>\ndata: <json>\n\n`) and hands that same Uint8Array to the

@@ -4,9 +4,6 @@ import { requireApiSession } from '@/lib/server/session';
 import { getAgentClientForVpsId } from '@/lib/server/agent/AgentClientPool';
 import type { ScannedCodexSession } from '@/lib/types/api';
 
-export const runtime = 'nodejs';
-export const dynamic = 'force-dynamic';
-
 // Importable Cursor conversations on this VPS — the Cursor half of ResumeModal
 // (§14.74). Answers the SAME row shape as claude/scan and codex/scan so one
 // component renders all three.

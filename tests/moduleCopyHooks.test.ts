@@ -1,11 +1,9 @@
 import { beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { Vps } from '@/lib/db/schema';
 
-// Hook slots across module copies (CLAUDE.md §14.106, G12). Next evaluates
-// sessionOps/AgentClient/autoConnect in ≥3 copies (instrumentation, routes,
-// login action); the boot (instrumentation) copy owns the attached streams and
-// the connecting AgentClients, while usagePoll wires its hooks from another
-// copy. `vi.resetModules()` reproduces it: copy 1 SETS a hook,
+// Hook slots across module copies (CLAUDE.md §14.106, G12): one copy may own
+// the attached streams and the connecting AgentClients while another wires
+// its hooks. `vi.resetModules()` reproduces it: copy 1 SETS a hook,
 // copy 2's code READS it — through `hubHooks()` on globalThis. As module-level
 // `let`s, every one of these read null in copy 2.
 

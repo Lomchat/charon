@@ -1,9 +1,9 @@
 import { describe, it, expect, vi } from 'vitest';
 import crypto from 'node:crypto';
 
-// crypto.ts starts with `import 'server-only'`, a marker module that only
-// exists inside the Next.js bundler (not in node_modules). Stub it so the
-// module can be imported under the plain Node/vitest environment.
+// crypto.ts starts with `import 'server-only'`, a marker module that is not
+// installed (the server bundle aliases it, scripts/build-server.mjs). Stub it
+// so the module can be imported under vitest.
 vi.mock('server-only', () => ({}));
 
 import {

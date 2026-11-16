@@ -100,7 +100,7 @@ async function performUpdate(vps: Vps, release: () => void): Promise<AgentUpdate
   // goes silent until a full Charon restart. Also NUDGE the connection
   // (ready() is lazy): with zero sessions to resume, nothing else would
   // connect the fresh client → no hello → no live vps_status push → other
-  // tabs/devices keep a stale version until their next SSR.
+  // tabs/devices keep a stale version until their next page load.
   try {
     const client = getAgentClient(vps);
     armAgentClientHooks(client, vps.id);

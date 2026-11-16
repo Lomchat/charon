@@ -22,7 +22,7 @@ import type { AgentEvent } from './types';
 // `shell_watch` RPC. That delivers shell_status / shell_exit / shell_idle for
 // ALL shells on the VPS WITHOUT the high-volume shell_output byte stream. This
 // is deliberately decoupled from the per-WS output proxies in server.js: we do
-// NOT want to stream shell bytes through the Next process a second time (the
+// NOT want to stream shell bytes through the hub process a second time (the
 // double-egress that got a VPS suspended — see §14 gotcha 41). We only react to
 // the lightweight lifecycle signal here.
 //

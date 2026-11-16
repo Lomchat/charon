@@ -3,8 +3,8 @@ import path from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { buildApiApp, type ApiRouteEntry } from '@/server/apiRouter';
 
-// The Hono router must route exactly like Next's file routing did: every /api
-// call goes through it.
+// The file-routing rules (precedence, 405, params, aliases): every /api call
+// goes through this router.
 
 const echo = (name: string) => async (req: Request, ctx: { params: Promise<Record<string, unknown>> }) =>
   Response.json({ name, method: req.method, params: await ctx.params });

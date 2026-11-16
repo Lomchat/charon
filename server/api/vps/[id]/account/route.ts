@@ -9,9 +9,6 @@ import type { ProviderAccountResponse } from '@/lib/types/api';
 import { acceptCursorIdentity, requireAccountProfile, readProfileStatus, signOutAccountProfile } from '@/lib/server/agent/accountProfiles';
 import { profileStatuses, statusKey } from '@/lib/server/agent/accountProfileState';
 
-export const runtime = 'nodejs';
-export const dynamic = 'force-dynamic';
-
 /** Refresh public account metadata, never credentials or usage counters. */
 export async function POST(req: Request, { params }: { params: Promise<{ id: string }> }) {
   const auth = await requireApiSession();

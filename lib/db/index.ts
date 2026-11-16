@@ -4,27 +4,12 @@ import Database from 'better-sqlite3';
 import { drizzle } from 'drizzle-orm/better-sqlite3';
 import * as schema from './schema';
 
+// Opened at IMPORT time, i.e. at server boot (the bundle loads every module).
+// No build step runs server code (§14.69), so only the running hub opens it.
 const dbPath = process.env.DATABASE_URL || './data/charon.db';
 
-// `next build` must NEVER open the runtime database (§14.69).
-//
-// This module opens the connection at IMPORT time, and "Collecting page data"
-// imports every route module in PARALLEL worker processes — so a build means N
-// processes opening the same file at once and racing to convert its journal to
-// WAL (an exclusive-lock operation). On ext4 that race is usually won quietly;
-// on the overlayfs of a Docker image build it loses, and the whole build dies
-// with `SqliteError: database is locked` / "Failed to collect page data for
-// /api/push/key" — a flaky red CI on a tree where nothing is wrong.
-//
-// No route needs a single ROW at build time (it only needs the module to
-// import), so the build phase gets a throwaway in-memory DB: no file, no lock,
-// no WAL conversion, no ordering to get right. As a bonus, a production build
-// on the live box stops running `PRAGMA journal_mode` against the LIVE
-// charon.db. NEXT_PHASE is the same build-phase guard as §14.12.
-const isBuildPhase = process.env.NEXT_PHASE === 'phase-production-build';
-
 const globalForDb = globalThis as unknown as { _sqlite?: Database.Database };
-const sqlite = globalForDb._sqlite ?? new Database(isBuildPhase ? ':memory:' : dbPath);
+const sqlite = globalForDb._sqlite ?? new Database(dbPath);
 if (!globalForDb._sqlite) {
   // busy_timeout FIRST: it arms the busy handler for everything that follows,
   // including the `journal_mode` switch below — which is itself a lock-taking
@@ -60,11 +45,9 @@ if (!globalForDb._sqlite) {
   sqlite.pragma('mmap_size = 0');
   sqlite.pragma('wal_autocheckpoint = 2000');
   sqlite.pragma('journal_size_limit = 67108864');
-  if (!isBuildPhase) {
-    // Bounded planner-stat refresh; unlike VACUUM this neither rewrites nor
-    // exclusively locks the full database at process start.
-    try { sqlite.pragma('optimize = 0x10002'); } catch {}
-  }
+  // Bounded planner-stat refresh; unlike VACUUM this neither rewrites nor
+  // exclusively locks the full database at process start.
+  try { sqlite.pragma('optimize = 0x10002'); } catch {}
   globalForDb._sqlite = sqlite;
 }
 

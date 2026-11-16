@@ -178,7 +178,6 @@ async function tick(): Promise<void> {
 
 /** Idempotent; armed by the first hot-update hello. */
 export function armRuntimeMigrations(): void {
-  if (process.env.NEXT_PHASE === 'phase-production-build') return;
   if (state.timer) return;
   state.timer = setInterval(() => { void tick(); }, TICK_MS);
   state.timer.unref?.();

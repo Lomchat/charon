@@ -122,8 +122,8 @@ export default function PromptModal({
   // Portaled to <body>. The explorer lives inside `.tool-panel`, which becomes
   // a `transform`ed drawer at ≤1100px — and a transform makes that element the
   // containing block for `position: fixed` descendants, so the backdrop would
-  // cover the 380px drawer instead of the page. Guarded for SSR: a dialog only
-  // ever renders after a click, so there is nothing to hydrate.
+  // cover the 380px drawer instead of the page. A dialog only ever renders
+  // after a click: the guard is for tests.
   if (typeof document === 'undefined') return null;
   return createPortal(body, document.body);
 }

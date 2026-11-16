@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // Writes server/apiRoutes.generated.ts: one static import per
-// server/api/**/route.ts, so any bundler (Next today, Vite/esbuild later)
-// sees every route without a filesystem glob. Run by `npm run build`;
+// server/api/**/route.ts, so the bundler (esbuild) sees every route without
+// a filesystem glob. Run by `npm run build`;
 // `--check` exits 1 when the committed file is stale (CI).
 import fs from 'node:fs';
 import path from 'node:path';

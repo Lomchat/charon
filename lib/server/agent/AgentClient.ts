@@ -27,7 +27,7 @@ const RECONNECT_BACKOFFS_MS = [1_000, 3_000, 8_000, 20_000, 60_000, 120_000, 300
 // The SSH `--connect` proxy dropping is a TRANSPORT event — the agent daemon
 // keeps running on its Unix socket and survives it. A transient drop (network
 // blip, ServerAlive timeout, sshd restart) must NOT flip a healthy agent to
-// 'error' (it would stick in the UI until the next SSR — there's no live push
+// 'error' (it would stick in the UI until the next page load — there's no live push
 // for agentStatus). We only flag 'error' once reconnection has genuinely failed
 // this many times in a row (~1+3+8 ≈ 12s of being unreachable). 'missing' (pyz
 // truly absent) is always persisted immediately. See §14 gotcha "agent in error".
@@ -60,7 +60,7 @@ export const RPC_TIMEOUT_MS = 60_000;
 const SUBSCRIBE_REARM_MS = 1_000;
 
 // ── Live agentStatus push (F1) ───────────────────────────────────────────────
-// The browser used to learn `vps.agentStatus` only at SSR, so a status flip
+// The browser used to learn `vps.agentStatus` only at page load, so a status flip
 // (agent unreachable / back up) stuck until F5. AgentClient is where the DB
 // persists happen, so it is where the push must originate — but it cannot
 // import the global SSE bus from sessionOps directly (import cycle:

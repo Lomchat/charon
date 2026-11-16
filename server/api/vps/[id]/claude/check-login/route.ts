@@ -3,8 +3,6 @@ import { db, vps as vpsTable } from '@/lib/db';
 import { requireApiSession } from '@/lib/server/session';
 import { refreshClaudeLoginStatus } from '@/lib/server/agent/claudeLoginCheck';
 
-export const runtime = 'nodejs';
-
 // POST /api/vps/[id]/claude/check-login
 // Re-checks via SSH whether the user has a valid `claude login` on this VPS.
 // Persists the result in `vps.claude_logged_in` (1=yes, 0=no). Used by

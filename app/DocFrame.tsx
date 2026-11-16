@@ -51,7 +51,7 @@ export function sanitizeFrameHtml(html: string): { head: string; body: string; t
 /**
  * The `--media-bg` plate, resolved: a srcdoc cannot read the hub's tokens.
  * Falls back to plain white (the token's value in every shipped theme) before
- * the stylesheet is there, e.g. during SSR.
+ * the stylesheet is there.
  */
 export function resolvedPaper(): string {
   if (typeof document === 'undefined') return 'white';

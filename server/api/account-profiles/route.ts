@@ -2,7 +2,6 @@ import { requireApiSession } from '@/lib/server/session';
 import { createAccountProfile, listAccountProfiles, removeAccountProfile, renameAccountProfile } from '@/lib/server/agent/accountProfiles';
 import { isSessionProvider } from '@/lib/sessionCapabilities';
 
-export const dynamic = 'force-dynamic';
 export async function GET(req: Request) {
   const auth = await requireApiSession();
   if (auth instanceof Response) return auth;

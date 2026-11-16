@@ -5,9 +5,6 @@ import { requireApiSession } from '@/lib/server/session';
 import { getAgentClient } from '@/lib/server/agent/AgentClientPool';
 import { emitGlobalVpsStatus } from '@/lib/server/agent/sessionOps';
 
-export const runtime = 'nodejs';
-export const dynamic = 'force-dynamic';
-
 // Codex ChatGPT DEVICE-CODE login (agent >= 0.16.0) — the in-hub `codex
 // login` equivalent of <ClaudeLoginModal> (§14.64): the flow is
 // pure copy-paste (open verification_url on any device, type user_code; the

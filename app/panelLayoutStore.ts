@@ -12,9 +12,9 @@ import {
 /**
  * The browser's copy of the column layout (app/panelLayout.ts). One value per
  * tab on `globalThis` (§14.106), read lazily from the cookie the server
- * rendered from — so the client's first snapshot equals the SSR one.
+ * seeded the page from — so the client's first snapshot equals the server's.
  *
- * The SSR value travels by CONTEXT, not by a module write: a server-side
+ * The seeded value travels by CONTEXT, not by a module write: a server-side
  * global would be shared by every request. Its presence also says "this tree
  * is Charon's main layout"; outside it (the desk's session modal) the panels
  * neither close nor resize.

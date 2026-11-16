@@ -1,8 +1,6 @@
 import { requireApiSession } from '@/lib/server/session';
 import { fileToolCall, rootAndPath } from '@/lib/server/hub/fileToolsRpc';
 
-export const dynamic = 'force-dynamic';
-
 // POST /api/vps/[id]/fs/sqlite  { root, path, op: 'schema' | 'query', sql?, params?, limit? }
 //
 // A SQLite file, READ-ONLY (§14.112): the agent opens it `mode=ro` behind an

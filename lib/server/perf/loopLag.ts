@@ -16,8 +16,8 @@ import { monitorEventLoopDelay, performance } from 'node:perf_hooks';
 //     ended inside the gap — that list is the attribution.
 //
 // All state lives on ONE globalThis object (`__charonLoopLag`, created with
-// `??=`): Next evaluates server modules in several copies, and a module-level
-// `let` would give each copy its own ring and its own timers.
+// `??=`): with module copies (tests' `vi.resetModules()`, dev rebuilds), a module-level `let` would give each
+// copy its own ring and its own timers.
 
 export type LoopLagSnapshot = {
   p50: number; p99: number; max: number; stalls1h: number;
@@ -138,16 +138,14 @@ function summaryTick(st: LoopLagState): void {
   h.reset();
 }
 
-/** Idempotent (one monitor per process, whatever the number of module copies);
- *  nodejs runtime only, never during `next build` (§14.12). Timers are `unref`.
+/** Idempotent (one monitor per process, whatever the number of module copies).
+ *  Timers are `unref`.
  *  `now`/`warn`/`histogram` are test seams; a second call ignores its options. */
 export function startLoopLagMonitor(opts: {
   now?: () => number;
   warn?: (m: string) => void;
   histogram?: LagHistogram;
 } = {}): void {
-  if (process.env.NEXT_PHASE === 'phase-production-build') return;
-  if (process.env.NEXT_RUNTIME && process.env.NEXT_RUNTIME !== 'nodejs') return;
   const st = state();
   if (st.started) return;
   st.started = true;

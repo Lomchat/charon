@@ -1145,7 +1145,7 @@ export type SessionListItem = AgentSession & {
   endpoint?: EndpointState;
   liveStatus: WorkerStatus | string;
   /** Background tasks still running (§14.91) — the sidebar card's count.
-   *  Absent on the SSR seed; `session_bg_tasks` keeps it live between polls. */
+   *  Absent on the page seed; `session_bg_tasks` keeps it live between polls. */
   runningBgTasks?: number;
   /** Every pending gate (= pendingBlocking + pendingAsync), kept for older tabs. */
   pendingPermissions: number;
@@ -1218,7 +1218,7 @@ export type AgentSessionsListResponse = {
   vpsRuntime?: VpsRuntimeSnapshot[];
   // Live staleness baselines (hub pyz sha + PyPI latests) — refreshed by the
   // client on every list poll so long-open tabs never compare against frozen
-  // SSR props (phantom "update agent" badge). Optional: older servers omit it.
+  // page seed props (phantom "update agent" badge). Optional: older servers omit it.
   // The `latestKey`s are declared by the provider registry and produced in one
   // place (`sdkSync § latestVersionsByKey`), so the index signature is the
   // honest type: naming three of four here is how the fourth axis ended up

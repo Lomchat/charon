@@ -62,7 +62,7 @@ export type NavRow = SessionNavRow | ShellNavRow;
 
 function stateOf(s: SessionListItem, working: boolean, waiting: boolean): NavState {
   if (waiting) return 'needs-you';
-  // `liveStatus ?? status`: an SSR row or an older hub's row may lack the live
+  // `liveStatus ?? status`: a page-seed row or an older hub's row may lack the live
   // field, and reading it alone painted every such row 'ready' (R5 D-1).
   const live = rowStatus(s);
   // Still counted as working (its tasks are), but in the sidebar's violet: the

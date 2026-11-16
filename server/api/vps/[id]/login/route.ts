@@ -1,9 +1,6 @@
 import { requireApiSession } from '@/lib/server/session';
 import { startLoginSession, stopLoginSession, getLoginSession } from '@/lib/server/agent/loginSession';
 
-export const runtime = 'nodejs';
-export const dynamic = 'force-dynamic';
-
 // Claude sign-in as a structured device-code flow (§14.64) — the Claude
 // sibling of /api/vps/[id]/codex/login, replacing the old PTY console
 // (the /login/stream SSE + /login/input routes are gone with it).

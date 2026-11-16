@@ -9,9 +9,6 @@ import { timeSection } from '@/lib/server/perf/loopLag';
 import { isRenderedRow, type TranscriptView } from '@/lib/transcriptRows';
 import type { SessionProbeResponse } from '@/lib/types/api';
 
-export const runtime = 'nodejs';
-export const dynamic = 'force-dynamic';
-
 /** Rows looked at past `afterId` (one indexed range), and rows reported. */
 const PROBE_SCAN_ROWS = 200;
 const PROBE_NEW_ROWS = 50;

@@ -26,7 +26,7 @@ export function transcriptViewFor(showTools: boolean): TranscriptView {
 }
 
 /** The stored preference (default ON; `'0'` = tools hidden). Browser only:
- *  without storage (SSR, privacy mode) the default applies. */
+ *  without storage (privacy mode) the default applies. */
 export function readShowToolsPreference(): boolean {
   try {
     return globalThis.localStorage?.getItem(SHOW_TOOLS_STORAGE_KEY) !== '0';

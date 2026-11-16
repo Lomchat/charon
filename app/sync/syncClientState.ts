@@ -68,7 +68,7 @@ export function initialSyncState(): SyncClientState {
   };
 }
 
-/** The SSR stamp (first connect of the page resumes from it instead of
+/** The page seed's stamp (first connect of the page resumes from it instead of
  *  resyncing). Ignored once a position exists. */
 export function withInitialPosition(
   s: SyncClientState, stamp: (SyncRev & { buildId?: string | null }) | null | undefined,

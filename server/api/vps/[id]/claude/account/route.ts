@@ -7,8 +7,6 @@ import { stopLoginSession } from '@/lib/server/agent/loginSession';
 import { emitGlobalVpsStatus } from '@/lib/server/agent/sessionOps';
 import { providerLoginPatch } from '@/lib/sessionCapabilities';
 
-export const runtime = 'nodejs';
-
 // Use the CLI that owns the OAuth credential, just like the sign-in flow.
 export async function DELETE(_req: Request, { params }: { params: Promise<{ id: string }> }) {
   const auth = await requireApiSession();

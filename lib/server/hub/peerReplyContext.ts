@@ -39,7 +39,7 @@ const PRIOR_SQL = `SELECT id, role,
 
 // Prepared lazily (the build-phase DB has no tables, §14.69), once per process
 // on the shared handle (re-prepared if the handle changes). The memo lives on
-// globalThis so every Next module copy shares it (I3).
+// globalThis so every module copy shares it (I3).
 type PeerWalk = { prepared: { handle: Database.Database; prior: Database.Statement } | null };
 const g = globalThis as typeof globalThis & { __charonPeerWalk?: PeerWalk };
 

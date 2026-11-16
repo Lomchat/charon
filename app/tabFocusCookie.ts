@@ -1,6 +1,6 @@
 /**
  * This browser's tab focus (tabStore § persistActiveId), mirrored into a
- * cookie so the SSR first paint is already ITS tab. Projected from the shared
+ * cookie so the page's first render is already ITS tab. Projected from the shared
  * layout's legacy `active` bit, the first frame showed another device's last
  * open — the pane mounted that session and the sidebar revealed its card,
  * then both jumped to the local tab once `restoreLocalTabFocus` ran.

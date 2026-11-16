@@ -10,9 +10,6 @@ import { failureReachedVps } from '@/lib/server/agent/AgentClient';
 import { emitGlobalVpsStatus } from '@/lib/server/agent/sessionOps';
 import type { AgentClient } from '@/lib/server/agent/AgentClient';
 
-export const runtime = 'nodejs';
-export const dynamic = 'force-dynamic';
-
 // Drop any stuck/reconnecting client and re-establish a fresh SSH + hello
 // (bypassing the up-to-5min reconnect backoff). Returns once connected or
 // after `waitMs`.

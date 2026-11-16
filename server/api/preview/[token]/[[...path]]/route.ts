@@ -15,9 +15,6 @@ import { resolveTheme } from '@/app/themes';
 import { compareVersions } from '@/lib/version';
 import type { FsReadResponse, FsStatResponse } from '@/lib/types/api';
 
-export const runtime = 'nodejs';
-export const dynamic = 'force-dynamic';
-
 // GET /api/preview/<token>/<path…> — one file of a live view (§14.110).
 //
 // The page this serves is somebody's HTML with its scripts running, on the
@@ -25,7 +22,7 @@ export const dynamic = 'force-dynamic';
 //   1. `CSP: sandbox` WITHOUT allow-same-origin on every response: the document
 //      lives in an opaque origin — no hub cookie, no hub API, no hub storage —
 //      even when the URL is opened in a tab of its own.
-//   2. Authorization is the URL (middleware lets /api/preview through): an
+//   2. Authorization is the URL (the HTTP gate lets /api/preview through): an
 //      HMAC capability for ONE VPS and ONE root, dead with its login session.
 //   3. Only the extension allow-list is served, never a dot-segment, never
 //      outside the root (the agent re-checks containment on every read).
@@ -124,7 +121,7 @@ async function handle(req: Request, headOnly: boolean): Promise<Response> {
     return text(503, 'The Charon agent of this VPS is not connected.');
   }
 
-  // `href="docs/"` reaches us as `docs` (Next drops the trailing slash):
+  // `href="docs/"` reaches us as `docs` (the trailing slash is redirected away, server/http/app.ts):
   // a folder answers with its index, the way a web server would.
   if (!livePreviewExt(rel)) {
     const index = await locate(client, claims.root, `${rel}/index.html`);

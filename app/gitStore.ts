@@ -275,7 +275,7 @@ export function useGitStatus(vpsId: string | null | undefined, cwd: string | nul
     if (!vpsId || !cwd) return EMPTY;
     return entryFor(keyOf(vpsId, cwd)).view;
   }, [vpsId, cwd]);
-  // Server snapshot: the store is client-only, so SSR renders the empty view.
+  // Server snapshot: the store is client-only: the empty view.
   return useSyncExternalStore(sub, snapshot, () => EMPTY);
 }
 

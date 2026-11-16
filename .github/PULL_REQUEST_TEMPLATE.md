@@ -3,7 +3,7 @@ Thanks for opening a PR.
 
 Before submitting:
 - Run the CI gates locally: `npm run typecheck`, `npm test`,
-  `npm run test:py`, `npm run build` (build covers protocol sync + Next).
+  `npm run test:py`, `npm run build` (build covers protocol sync + the Vite and server bundles).
 - If you changed any of: JSON-RPC protocol, DB schema, API shape, layout,
   build config, environment variables, deployment topology, agent lifecycle,
   or major UI components — describe the behaviour change in the Summary

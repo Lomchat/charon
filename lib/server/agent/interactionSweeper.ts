@@ -14,8 +14,8 @@ export const INTERACTION_SWEEP_MS = 30_000;
 
 type SweeperState = { timer: ReturnType<typeof setInterval> | null };
 
-// ONE timer per process (§14.106 / I3): Next evaluates this module in several
-// copies, a module-level `let` would arm one sweeper per copy.
+// ONE timer per process (§14.106 / I3): with module copies (tests' `vi.resetModules()`, dev rebuilds), a module-level
+// `let` would arm one sweeper per copy.
 const g = globalThis as typeof globalThis & { __charonSweeper?: SweeperState };
 
 function state(): SweeperState {

@@ -34,7 +34,7 @@ function runningBgTasksFor(
 
 /**
  * Annotate `agent_sessions` rows into the list shape every surface reads
- * (list GET; the SSR seed and the session summaries build on it): live status,
+ * (list GET; the page seed and the session summaries build on it): live status,
  * bg-task count, peer addressability, first prompt, last activity, and the
  * pending-gate counts. `pendingBlocking` = permissions + blocking questions +
  * plan reviews; `pendingAsync` = async questions (never block, never expire,

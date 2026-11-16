@@ -2,8 +2,6 @@ import { requireApiSession } from '@/lib/server/session';
 import { fileToolCall, rootAndPath } from '@/lib/server/hub/fileToolsRpc';
 import { invalidateGitStatus } from '@/lib/server/hub/git';
 
-export const dynamic = 'force-dynamic';
-
 // POST /api/vps/[id]/fs/archive  { root, path, op: 'list' | 'read' | 'extract', member? }
 //
 // Inside a zip/tar/gzip without unpacking it (§14.112). `extract` is the one

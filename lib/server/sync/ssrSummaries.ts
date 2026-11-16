@@ -1,4 +1,4 @@
-// THE SSR seed of the summary store (§14.108, §9), shared by every page that
+// THE page seed of the summary store (§14.108, §9), shared by every page that
 // mounts it (`/` and `/desk`): the list GET's builder, stamped with the bus
 // revision read in the SAME synchronous section (I2) — the client's first SSE
 // connect resumes from that stamp (`initSyncPosition`).

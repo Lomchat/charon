@@ -24,10 +24,9 @@ import { rawSqlite } from '@/lib/db';
 // logs rotated away long ago. A false miss costs a duplicate; a looser guard
 // would let an old row swallow a new-epoch event, a loss.)
 //
-// Statements are prepared LAZILY: during `next build` the DB is `:memory:`
-// without tables (§14.69), and nothing may need the schema at import time.
-// The cache is per module copy (Next loads several); every copy prepares on
-// the same shared handle, and a new handle simply re-prepares.
+// Statements are prepared LAZILY: nothing may need the schema at import time
+// (§14.69). The cache is per module copy; every copy prepares on the same
+// shared handle, and a new handle simply re-prepares.
 
 export type LegacyReplaySets = {
   toolUseIds: Set<string>;

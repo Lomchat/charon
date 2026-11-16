@@ -415,7 +415,7 @@ export function emitGlobalShellStatus(
 
 /**
  * Live agentStatus push (sessionId = vpsId): the sidebar badge / action
- * buttons follow `vps.agentStatus` flips without waiting for the next SSR.
+ * buttons follow `vps.agentStatus` flips without waiting for the next page load.
  * AgentClient owns the DB persists but cannot import this bus (import cycle
  * AgentClient ← AgentClientPool ← here), so it exposes an injection point —
  * wired once at module load. Same gating as the persist: transient SSH drops
@@ -4798,7 +4798,7 @@ export class SessionStream {
     // — the HubPanel picks up `?session=…` via useSearchParams and
     // switches selectedId. When a tab IS already open, the SW prefers
     // focus+postMessage; the root layout handler (`NotificationClickHandler`)
-    // then routes via Next router to `/?session=…`.
+    // then routes to `/?session=…` (app/navigation.ts).
     sendPushToAll({
       ...payload,
       sessionId: this.id,
@@ -5340,8 +5340,7 @@ export async function startNewSession(opts: {
 // fallback) could race on start_session and one would fail with
 // "already exists" → the catch handler would demote the session to 'sleeping'
 // while the other just woke it up. Cf. CLAUDE.md §14 gotcha 24.
-// Next builds route and instrumentation copies of this module. They share the
-// pool, so they must also share the lock around one session's resume RPC.
+// Module copies (§14.106) share the pool, so they must also share the lock around one session's resume RPC.
 const resumeGlobal = globalThis as unknown as { _sessionResumes?: Map<string, Promise<SessionStream>> };
 const _resumeInflight = resumeGlobal._sessionResumes ??= new Map<string, Promise<SessionStream>>();
 
@@ -5853,7 +5852,7 @@ export function deleteVpsSessions(vpsId: string, deleteRows: () => void): string
 // Called on every (re)connection of an AgentClient, as soon as `hello` comes
 // back with the list of REALLY alive sessions on the agent side.
 //
-// The problem we solve: after a `systemctl restart charon`, the Next process
+// The problem we solve: after a `systemctl restart charon`, the hub process
 // restarts but the agent daemon on the VPS side keeps living with its open
 // SDK sessions. On the Charon side, the DB keeps the last known status —
 // typically 'thinking' for sessions that were processing a query at SIGTERM
@@ -6062,14 +6061,14 @@ export async function reconcileVpsAgentState(
 }
 
 // ── Graceful shutdown ──────────────────────────────────────────────────────
-// When systemd / the user kills the Next process (SIGTERM or SIGINT), we
+// When systemd / the user kills the hub process (SIGTERM or SIGINT), we
 // flush to DB the reasoning block and the assistant text being accumulated in
 // each SessionStream. Without this, anything streamed before the next
 // boundary is lost (cf. bug observed when the app was restarted while Claude
 // was still writing). The durable cursor is NOT advanced past them: the
 // restart replays the block and covers/extends these partial rows (§14.31).
 //
-// We use a module-level flag to avoid double-registration on Next hot-reload.
+// A globalThis flag avoids double registration across module copies.
 declare global {
   // eslint-disable-next-line no-var
   var __charon_shutdownRegistered: boolean | undefined;
@@ -6105,12 +6104,8 @@ export function gracefulShutdown(sig: string, exit: (code: number) => void = (co
   }
 }
 
-// Skip during `next build`: the module is imported by build workers
-// (SSR analysis), which receive a SIGINT/SIGTERM at the end of the phase.
-// If we register the handler, we `process.exit(0)` prematurely and that
-// can break the build (cf. logs `graceful flush done on SIGINT` during build).
-const isBuildPhase = process.env.NEXT_PHASE === 'phase-production-build';
-if (!isBuildPhase && !globalThis.__charon_shutdownRegistered) {
+// ONE handler per process (§14.12), registered when the server bundle loads.
+if (!globalThis.__charon_shutdownRegistered) {
   globalThis.__charon_shutdownRegistered = true;
   const onSignal = (sig: NodeJS.Signals) => gracefulShutdown(sig);
   process.on('SIGTERM', onSignal);

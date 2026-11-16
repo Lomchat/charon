@@ -4,7 +4,7 @@ import { db, vps as vpsTable } from '@/lib/db';
 import type { Vps } from '@/lib/db/schema';
 import { AgentClient } from './AgentClient';
 
-// Cache at the globalThis level to survive Next.js dev hot reloads.
+// Cache at the globalThis level: module copies (tests' `vi.resetModules()`, dev rebuilds) share it.
 const g = globalThis as unknown as {
   _agentClientPool?: Map<string, AgentClient>;
   _agentConnectionHolds?: Map<string, Promise<void>>;

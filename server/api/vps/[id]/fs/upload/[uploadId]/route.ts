@@ -5,9 +5,6 @@ import { cancelUpload, writeUploadChunk } from '@/lib/server/hub/fsUpload';
 import { FS_UPLOAD_CHUNK_BYTES } from '@/lib/fsUpload';
 import type { FsUploadResponse } from '@/lib/types/api';
 
-export const runtime = 'nodejs';
-export const dynamic = 'force-dynamic';
-
 type RouteContext = { params: Promise<{ id: string; uploadId: string }> };
 
 // PUT /api/vps/[id]/fs/upload/[uploadId]?offset=<n>   raw bytes, one chunk

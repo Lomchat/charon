@@ -128,7 +128,7 @@ type Props = {
   // health chips. One bag on purpose — see `buildMeta` below.
   staleness: VpsStalenessBaselines;
   initialTabs: TabDTO[];
-  // The SSR summaries (§14.108, = `initialSessions`) and the bus revision they
+  // The page seed's summaries (§14.108, = `initialSessions`) and the bus revision they
   // reflect + the build id: the proto-2 transport's first `?since=` (C15).
   initialSummaries?: import('@/lib/sessionSummary').SessionSummary[];
   initialSync?: import('@/lib/sync/protocol').SyncStamp & { buildId: string };
@@ -185,12 +185,12 @@ function mergeRuntimeSlices(current: Vps[], slices: Array<Record<string, unknown
 }
 
 export default function HubPanel({ vpsList: initialVpsList, vpsFolders: initialFolders, vpsPaths: initialPaths, initialSessions, builtPyzSha, builtAgentVersion, staleness, initialTabs, initialSummaries, initialSync, initialPanels = DEFAULT_PANEL_LAYOUT }: Props) {
-  // The workspace is part of the SSR snapshot. Hydrating it synchronously
+  // The workspace is part of the page seed. Hydrating it synchronously
   // prevents the initial session from mounting, being cleared by an empty tab
   // store, then mounting again after GET /api/tabs.
   hydrateTabs(initialTabs);
   // Same for the summaries (§14.108) and the transport's first `?since=`: the
-  // page resumes the bus from the revision its SSR reflects (§9).
+  // page resumes the bus from the revision its seed reflects (§9).
   const ssrSummaries = (initialSummaries ?? initialSessions) as SessionSummary[];
   initSyncPosition(initialSync ?? null);
   hydrateSummaries(ssrSummaries, initialSync ?? null);
@@ -204,8 +204,8 @@ export default function HubPanel({ vpsList: initialVpsList, vpsFolders: initialF
   const [vpsFolders, setVpsFolders] = useState<VpsFolder[]>(initialFolders);
   const [vpsPaths, setVpsPaths] = useState<VpsPath[]>(initialPaths);
   // Global browser preference for transcript density. Default ON, matching
-  // the historical UI; read storage only after mount so SSR hydration stays
-  // deterministic (same rule as the notification-sound preference below).
+  // the historical UI; read storage only after mount so the first render
+  // matches the page seed (same rule as the notification-sound preference below).
   const [showTools, setShowTools] = useState(true);
   // The preference is known (read below): until then the transcript fetches
   // nothing, so a page load with tools hidden never fetches the full window
@@ -224,7 +224,7 @@ export default function HubPanel({ vpsList: initialVpsList, vpsFolders: initialF
       return next;
     });
   }, []);
-  // LIVE staleness baselines. The SSR props freeze at page load; a tab that
+  // LIVE staleness baselines. The seed props freeze at page load; a tab that
   // survives a hub deploy would forever compare vps.agentPyzSha against the
   // OLD builtPyzSha → phantom "update agent" badge on the whole fleet until
   // F5 (and "update" would never clear it: the server deploys the NEW sha,
@@ -303,7 +303,7 @@ export default function HubPanel({ vpsList: initialVpsList, vpsFolders: initialF
       ? queryParamSession
       : (initialActiveTab?.kind === 'session' ? initialActiveTab.ref : null)));
   // Charon both consumes and produces these query parameters. Keep provenance,
-  // otherwise Next's asynchronous useSearchParams update can reinterpret our
+  // otherwise the asynchronous useSearchParams update (app/navigation.ts) can reinterpret our
   // own replaceState as a fresh deep link and bounce between two tabs forever.
   const sessionDeepLink = useRef(new DeepLinkGuard());
   const shellDeepLink = useRef(new DeepLinkGuard());
@@ -576,7 +576,7 @@ export default function HubPanel({ vpsList: initialVpsList, vpsFolders: initialF
         refreshOne(ev.installId);
         // Update vps.agentStatus + agentPyzSha locally when the install
         // succeeds. Without this: the "outdated" badge stays displayed
-        // because the local `agentPyzSha` (fetched at initial SSR) is still
+        // because the local `agentPyzSha` (from the page seed) is still
         // the old one, while on the server side the bootstrap has already
         // persisted the new sha (cf. bootstrap.ts § ping_agent). By
         // construction, after a successful bootstrap, the deployed sha IS

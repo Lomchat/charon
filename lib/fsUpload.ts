@@ -4,15 +4,13 @@
 //
 // The bytes never ride the JSON-RPC pipe: each file crosses its own ssh
 // channel into `charon-agent --receive-file` (the upload twin of the
-// `--stream-file` download), fed by the browser in CHUNKS. Chunked because
-// Next clones every request body that goes through middleware and silently
-// TRUNCATES it past 10MB (`middlewareClientMaxBodySize`, §14.73); a chunk
-// well under that also bounds what the hub ever holds in memory.
+// `--stream-file` download), fed by the browser in CHUNKS: a chunk bounds
+// what the hub ever holds in memory for one request (§14.73).
 
 /** First agent that understands `--receive-file`. */
 export const FS_UPLOAD_AGENT_VERSION = '0.99.0';
 
-/** One PUT. Must stay under Next's 10MB middleware body clone. */
+/** One PUT. */
 export const FS_UPLOAD_CHUNK_BYTES = 4 * 1024 * 1024;
 
 /** Files + folders in one drop. Past this, an archive is the better tool. */

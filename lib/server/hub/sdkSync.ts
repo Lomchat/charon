@@ -109,7 +109,7 @@ export function latestVersionsByKey(): Record<string, string | null> {
   );
 }
 
-/** Fire-and-forget TTL refresh of every declared line. Safe to kick from SSR. */
+/** Fire-and-forget TTL refresh of every declared line. Safe to kick from a page render. */
 export function refreshAllLatestsIfStale(): void {
   for (const line of Object.values(LATEST_LINES)) line.refreshIfStale();
 }
@@ -145,7 +145,7 @@ export async function refreshSdkLatest(): Promise<SdkRefreshResult> {
 let inflight: Promise<unknown> | null = null;
 
 /** Best-effort background refresh if the cached latest is older than the TTL.
- *  Fire-and-forget, deduped via `inflight` — safe to kick from every SSR /
+ *  Fire-and-forget, deduped via `inflight` — safe to kick from every page render /
  *  auto-update tick. */
 export function refreshSdkLatestIfStale(): void {
   const at = Number(getSetting('sdk.latest_version_at') || '0');

@@ -28,7 +28,7 @@ const ROOT = path.resolve(__dirname, '..');
 
 function sourceFiles(): string[] {
   const out: string[] = [];
-  const skip = new Set(['node_modules', '.next', 'dist', '__pycache__']);
+  const skip = new Set(['node_modules', 'dist', '__pycache__']);
   const walk = (dir: string) => {
     for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
       if (skip.has(entry.name)) continue;

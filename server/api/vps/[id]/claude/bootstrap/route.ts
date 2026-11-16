@@ -3,9 +3,6 @@ import { db, vps } from '@/lib/db';
 import { requireApiSession } from '@/lib/server/session';
 import { bootstrapVps } from '@/lib/server/hub/bootstrap';
 
-export const runtime = 'nodejs';
-export const dynamic = 'force-dynamic';
-
 // GET /api/vps/[id]/claude/bootstrap
 // SSE that streams progress: verify -> detect_os -> install_python -> install_sdk -> verify -> done.
 export async function GET(req: Request, { params }: { params: Promise<{ id: string }> }) {

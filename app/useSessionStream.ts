@@ -34,7 +34,7 @@ import type { FetchSessionOptions } from './sessionCache';
 
 // Session-expired (401) handling (CLAUDE.md §14.45, P8). After a long outage
 // the 24h sliding session cookie may have lapsed; every API call then 401s
-// silently. We hard-reload ONCE → middleware redirects cleanly to
+// silently. We hard-reload ONCE → the HTTP gate redirects cleanly to
 // /login?next=… . Module-level guard so concurrent 401s don't storm.
 let _authReloadDone = false;
 function reloadForExpiredSession(): void {

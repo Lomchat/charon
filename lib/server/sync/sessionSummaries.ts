@@ -15,8 +15,8 @@
 // `markSummaryDirty(id)` (I9); the list GET and every resync reconcile ALL
 // summaries anyway and publish the diffs (self-heal).
 //
-// All state is on ONE `globalThis.__charonSummaries` object (§14.106): Next
-// evaluates this module in several copies and they must share `lastKey`.
+// All state is on ONE `globalThis.__charonSummaries` object (§14.106):
+// module copies (tests' `vi.resetModules()`, dev rebuilds) must share `lastKey`.
 //
 // Single-session reads are indexed (pendings by `(session_id, status)`, the
 // first user row by the snapshot-lookup prefix, `MAX(ts_ms)` seek): a status
@@ -329,7 +329,7 @@ export function publishSummaryDiffs(ids: string[], vpsIds: string[]): void {
 /**
  * Build EVERY summary, publish each changed key, publish `null` for every
  * session a summary was published for that is now gone or archived, and
- * return the complete list (the list GET, SSR and resync snapshots). Heals any
+ * return the complete list (the list GET, page seeds and resync snapshots). Heals any
  * write that bypassed the bus (I9).
  */
 export function reconcileAllSummaries(): SessionSummary[] {

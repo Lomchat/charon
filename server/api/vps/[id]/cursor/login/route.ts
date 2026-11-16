@@ -6,9 +6,6 @@ import { emitGlobalVpsStatus } from '@/lib/server/agent/sessionOps';
 import { providerLoginPatch } from '@/lib/sessionCapabilities';
 import { invalidateCursorModels } from '@/lib/server/hub/cursorModels';
 
-export const runtime = 'nodejs';
-export const dynamic = 'force-dynamic';
-
 // Cursor sign-in — the SDK's browser-LINK flow (§14.104), run headlessly on
 // the VPS through the Node runtime bundled inside the cursor-sdk wheel.
 //

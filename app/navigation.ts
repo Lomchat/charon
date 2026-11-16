@@ -1,10 +1,9 @@
 'use client';
 import { useMemo, useSyncExternalStore } from 'react';
 
-// The URL as React state, the way Next's app router exposed it: the query
-// string follows pushState/replaceState (Charon's own included — HubPanel
-// writes `?session=`/`?shell=` itself, §14.78) and back/forward. One
-// notification per tick, after the history call, like Next's.
+// The URL as React state: the query string follows pushState/replaceState
+// (Charon's own included — HubPanel writes `?session=`/`?shell=` itself,
+// §14.78) and back/forward. One notification per tick, after the history call.
 
 const listeners = new Set<() => void>();
 let patched = false;

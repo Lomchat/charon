@@ -2,9 +2,6 @@ import crypto from 'node:crypto';
 import { requireApiSession } from '@/lib/server/session';
 import { getInstall, type InstallStreamMessage } from '@/lib/server/install/installSession';
 
-export const runtime = 'nodejs';
-export const dynamic = 'force-dynamic';
-
 // GET /api/installs/[id]/stream  → SSE of bootstrap events + status updates.
 // On subscribe, sends replay_begin -> ring buffer events -> replay_end ->
 // current status. Then live.

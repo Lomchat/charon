@@ -116,7 +116,7 @@ export function projectLocalTabFocus(tabs: TabDTO[], activeId: string | null): T
 function persistActiveId(activeId: string | null) {
   if (typeof window === 'undefined') return;
   try { localStorage.setItem(ACTIVE_TAB_STORAGE_KEY, JSON.stringify(activeId)); } catch {}
-  // The SSR's copy (tabFocusCookie.ts): the next page load paints this tab.
+  // The server's copy (tabFocusCookie.ts): the next page load paints this tab.
   try {
     document.cookie = `${TAB_FOCUS_COOKIE}=${serializeTabFocus(activeId)}; path=/; max-age=31536000; samesite=lax`;
   } catch {}
@@ -167,8 +167,8 @@ function initialTabState(tabs: TabDTO[]): State {
  * snapshot, never retain the first visitor's tabs in the process singleton. */
 export function hydrateTabs(tabs: TabDTO[]): void {
   if (typeof window === 'undefined' || state.loaded) return;
-  // Use the SSR choice for the hydration frame only. Browser-local persisted
-  // focus is restored in an effect so server/client markup stays identical.
+  // Use the seeded choice for the first frame only. Browser-local persisted
+  // focus is restored in an effect so the first render matches the seed.
   state = initialTabState(tabs);
   g.__charonTabState = state;
   touchMru(state.activeId);

@@ -53,7 +53,7 @@ const API_TOKEN_ROUTES: ReadonlyArray<readonly [method: string, path: RegExp]> =
   ['GET', /^\/api\/(claude|codex|cursor)\/models$/],
 ];
 
-/** Is this route open to the automation token? Pathname as Next normalized it. */
+/** Is this route open to the automation token? Raw request pathname. */
 export function apiTokenRouteAllowed(method: string, pathname: string): boolean {
   return API_TOKEN_ROUTES.some(([m, re]) => m === method && re.test(pathname));
 }

@@ -81,7 +81,7 @@ export async function GET(req: Request) {
       // A suspended tab can miss an update event, so every list poll also
       // carries this small authoritative snapshot and converges without F5.
       vpsRuntime,
-      // Live staleness baselines. These were SSR-only props before: a
+      // Live staleness baselines, not only in the page seed: a
       // long-open tab kept comparing vps.agentPyzSha against a FROZEN
       // builtPyzSha, so after a hub deploy + fleet auto-update every tab
       // showed a phantom "update agent" until F5. The client refreshes them

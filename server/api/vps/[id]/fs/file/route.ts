@@ -12,9 +12,6 @@ import { compareVersions } from '@/lib/version';
 import { parseByteRange } from '@/lib/fileRange';
 import type { FsLinkInfo, FsListResponse, FsReadResponse, FsStatResponse } from '@/lib/types/api';
 
-export const runtime = 'nodejs';
-export const dynamic = 'force-dynamic';
-
 const ZIP_STREAM_AGENT_VERSION = '0.78.0';
 
 type RouteContext = { params: Promise<{ id: string }> };

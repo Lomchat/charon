@@ -6,7 +6,7 @@ import { DEFAULT_THEME_ID, resolveTheme, type Theme } from './themes';
  *  The theme is hub-wide and SERVER-RENDERED onto <html data-theme> by
  *  layout.tsx, which is what makes it flash-free: there is no boot-time
  *  localStorage read to race the first paint, and no client is ever the source
- *  of truth. This module only handles the two things SSR cannot:
+ *  of truth. This module only handles the two things the server-rendered <html> cannot:
  *    · the live swap when the setting changes (preview in Settings, and the
  *      `settings_changed` SSE for every other tab and device);
  *    · the JS-coloured surfaces — xterm and CodeMirror — which subscribe via

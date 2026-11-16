@@ -2,9 +2,6 @@ import { readFile } from 'node:fs/promises';
 import path from 'node:path';
 import { requireApiSession } from '@/lib/server/session';
 
-export const runtime = 'nodejs';
-export const dynamic = 'force-dynamic';
-
 // GET /api/pdfjs/<kind>/<name> — the data files pdf.js loads at runtime
 // (§14.110): CMaps for CJK text, the 14 standard fonts a PDF may reference
 // without embedding, the wasm image decoders and the ICC profile. Served from

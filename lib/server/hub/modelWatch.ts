@@ -11,7 +11,7 @@ const g = globalThis as unknown as {
 };
 
 export function armModelWatch(): void {
-  if (process.env.NEXT_PHASE === 'phase-production-build' || g._modelWatch) return;
+  if (g._modelWatch) return;
   const tick = async () => {
     const state = g._modelWatch!;
     if (state.running) return;

@@ -4,11 +4,8 @@ import type { VpsStatusEmitter } from './AgentClient';
 
 // hubHooks — THE injection slots of the hub (CLAUDE.md §14.106).
 // ─────────────────────────────────────────────────────────────────────────────
-// Next evaluates a server module in several copies (the instrumentation copy
-// that boots the agents, the route/RSC copy, the login server-action copy), and
-// a module-level `let` exists once PER COPY: a hook wired by one copy (e.g. a
-// route-copy module) stays null in the copy that reads it (the boot-attached
-// SessionStreams of the instrumentation copy).
+// A module-level `let` exists once PER module copy (tests' `vi.resetModules()`, dev rebuilds):
+// a hook wired by one copy stays null in the copy that reads it.
 //
 // One object on `globalThis`, created with `??=`, shared by every copy. Each
 // `set*` keeps its historical exported name and writes `hubHooks().x`; every

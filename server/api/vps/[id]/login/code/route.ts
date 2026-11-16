@@ -1,9 +1,6 @@
 import { requireApiSession } from '@/lib/server/session';
 import { getLoginSession } from '@/lib/server/agent/loginSession';
 
-export const runtime = 'nodejs';
-export const dynamic = 'force-dynamic';
-
 // POST /api/vps/[id]/login/code  Body: { code: string }
 // Hands the OAuth code the user pasted back from platform.claude.com to the
 // waiting `claude auth login`. The verdict is NOT in the response: the

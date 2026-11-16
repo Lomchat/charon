@@ -21,7 +21,7 @@ export const LIVE_CHILD_STATUSES = ['starting', 'active', 'thinking', 'backgroun
 const REQUEST_TTL_MS = 5 * 60_000;
 const MAX_ANCESTOR_WALK = 16;
 
-// Process-wide (§14.106): Next may load this module more than once.
+// Process-wide (§14.106): module copies may load it more than once.
 const g = globalThis as unknown as { __charonSpawnSeen?: Map<string, number> };
 const seen = (g.__charonSpawnSeen ??= new Map<string, number>());
 // Spawns past their limit check but without a child row yet: counted with the

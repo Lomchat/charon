@@ -35,7 +35,7 @@ export function createHttpApp(opts: HttpAppOptions): Hono {
     c.res = withHeaders(c.res, securityHeaders(new URL(c.req.url).pathname), 'default');
   });
 
-  // `/desk/` → `/desk`, as Next did.
+  // `/desk/` → `/desk` (308).
   app.use('*', async (c, next) => {
     const url = new URL(c.req.url);
     if (url.pathname.length > 1 && url.pathname.endsWith('/')) {

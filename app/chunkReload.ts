@@ -1,11 +1,10 @@
 // Stale-chunk recovery (§14.57).
 //
-// Charon tabs stay open for days (one long-lived SSE) while `.next` is rebuilt
-// often. Every `next build` rewrites chunk hashes and DELETES the old files, so
-// a long-open tab that later lazy-imports a chunk (xterm for shell/login, any
-// route split) hits a 404 → ChunkLoadError. With no recovery that surfaces as
-// the raw "Application error: a client-side exception" white screen and the
-// user must F5 by hand. Here we detect chunk-load failures and reload ONCE onto
+// Charon tabs stay open for days (one long-lived SSE) while the hub is rebuilt
+// often. Every build rewrites chunk hashes; old files stay served 7 days
+// (server/http/static.ts), past that a long-open tab that lazy-imports a chunk
+// (xterm for shell/login, any viewer) hits a 404. Without recovery that is a
+// white screen and the user must F5 by hand. Here we detect chunk-load failures and reload ONCE onto
 // the fresh build, guarded against reload loops so a genuine (non-chunk) bug
 // can't spin the page forever.
 

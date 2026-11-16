@@ -13,9 +13,6 @@ import { getSession, SESSION_COOKIE } from '@/lib/server/auth';
 // - Deliberately does not touch the agent pool (agents reconnect with
 //   backoff; an unreachable VPS would otherwise mark the hub unhealthy).
 
-export const dynamic = 'force-dynamic';
-export const runtime = 'nodejs';
-
 export async function GET(req: Request) {
   const startedAt = Date.now();
   let dbOk = false;

@@ -11,9 +11,6 @@ import {
 } from '@/lib/fsUpload';
 import type { FsListResponse, FsStatResponse, FsUploadBody, FsUploadResponse } from '@/lib/types/api';
 
-export const runtime = 'nodejs';
-export const dynamic = 'force-dynamic';
-
 // POST /api/vps/[id]/fs/upload
 //   { op:'check', root, paths[] }            → which of them already exist
 //   { op:'begin', root, path, size, overwrite? } → an uploadId for the chunks

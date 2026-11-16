@@ -3,9 +3,6 @@ import { db, vps as vpsTable } from '@/lib/db';
 import { requireApiSession } from '@/lib/server/session';
 import { refreshCursorLoginStatus } from '@/lib/server/agent/cursorLoginCheck';
 
-export const runtime = 'nodejs';
-export const dynamic = 'force-dynamic';
-
 // Is this VPS signed in to Cursor? The verdict is the SDK's own
 // `Cursor.auth.status()` — never the mere existence of ~/.cursor/sdk/auth.json,
 // which says nothing about the key being unexpired or minted for this backend

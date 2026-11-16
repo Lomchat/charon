@@ -1,8 +1,6 @@
 import { requireApiSession } from '@/lib/server/session';
 import { fileToolCall, rootAndPath } from '@/lib/server/hub/fileToolsRpc';
 
-export const dynamic = 'force-dynamic';
-
 // GET /api/vps/[id]/fs/range?root=&path=&offset=&length=
 //
 // A byte range of one file (§14.112) — the log view's tail, its earlier

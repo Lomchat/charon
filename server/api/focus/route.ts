@@ -4,9 +4,6 @@ import { noteConnectionAttention, setConnectionFocus } from '@/lib/server/agent/
 import { markLeftRead } from '@/lib/server/agent/shellNotify';
 import { currentRev } from '@/lib/server/sync/syncBus';
 
-export const runtime = 'nodejs';
-export const dynamic = 'force-dynamic';
-
 // POST /api/focus
 // Body: { conn: string; sessionId: string | null; focusSeq: number;
 //         visible?: boolean; attentive?: boolean; attentiveAgeMs?: number;

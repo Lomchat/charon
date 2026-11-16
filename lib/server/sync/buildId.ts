@@ -1,6 +1,6 @@
 // The client build this hub process serves (`dist/client/BUILD_ID`, written by
 // scripts/build-client.mjs), read ONCE per process.
-// The proto-2 `sync_hello` and the SSR stamp carry it so a tab can tell it
+// The proto-2 `sync_hello` and the page seed's stamp carry it so a tab can tell it
 // runs an older client than the hub (version skew after a deploy) and offer
 // an idle-gated reload (§14.57) — never a forced one.
 import fs from 'node:fs';

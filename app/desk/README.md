@@ -21,13 +21,13 @@ Ce qui existe côté Charon est **importé, jamais recopié** — deux définiti
 | `attentionForRow`, `rowStatus` (bloqué > question > fini non lu) | `lib/sessionAttention.ts` |
 | `useSessionList()`, `useVpsRuntime()`, `addOverlay` (résumés `session_summary`) | `app/sync/summaryStore.ts` |
 | `PROVIDERS`, `SESSION_PROVIDERS`, `asSessionProvider`, logos `/agents/*.png` | `lib/sessionCapabilities.ts` |
-| `ssrSummaries()` — l'amorçage SSR de `/` | `lib/server/sync/ssrSummaries.ts` |
+| `ssrSummaries()` — les résumés amorcés avec la page | `lib/server/sync/ssrSummaries.ts` |
 | `setFocus`, `subscribeAll`, `subscribeReconnect`, `initSyncPosition` | `app/globalEventStream.ts` |
 | `sidebarPathKey`, `sidebarPathOrderedIds` | `app/sidebarPathGroups.ts` |
 | `canSleepSession`, `canResumeSession` | `app/sessionBulkActions.ts` |
 | `SessionView`, `SessionContextMenu`, `ConfirmModal`, `PromptModal` | `app/*` |
 | `GET /api/sessions` (filet de 60 s), `GET /api/events` (SSE) | `server/api/{sessions,events}/**` |
-| `requireSession()`, tables `vps` / `vps_folders` | `lib/**` |
+| `deskPage` (session, tables `vps` / `vps_folders`) | `server/http/pages.ts` |
 
 Le desk lit ; il n'écrit que ce que l'utilisateur demande depuis un modal ou un
 menu, par les mêmes appels que `/`.
@@ -36,7 +36,6 @@ menu, par les mêmes appels que `/`.
 
 ```
 app/desk/
-  page.tsx       composant serveur : session, base, résumés + révision (SSR)
   Desk.tsx       coquille React : magasin de résumés, SSE, modals, menus
   desk.css       habillage (le modal réutilise app.css)
   ui/            SessionModal, StoreModal, Hud, time

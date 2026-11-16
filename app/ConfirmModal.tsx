@@ -104,7 +104,7 @@ export default function ConfirmModal({
   // inside `.tool-panel` — a `transform`ed drawer at ≤1100px, and a transform
   // makes that element the containing block for `position: fixed` descendants,
   // so the backdrop would cover the drawer instead of the page. Guarded for
-  // SSR: a dialog only ever renders after a click, so nothing is hydrated.
+  // A dialog only ever renders after a click: the document exists.
   if (typeof document === 'undefined') return null;
   return createPortal(body, document.body);
 }

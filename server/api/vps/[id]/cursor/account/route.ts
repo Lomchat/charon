@@ -6,9 +6,6 @@ import { emitGlobalVpsStatus } from '@/lib/server/agent/sessionOps';
 import { providerLoginPatch } from '@/lib/sessionCapabilities';
 import { invalidateCursorModels } from '@/lib/server/hub/cursorModels';
 
-export const runtime = 'nodejs';
-export const dynamic = 'force-dynamic';
-
 // DELETE = forget the stored Cursor credential on this VPS.
 //
 // Local-only, exactly like the SDK's own logout: the minted key stays valid

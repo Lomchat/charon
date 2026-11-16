@@ -1,8 +1,6 @@
 import { requireApiSession } from '@/lib/server/session';
 import { fileToolCall, rootAndPath } from '@/lib/server/hub/fileToolsRpc';
 
-export const dynamic = 'force-dynamic';
-
 // POST /api/vps/[id]/fs/convert  { root, path, to: 'png' | 'pdf' }
 //
 // What a browser cannot decode, converted on the VPS (§14.112): images

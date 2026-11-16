@@ -20,9 +20,6 @@ import { parseRev, type SyncRev } from '@/lib/sync/rev';
 import type { SyncControlFrame } from '@/lib/sync/protocol';
 import type { VpsRuntimeSnapshot } from '@/lib/types/api';
 
-export const runtime = 'nodejs';
-export const dynamic = 'force-dynamic';
-
 type ResyncReason = 'first' | 'epoch' | 'gap' | 'cap' | 'future';
 
 // GET /api/events?conn=<uuid>&focus=<sid>&focusSeq&visible&attentive&attentiveAgeMs
@@ -53,7 +50,7 @@ export async function GET(req: Request) {
 
   // Cold-start safety net (CLAUDE.md §14.45). A browser tab that survives a
   // `systemctl restart charon` reconnects its singleton SSE HERE without any
-  // SSR render, so without this call the AgentClientPool + SessionStream maps
+  // page load, so without this call the AgentClientPool + SessionStream maps
   // would stay empty (no SSH proxy, no attached stream) and no live agent
   // event would ever arrive on the reconnected SSE — "frozen until F5". This
   // is the ONE endpoint every live tab is guaranteed to hit after a restart.
@@ -105,8 +102,8 @@ export async function GET(req: Request) {
       // A registration exists only while a consumer can still end it. The
       // client may be gone already (closed or reloaded during the handler's
       // async prologue, e.g. a hub stall): its signal aborted BEFORE this
-      // start(), so a listener added now would never fire, and Next does not
-      // cancel the body of a destroyed response either — registering would
+      // start(), so a listener added now would never fire, and the server may
+      // not cancel the body of a destroyed response either — registering would
       // leave a live zombie conn counting as watching its focus (G8, §14.15).
       if (req.signal?.aborted) {
         ended = true;

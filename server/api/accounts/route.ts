@@ -4,7 +4,6 @@ import { listProviderAccounts, removeAccount, renameAccount, reorderAccounts, ac
 import { migrationBacklog } from '@/lib/server/accounts/migration';
 
 // Hub-owned provider accounts (CLAUDE.md §14.115). Never a credential here.
-export const dynamic = 'force-dynamic';
 
 export async function GET() {
   const auth = await requireApiSession(); if (auth instanceof Response) return auth;

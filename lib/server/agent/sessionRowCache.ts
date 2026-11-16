@@ -100,8 +100,8 @@ function caches(): RowCaches {
   };
 }
 
-// Prepared lazily: during `next build` the DB is `:memory:` without tables
-// (§14.69). A new handle (another DB) also invalidates every entry.
+// Prepared lazily (nothing needs the schema at import time, §14.69). A new
+// handle (another DB) also invalidates every entry.
 function statements(c: RowCaches): Statements {
   const handle = rawSqlite();
   if (c.statements?.handle === handle) return c.statements;

@@ -1,7 +1,7 @@
 /**
  * Separates URL values written by Charon from genuine deep-link navigation.
  *
- * Next's patched history API updates `useSearchParams()` after replaceState.
+ * app/navigation.ts updates `useSearchParams()` a microtask after replaceState.
  * That update is asynchronous relative to the workspace-tab store, so both
  * the old and new query values can be observed while an internal selection is
  * settling. Re-consuming either value as an external deep link can reopen the

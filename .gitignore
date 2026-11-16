@@ -1,5 +1,4 @@
 node_modules
-.next
 # The hub's build output (client + server bundles); agent/dist is committed.
 /dist/
 build

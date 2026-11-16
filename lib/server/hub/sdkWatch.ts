@@ -126,8 +126,6 @@ type Axis = {
 const g = globalThis as unknown as { _sdkWatch?: SdkWatchState };
 
 export function armSdkAutoUpdate(): void {
-  // Never arm timers inside `next build` workers (§14.12 family of bugs).
-  if (process.env.NEXT_PHASE === 'phase-production-build') return;
   if (g._sdkWatch) return; // already armed (seed is called from several paths)
   const state: SdkWatchState = {
     timer: null, firstRun: null, ticking: false, attempted: new Map(), inFlight: new Set(), failing: new Map(),

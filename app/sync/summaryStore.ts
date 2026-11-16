@@ -5,7 +5,7 @@
 //
 // Fed by the transport at MODULE EVALUATION in the browser (every page that
 // imports this module is fed — HubPanel and /desk alike); pages only seed
-// it from their SSR props and the DEFAULT list GET:
+// it from their page seed and the DEFAULT list GET:
 //   - `session_summary` frame  → applySummaryFrame (null = deleted/archived)
 //   - `sync_summaries` (resync) → seedSummaries(…, R, complete)
 //   - `vps_status` frame        → applyVpsFrame (only the keys it carries)
@@ -87,7 +87,7 @@ function put(id: string, s: SessionSummary | null, rev: SyncRev | null): boolean
 
 // ── Sessions ────────────────────────────────────────────────────────────────
 
-/** SSR, the default list GET, `sync_summaries`. `complete`: the list is EVERY
+/** The page seed, the default list GET, `sync_summaries`. `complete`: the list is EVERY
  *  non-archived session at `stamp` (absent ids leave). */
 export function seedSummaries(list: SessionSummary[], stamp: SyncRev | null, complete: boolean): void {
   let changed = false;
@@ -183,7 +183,7 @@ export function subscribeSummaries(cb: () => void): () => void {
 }
 
 /** Non-archived summaries, overlays applied, createdAt desc, id desc. Stable
- *  until something changes. `serverList`: what SSR rendered (hydration). */
+ *  until something changes. `serverList`: what the page seed held. */
 export function useSessionList(serverList?: SessionSummary[]): SessionSummary[] {
   return useSyncExternalStore(subscribeSummaries, getSessionList, () => serverSnapshot(serverList));
 }
@@ -198,7 +198,7 @@ function serverSnapshot(list?: SessionSummary[]): SessionSummary[] {
 }
 
 let hydrated = false;
-/** Seed once from SSR props, browser only (call during the first render). */
+/** Seed once from the page seed, browser only (call during the first render). */
 export function hydrateSummaries(list: SessionSummary[] | undefined, stamp: SyncRev | null | undefined): void {
   if (hydrated || typeof window === 'undefined' || !list) return;
   hydrated = true;

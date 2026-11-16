@@ -45,7 +45,7 @@ const readIdle = () => IDLE;
 const readServer = () => 0;
 
 /** "Now" for cache readings. Inactive (nothing warm): a far-future constant —
- *  every expired state reads the same, and nothing ticks. 0 during SSR. */
+ *  every expired state reads the same, and nothing ticks. */
 export function useCacheTick(active: boolean): number {
   return useSyncExternalStore(active ? subscribeClock : noSubscribe, active ? readClock : readIdle, readServer);
 }

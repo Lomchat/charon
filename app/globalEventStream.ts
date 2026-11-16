@@ -20,7 +20,7 @@ import {
 //
 // Reconnects are MANUAL, always: `onerror` closes the EventSource and
 // schedules a reconnect (jittered 250–1500 ms, then 1→2→4→6 s ±20 %), the URL
-// carrying `since=<epoch>.<lastRev>` (the first connect of a page: the SSR
+// carrying `since=<epoch>.<lastRev>` (the first connect of a page: the page seed's
 // stamp, `initSyncPosition`). The hub answers with either
 //   - `sync_hello{resume}` + the missed frames (their own ids, under the
 //     CURRENT focus) + `sync_replay_end` — exact, nothing to refetch; or
@@ -521,7 +521,7 @@ function handleMessage(e: MessageEvent): void {
 
 function openStream(): void {
   if (es) return;
-  if (typeof window === 'undefined') return; // SSR guard
+  if (typeof window === 'undefined') return; // no window (tests)
   // A pending backoff must never outlive a newer stream: its armed timer made
   // the new stream's onerror skip the teardown (`scheduleReconnect` returns
   // early), and the browser's own CONNECTING retry replayed the old URL.
@@ -565,7 +565,7 @@ function openStream(): void {
 
 // ── Public API ──────────────────────────────────────────────────────────────
 
-/** The SSR stamp (`initialSync`): the first connect of the page resumes from
+/** The page seed's stamp (`initialSync`): the first connect of the page resumes from
  *  it, and its `buildId` is the build this page runs. Idempotent. */
 export function initSyncPosition(initial: (SyncRev & { buildId?: string | null }) | null | undefined): void {
   // Browser only: a server render must not pin the module's state.

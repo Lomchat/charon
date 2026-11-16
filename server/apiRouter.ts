@@ -1,10 +1,10 @@
 import { Hono } from 'hono';
 
-// THE API router: Next's file routing over server/api/**/route.ts, served by
-// Hono. A route module keeps Next's handler contract unchanged:
+// THE API router: file routing over server/api/**/route.ts, served by Hono.
+// A route module exports its handlers by method:
 // `export async function GET(req: Request, { params }: { params: Promise<P> })`.
 //
-// Next semantics kept:
+// Semantics:
 //   - precedence per segment: static > [param] > [...all] > [[...optional]]
 //     (`/sessions/import` beats `/sessions/[id]`; Hono runs the matching
 //     routes in REGISTRATION order, so we register in that order);
@@ -125,7 +125,7 @@ export function buildApiApp(routes: ApiRouteEntry[]): Hono {
   }
 
   app.notFound(() => new Response('Not Found', { status: 404 }));
-  // A throwing handler: logged, empty 500 (Next's answer).
+  // A throwing handler: logged, empty 500.
   app.onError((err) => {
     console.error(err);
     return new Response(null, { status: 500 });
