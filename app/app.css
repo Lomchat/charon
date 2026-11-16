@@ -4190,6 +4190,21 @@ html[data-density='small'] .cs-sub-fold { font-size: 8.5px; }
   box-shadow: 0 0 8px color-mix(in srgb, var(--accent-strong) 60%, transparent), 0 1px 4px color-mix(in srgb, var(--shadow-color) 30%, transparent);
 }
 .toggle:focus-visible { outline: 2px solid var(--accent-strong); outline-offset: 3px; }
+.toggle:disabled { opacity: .5; cursor: default; }
+/* Compact (popover rows), and violet when on (ultracode, §14.56). */
+.toggle.sm { width: 36px; height: 20px; }
+.toggle.sm .knob { width: 14px; height: 14px; }
+.toggle.sm.on .knob { transform: translateX(16px); }
+.toggle.tone-violet:hover { border-color: var(--violet); }
+.toggle.tone-violet.on {
+  background: linear-gradient(180deg, color-mix(in srgb, var(--violet) 34%, transparent), color-mix(in srgb, var(--violet) 16%, transparent));
+  border-color: var(--violet);
+  box-shadow: 0 0 12px color-mix(in srgb, var(--violet) 32%, transparent);
+}
+.toggle.tone-violet.on .knob {
+  background: var(--violet);
+  box-shadow: 0 0 8px color-mix(in srgb, var(--violet) 60%, transparent), 0 1px 4px color-mix(in srgb, var(--shadow-color) 30%, transparent);
+}
 .app-modal .modal-close {
   position: absolute; top: 14px; right: 14px;
   width: 28px; height: 28px;
@@ -8873,7 +8888,7 @@ html:not([data-file-icons='mono']) .tt-row:not(.ignored) > .tt-ico.fi { opacity:
   border-top: 1px solid color-mix(in srgb, var(--accent) 16%, transparent);
   border-radius: 0 0 var(--radius-xl) var(--radius-xl);
 }
-.app-bar .session-runtime-panel > .bar-context-row .bar-context-meter { flex: 1 1 auto; gap: 6px; }
+.app-bar .session-runtime-panel > .bar-context-row .bar-context-meter { flex: 1 1 auto; gap: 6px; overflow: hidden; }
 .app-bar .session-runtime-panel .bar-context-track { flex: 1 1 auto; width: auto; min-width: 30px; }
 /* `compact` must LOOK pressable — a ghost control that only paints on hover
    reads as a caption — while still belonging to the strip rather than to the
@@ -9054,6 +9069,7 @@ html:not([data-file-icons='mono']) .tt-row:not(.ignored) > .tt-ico.fi { opacity:
   .runtime-value { font-size: 10.5px; line-height: 1.25; gap: 3px; }
   .runtime-value .agent-logo, .runtime-effort-symbol { display: none; }
   .runtime-effective { font-size: 8px; line-height: 1; margin-top: 0; }
+  .runtime-cell > .runtime-ultracode-tag { margin-top: 0; font-size: 9px; line-height: 13px; padding: 0 5px; }
   .app-bar .runtime-usage { display: none; }
   .session-header-layout:has(.has-endpoint) > .bar-ident { grid-column: 1; }
   .session-header-layout:has(.has-endpoint) > .session-header-controls { grid-column: 2; grid-row: 1; }
@@ -9078,7 +9094,8 @@ html:not([data-file-icons='mono']) .tt-row:not(.ignored) > .tt-ico.fi { opacity:
     min-width: min-content; max-width: 60cqi;
   }
   .app-bar:not(.is-expanded) .runtime-effort:not(:has(.runtime-effort-params)) { min-width: max-content; }
-  .app-bar:not(.is-expanded) .runtime-effective { display: none; }
+  .app-bar:not(.is-expanded) .runtime-effective,
+  .app-bar:not(.is-expanded) .runtime-ultracode-tag { display: none; }
   .app-bar:not(.is-expanded) .session-runtime-panel > .bar-context-row { display: none; }
   .app-bar:not(.is-expanded) .session-runtime-panel .runtime-model { border-radius: var(--radius-md) 0 0 var(--radius-md); }
   .app-bar:not(.is-expanded) .session-runtime-panel .runtime-effort { border-radius: 0 var(--radius-md) var(--radius-md) 0; }
@@ -9088,6 +9105,20 @@ html:not([data-file-icons='mono']) .tt-row:not(.ignored) > .tt-ico.fi { opacity:
   .app-bar:not(.is-expanded) .has-endpoint .runtime-cell { min-height: 26px; padding: 3px 6px; }
   .app-bar:not(.is-expanded) .session-header-controls { grid-column: 3; grid-row: 1; }
   .app-bar:not(.is-expanded) .session-action:not(.is-primary) { display: none; }
+}
+@media (max-width: 600px) {
+  /* Expanded = the details view: the panel takes the whole width under the
+     identity lines and the actions get their own row under it. Side by side,
+     the action cluster left the panel ~200px and crushed every cell. */
+  .app-bar.is-expanded .session-runtime-panel:not(.has-endpoint) {
+    grid-column: 1 / -1; grid-row: 2; justify-self: stretch; max-width: none;
+    grid-template-columns: minmax(0, 1.3fr) minmax(0, 1fr);
+  }
+  .app-bar.is-expanded .session-header-layout:not(:has(.has-endpoint)) > .session-header-controls {
+    grid-column: 1 / -1; grid-row: 3; justify-self: end;
+  }
+  .app-bar.is-expanded .session-header-layout:not(:has(.has-endpoint)) .session-header-actions { gap: 4px; }
+  .app-bar.is-expanded .session-header-layout:not(:has(.has-endpoint)) .session-action { width: 34px; }
 }
 @media (max-width: 430px) {
   /* The strip keeps the bar, the percentage and the button rather than a token
@@ -9182,14 +9213,49 @@ html:not([data-file-icons='mono']) .tt-row:not(.ignored) > .tt-ico.fi { opacity:
   font: 500 11px/1.3 var(--body); text-transform: none; letter-spacing: 0;
 }
 .pop-kit button.runtime-apply:hover:not(:disabled) { background: color-mix(in srgb, var(--warning) 22%, transparent); color: var(--warning); }
-/* Ultracode: a switch beside effort (§14.56), and its tag in the cell. */
-.pop-kit .runtime-ultracode { display: flex; align-items: flex-start; gap: 8px; cursor: pointer; }
-.pop-kit .runtime-ultracode input { margin: 2px 0 0; accent-color: var(--violet); flex: none; }
-.pop-kit .runtime-ultracode > span { display: flex; flex-direction: column; gap: 2px; font: 12px/1.4 var(--body); color: var(--text); }
-.pop-kit .runtime-ultracode small { color: var(--text-faint); font-size: 11px; }
-.runtime-value > span.runtime-ultracode-tag {
-  flex: none; padding: 0 6px; border-radius: 999px; font: 500 10px/16px var(--body);
+/* Ultracode: a switch beside effort (§14.56) — a row with its glyph, its
+   words and a violet switch; the whole row flips it. Same row in the
+   new-session form (`.wiz-adv-switch`). Its tag in the effort cell below. */
+.pop-kit .runtime-ultracode, .wiz-adv-switch {
+  display: flex; flex-direction: row; align-items: center; gap: 10px;
+  padding: 8px 10px; cursor: pointer; user-select: none;
+  transition: background .18s ease, border-color .18s ease;
+}
+.wiz-adv-switch {
+  background: var(--bg-inset); border: 1px solid var(--border); border-radius: var(--radius-lg);
+}
+.pop-kit .runtime-ultracode:hover, .wiz-adv-switch:hover {
+  border-color: color-mix(in srgb, var(--violet) 45%, var(--border));
+}
+.pop-kit .runtime-ultracode.on, .wiz-adv-switch.on {
+  border-color: color-mix(in srgb, var(--violet) 55%, transparent);
+  background: color-mix(in srgb, var(--violet) 8%, var(--bg-raised));
+}
+.runtime-ultracode .ru-ico, .wiz-adv-switch .ru-ico {
+  flex: none; display: grid; place-items: center; width: 26px; height: 26px; border-radius: 50%;
+  font-size: 13px; color: var(--text-faint);
+  background: color-mix(in srgb, var(--text-faint) 12%, transparent);
+  transition: color .18s ease, background .18s ease, box-shadow .18s ease;
+}
+.runtime-ultracode.on .ru-ico, .wiz-adv-switch.on .ru-ico {
+  color: var(--violet); background: color-mix(in srgb, var(--violet) 18%, transparent);
+  box-shadow: 0 0 10px color-mix(in srgb, var(--violet) 35%, transparent);
+}
+.runtime-ultracode .ru-text, .wiz-adv-switch .ru-text {
+  flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px;
+  font: 12px/1.35 var(--body); color: var(--text);
+}
+.runtime-ultracode .ru-text b, .wiz-adv-switch .ru-text b { font-weight: 600; letter-spacing: .01em; }
+.runtime-ultracode.on .ru-text b, .wiz-adv-switch.on .ru-text b { color: var(--violet); }
+.runtime-ultracode .ru-text small, .wiz-adv-switch .ru-text small { color: var(--text-faint); font-size: 11px; line-height: 1.4; }
+/* Under the effort, like `.runtime-effective` under the model: its own
+   short pill, never stretched by the cell's column. */
+.runtime-cell > .runtime-ultracode-tag {
+  align-self: flex-start; max-width: 100%; overflow: hidden; text-overflow: ellipsis;
+  margin-top: -2px; padding: 0 7px; border-radius: 999px;
+  font: 500 10px/16px var(--body); letter-spacing: .02em; white-space: nowrap;
   color: var(--violet); background: color-mix(in srgb, var(--violet) 14%, transparent);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--violet) 28%, transparent);
 }
 
 /* Shared select triggers; popup lives above scrolling modals via a workspace portal. */

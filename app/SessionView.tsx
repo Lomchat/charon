@@ -35,6 +35,7 @@ import ToolPanel from './ToolPanel';
 import BgTasksBar from './BgTasksBar';
 import ScheduledTasksBar from './ScheduledTasksBar';
 import GoalBar, { GoalEditor } from './GoalBar';
+import Switch from './Switch';
 import UsageMeter, { UsageRings } from './UsageMeter';
 import SessionTokenMeter from './SessionTokenMeter';
 import type { SessionTokenUsage } from '@/lib/sessionTokenUsage';
@@ -2377,8 +2378,10 @@ function SessionRuntimePanel({
               {endpoint.active ? <EndpointEffortSummary endpoint={endpoint.active} kind={kind} model={model || ''} effort={customEffort} /> : EffortSummary
                 ? <EffortSummary vpsId={vpsId} modelId={model || effectiveModel || ''} effort={effort} />
                 : <span>{effort ?? 'Default'}</span>}
-              {showUltracode && <span className="runtime-ultracode-tag">ultracode</span>}
             </span>
+            {/* Ultracode (§14.56) rides with effort: its badge sits right under
+                the effort it is switched from. */}
+            {showUltracode && <span className="runtime-ultracode-tag" title="Ultracode on: big tasks run as dynamic workflows of parallel agents">ultracode</span>}
           </button>
         )}
         {/* The popover kit (app.css § Popover kit): a head, then one tile per
@@ -2420,17 +2423,23 @@ function SessionRuntimePanel({
                     modelId={model || effectiveModel || ''} />;
             })()}
           </div>
-          {open === 'effort' && onSetUltracode && !endpoint.active && <label className="pop-tile runtime-ultracode">
-            <input type="checkbox" role="switch" checked={ultracode} disabled={saving} onChange={async (e) => {
-              const on = e.currentTarget.checked;
+          {open === 'effort' && onSetUltracode && !endpoint.active && (() => {
+            const flip = async (on: boolean) => {
+              if (saving) return;
               setSaving(true); setSaveError(null);
               try { await onSetUltracode(on); }
               catch (err) { setSaveError(err instanceof Error ? err.message : 'Could not change ultracode.'); }
               finally { setSaving(false); }
-            }} />
-            <span><b>Ultracode</b>
-              <small>Claude plans big tasks as dynamic workflows of parallel agents, at any effort. Applies at the next start.</small></span>
-          </label>}
+            };
+            return <div className={`pop-tile runtime-ultracode${ultracode ? ' on' : ''}`} onClick={() => void flip(!ultracode)}>
+              <span className="ru-ico" aria-hidden>✦</span>
+              <span className="ru-text">
+                <b>Ultracode</b>
+                <small>{providerText.ultracodeHint(kind)} Applies at the next start.</small>
+              </span>
+              <Switch checked={ultracode} onChange={(on) => void flip(on)} disabled={saving} tone="violet" size="sm" label="Ultracode" />
+            </div>;
+          })()}
           {open === 'model' && endpoint.active && isOpenCodeGo(endpoint.active.baseUrl) && <p className="runtime-choice-note">Catalog: Models.dev. Go limits, promotions and time-based rates may differ.</p>}
           {saveError && <p className="runtime-choice-error" role="alert">{saveError}</p>}
           {(modelPendingApply || effortPendingApply) && !endpoint.pending && onApplyNow && <button type="button" className="runtime-apply" disabled={saving} onClick={async () => {

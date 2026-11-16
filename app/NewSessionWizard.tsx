@@ -1,4 +1,5 @@
 'use client';
+import Switch from './Switch';
 import PickerControl, { PickerOption } from './PickerControl';
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { api, sessionApi } from '@/lib/api';
@@ -996,13 +997,17 @@ export default function NewSessionWizard({
                                 inheritPlaceholder={globalDefaults?.effort || inherit} />
                             </label>
                           )}
-                          {selKind === 'claude' && !selectedEndpoint && (
-                            <label className="wiz-adv-check" title={providerText.ultracodeHint(selKind)}>
-                              <input type="checkbox" checked={ultracode ?? globalDefaults?.ultracode ?? false}
-                                onChange={(e) => setUltracode(e.target.checked)} />
-                              ultracode (dynamic workflows)
-                            </label>
-                          )}
+                          {selKind === 'claude' && !selectedEndpoint && (() => {
+                            const on = ultracode ?? globalDefaults?.ultracode ?? false;
+                            return <div className={`wiz-adv-switch${on ? ' on' : ''}`} onClick={() => setUltracode(!on)}>
+                              <span className="ru-ico" aria-hidden>✦</span>
+                              <span className="ru-text">
+                                <b>Ultracode</b>
+                                <small>{providerText.ultracodeHint(selKind)}</small>
+                              </span>
+                              <Switch checked={on} onChange={setUltracode} tone="violet" size="sm" label="Ultracode" />
+                            </div>;
+                          })()}
                         </>
                       );
                     })()}

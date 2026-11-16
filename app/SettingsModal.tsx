@@ -1,6 +1,7 @@
 'use client';
 import dynamic from 'next/dynamic';
 const CustomEndpointsSettings = dynamic(() => import('./CustomEndpointsSettings'), { ssr: false });
+import Switch from './Switch';
 import PickerControl, { PickerOption } from './PickerControl';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { api } from '@/lib/api';
@@ -114,20 +115,7 @@ function ThemeChoice({ theme }: { theme: Theme }) {
   );
 }
 
-function Toggle({ checked, onChange, label }: { checked: boolean; onChange: (v: boolean) => void; label?: string }) {
-  return (
-    <button
-      type="button"
-      role="switch"
-      aria-checked={checked}
-      aria-label={label}
-      className={`toggle${checked ? ' on' : ''}`}
-      onClick={() => onChange(!checked)}
-    >
-      <span className="knob" />
-    </button>
-  );
-}
+const Toggle = Switch;
 
 export default function SettingsModal({ onClose, vpsList, initialCat, modelNotices, onModelsSeen }: Props) {
   // Both display choices preview live. Closing without saving restores what
@@ -488,7 +476,7 @@ export default function SettingsModal({ onClose, vpsList, initialCat, modelNotic
                       <Toggle
                         checked={s['claude.default_ultracode'] === 'true'}
                         onChange={(v) => set('claude.default_ultracode', v ? 'true' : '')}
-                        label="Ultracode by default"
+                        label="Ultracode by default" tone="violet"
                       />
                     </div>
                     <p className="set-meta">
