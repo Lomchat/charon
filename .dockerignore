@@ -1,6 +1,7 @@
 .git
 .github
 .next
+dist
 node_modules
 data/*
 !data/.gitkeep
