@@ -9993,9 +9993,11 @@ button.dv-folder-select { max-width: 170px; padding: 4px 7px; font-size: 11px; }
 .accounts-meta { font-size: 11px; color: var(--text-muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .accounts-error { font-size: 11px; color: var(--danger); }
 .accounts-status { font-size: 11px; padding: 2px 8px; border-radius: var(--chip-radius); white-space: nowrap; }
-.accounts-status.ok { color: var(--success); background: var(--success-soft); }
-.accounts-status.warn { color: var(--warning-strong); background: var(--warning-soft); }
-.accounts-status.err { color: var(--danger-strong); background: var(--danger-soft); }
+/* Status in its colour on a faint wash of it, like every status chip
+   (`--*-soft` are TEXT tokens, never a ground). */
+.accounts-status.ok { color: var(--success); background: color-mix(in srgb, var(--success) 12%, transparent); }
+.accounts-status.warn { color: var(--warning); background: color-mix(in srgb, var(--warning) 14%, transparent); }
+.accounts-status.err { color: var(--danger-strong); background: color-mix(in srgb, var(--danger) 14%, transparent); }
 .accounts-actions { display: flex; gap: 4px; flex-wrap: wrap; justify-content: flex-end; }
 .accounts-actions .wiz-btn { padding: 3px 8px; font-size: 11px; }
 @media (max-width: 820px) {
