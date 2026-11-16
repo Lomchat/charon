@@ -53,7 +53,7 @@ beforeAll(async () => {
   const { migrate } = await import('drizzle-orm/better-sqlite3/migrator');
   migrate(db, { migrationsFolder: './drizzle' });
   db.insert(schema.vpsFolders).values({ id: 'default', name: 'default', position: 0 }).onConflictDoNothing().run();
-  ({ GET } = await import('@/app/api/events/route'));
+  ({ GET } = await import('@/server/api/events/route'));
 });
 
 beforeEach(() => {

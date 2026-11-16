@@ -54,8 +54,8 @@ const PROVIDER_OWNED = [
   'app/CodexLoginModal.tsx', 'app/CursorLoginModal.tsx',
   'app/CodexModelPicker.tsx', 'app/CodexEffortPicker.tsx',
   'app/CursorModelPicker.tsx', 'app/CursorEffortPicker.tsx',
-  'app/api/vps/[id]/codex/', 'app/api/vps/[id]/cursor/',
-  'app/api/codex/', 'app/api/cursor/',
+  'server/api/vps/[id]/codex/', 'server/api/vps/[id]/cursor/',
+  'server/api/codex/', 'server/api/cursor/',
   'lib/server/hub/codexModels.ts', 'lib/server/hub/cursorModels.ts',
   'lib/server/hub/importCodexRollout.ts', 'lib/server/hub/importCursorAgent.ts',
   'lib/server/hub/importJsonl.ts',
@@ -65,12 +65,12 @@ const PROVIDER_OWNED = [
   // Bootstrap names each runtime's PACKAGE per install phase, and the fork
   // route names the pair a transport is for — both are mechanism, not chrome.
   'lib/server/hub/bootstrap.ts',
-  'app/api/sessions/[id]/fork/route.ts',
-  'app/api/sessions/[id]/review/route.ts',
+  'server/api/sessions/[id]/fork/route.ts',
+  'server/api/sessions/[id]/review/route.ts',
   // Claude-specific auth-expiry prose detection (§14.65) and its bubble copy.
   'lib/authExpired.ts', 'lib/server/agent/loginSession.ts',
   'lib/server/agent/claudeLoginCheck.ts', 'app/ClaudeLoginModal.tsx',
-  'app/api/vps/[id]/claude/account/route.ts',
+  'server/api/vps/[id]/claude/account/route.ts',
   // The product's own name in metadata, and the wizard's per-backend rows.
   'app/layout.tsx',
   // The providers' own OAuth endpoints, driven by the hub (§14.115).

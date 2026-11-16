@@ -45,7 +45,7 @@ let schema: any;
 let getOrCreateStream: any;
 let conns: typeof import('@/lib/server/agent/eventConnections');
 let bus: typeof import('@/lib/server/sync/syncBus');
-let GET: typeof import('@/app/api/sessions/[id]/route').GET;
+let GET: typeof import('@/server/api/sessions/[id]/route').GET;
 
 beforeAll(async () => {
   const dbMod = await import('@/lib/db');
@@ -62,7 +62,7 @@ beforeAll(async () => {
   ({ getOrCreateStream } = await import('@/lib/server/agent/sessionOps'));
   conns = await import('@/lib/server/agent/eventConnections');
   bus = await import('@/lib/server/sync/syncBus');
-  ({ GET } = await import('@/app/api/sessions/[id]/route'));
+  ({ GET } = await import('@/server/api/sessions/[id]/route'));
 });
 
 const unregs: Array<() => void> = [];

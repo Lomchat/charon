@@ -1,5 +1,5 @@
 // Dropping OS files onto the explorer: rules shared by the browser queue
-// (app/fsUploadStore.ts) and its routes (app/api/vps/[id]/fs/upload). Plain
+// (app/fsUploadStore.ts) and its routes (server/api/vps/[id]/fs/upload). Plain
 // module — no server-only import — so vitest loads it.
 //
 // The bytes never ride the JSON-RPC pipe: each file crosses its own ssh

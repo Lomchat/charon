@@ -34,7 +34,7 @@
   },
   "scripts": {
     "dev": "node server.js",
-    "build": "node scripts/check-protocol-sync.mjs && next build && node scripts/migrate.mjs && touch .next/.deploy-ready",
+    "build": "node scripts/check-protocol-sync.mjs && node scripts/gen-api-routes.mjs && next build && node scripts/migrate.mjs && touch .next/.deploy-ready",
     "start": "node server.js",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
@@ -61,6 +61,7 @@
     "diff": "^9.0.0",
     "dotenv": "^17.4.2",
     "drizzle-orm": "^0.45.2",
+    "hono": "^4.13.18",
     "leaflet": "^1.9.4",
     "mammoth": "^1.13.0",
     "mermaid": "^11.17.2",

@@ -21,7 +21,7 @@ vi.mock('@/lib/server/agent/sessionOps', () => ({ emitGlobalVpsStatus: mocks.emi
 vi.mock('@/lib/server/agent/accountProfiles', () => ({ requireAccountProfile: (_v: string, _p: string, id = 'default') => ({ id }), readProfileStatus: vi.fn(), acceptCursorIdentity: mocks.cursorIdentity }));
 vi.mock('@/lib/server/agent/loginSession', () => ({ stopLoginSession: vi.fn() }));
 
-import { POST } from '@/app/api/vps/[id]/account/route';
+import { POST } from '@/server/api/vps/[id]/account/route';
 
 const probe = (provider: string) => POST(new Request('http://localhost/account', {
   method: 'POST', body: JSON.stringify({ provider }),

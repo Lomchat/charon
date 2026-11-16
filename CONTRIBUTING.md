@@ -20,7 +20,9 @@ Ubuntu/Debian box with your key in `authorized_keys` is enough.
 
 ## Repo map
 
-- `app/` — Next.js App Router: one responsive UI at `/`, plus `app/api/**/route.ts`.
+- `app/` — the UI (Next.js App Router): one responsive UI at `/`.
+- `server/api/**/route.ts` — the API routes, served by the Hono router
+  (`server/apiRouter.ts`).
 - `lib/` — server logic (DB, auth, crypto, agent client pool, bootstrap) and
   shared types.
 - `agent/charon_agent/` — the Python daemon run on each VPS; `agent/tests/` its
@@ -68,8 +70,8 @@ dispatch sets; the prebuild check asserts Python and TypeScript agree.
 
 ### Add an API route
 
-`app/api/<path>/route.ts`, a client wrapper in `lib/api.ts`, typed bodies in
-`lib/types/api.ts`.
+`server/api/<path>/route.ts` (then `node scripts/gen-api-routes.mjs`), a client
+wrapper in `lib/api.ts`, typed bodies in `lib/types/api.ts`.
 
 ### Modify the UI
 

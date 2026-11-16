@@ -480,7 +480,7 @@ describe('validation', () => {
       .toEqual([['early', 'completed'], ['rewound', 'running']]);
     checkBg(a);
 
-    const { POST } = await import('@/app/api/sessions/[id]/rollback/route');
+    const { POST } = await import('@/server/api/sessions/[id]/rollback/route');
     const res = await POST(new Request(`http://localhost/api/sessions/${a}/rollback`, {
       method: 'POST', body: JSON.stringify({ messageId: `m${user}` }),
     }), { params: Promise.resolve({ id: a }) });
@@ -514,7 +514,7 @@ describe('deletion paths free the folds (I11)', () => {
     }
     expect(rowCache.sessionRowCacheStats().entries).toBe(9);
 
-    const { DELETE } = await import('@/app/api/vps/[id]/route');
+    const { DELETE } = await import('@/server/api/vps/[id]/route');
     const res = await DELETE(new Request(`http://localhost/api/vps/${vpsId}`, { method: 'DELETE' }),
       { params: Promise.resolve({ id: vpsId }) });
     expect(res.status).toBe(200);
@@ -683,7 +683,7 @@ describe('the context route while the recorded fold warms', () => {
         ins.run(a, row[0], row[1], 1_800_000_000_000 + i);
       }
     })();
-    const { GET } = await import('@/app/api/sessions/[id]/context/route');
+    const { GET } = await import('@/server/api/sessions/[id]/context/route');
     const get = async () => (await GET(new Request(`http://localhost/api/sessions/${a}/context`),
       { params: Promise.resolve({ id: a }) })).json();
 
@@ -818,7 +818,7 @@ describe('the bg registry: strict and tolerant readers', () => {
       if (ev.sessionId === a && ev.type === 'bg_tasks_snapshot') frames.push(ev);
     });
     try {
-      const { GET } = await import('@/app/api/sessions/[id]/route');
+      const { GET } = await import('@/server/api/sessions/[id]/route');
       const get = async () => (await GET(new Request(`http://localhost/api/sessions/${a}?open=1`),
         { params: Promise.resolve({ id: a }) })).json();
       const cold = await get();
@@ -848,7 +848,7 @@ describe('the bg registry: strict and tolerant readers', () => {
     });
     markConnectionLive('bgsnap-before-focus');   // the bus router skips a conn until its route says so (C11)
     try {
-      const { GET } = await import('@/app/api/sessions/[id]/route');
+      const { GET } = await import('@/server/api/sessions/[id]/route');
       const cold = await (await GET(new Request(`http://localhost/api/sessions/${a}?open=1`),
         { params: Promise.resolve({ id: a }) })).json();
       expect(cold.backgroundTasksPending).toBe(true);
@@ -864,7 +864,7 @@ describe('the bg registry: strict and tolerant readers', () => {
   // registered when it went out asks again on its delta poll (`bg=1`).
   it('a delta poll with bg=1 answers the warm ACTIVE set; without it, nothing', async () => {
     const a = bigSession('claude');
-    const { GET } = await import('@/app/api/sessions/[id]/route');
+    const { GET } = await import('@/server/api/sessions/[id]/route');
     const get = async (qs: string) => (await GET(new Request(`http://localhost/api/sessions/${a}?${qs}`),
       { params: Promise.resolve({ id: a }) })).json();
     const cold = await get('open=1');

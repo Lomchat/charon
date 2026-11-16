@@ -199,7 +199,7 @@ describe('expiry sweep (GET/SSE call sites and the 30 s sweeper)', () => {
     question('aq1', A, 'async_question');
     question('aq2', B, 'async_question');
     perm('p-done', B, { status: 'denied' });
-    const { GET } = await import('@/app/api/sessions/route');
+    const { GET } = await import('@/server/api/sessions/route');
     const body = await (await GET(new Request('http://localhost/api/sessions'))).json();
     const byId = new Map(body.sessions.map((s: any) => [s.id, s]));
     expect(byId.get(A)).toMatchObject({ pendingBlocking: 3, pendingAsync: 1, pendingPermissions: 4 });
@@ -229,7 +229,7 @@ describe('expiry sweep (GET/SSE call sites and the 30 s sweeper)', () => {
     markAsyncQuestionDelivering('aq-sending', true);
     question('aq-open', A, 'async_question');
     question('q-due', A, 'question', { expiresAt: nowS() - 1 });
-    const { GET } = await import('@/app/api/sessions/[id]/route');
+    const { GET } = await import('@/server/api/sessions/[id]/route');
     const body = await (await GET(new Request(`http://localhost/api/sessions/${A}`),
       { params: Promise.resolve({ id: A }) })).json();
     const byId = new Map(body.pendingQuestions.map((q: any) => [q.id, q]));
@@ -246,7 +246,7 @@ describe('expiry sweep (GET/SSE call sites and the 30 s sweeper)', () => {
     let fail: ((e: Error) => void) | null = null;
     const send = vi.spyOn(stream, 'sendUserMessage')
       .mockImplementationOnce(() => new Promise((_r, rej) => { fail = rej; }));
-    const { GET } = await import('@/app/api/sessions/[id]/route');
+    const { GET } = await import('@/server/api/sessions/[id]/route');
     const sums = await import('@/lib/server/sync/sessionSummaries');
     const getQ = async () => (await (await GET(new Request(`http://localhost/api/sessions/${A}`),
       { params: Promise.resolve({ id: A }) })).json()).pendingQuestions.find((q: any) => q.id === 'aq-fail');
@@ -280,7 +280,7 @@ describe('expiry sweep (GET/SSE call sites and the 30 s sweeper)', () => {
   it('the SSE snapshot sweeps first: no card for an expired gate, its `expired` frame published on the bus', async () => {
     perm('p-live', A);
     perm('p-due', A, { expiresAt: nowS() - 1 });
-    const { GET } = await import('@/app/api/events/route');
+    const { GET } = await import('@/server/api/events/route');
     const res = await GET(new Request('http://localhost/api/events?conn=conn-sweep-test'));
     const reader = res.body!.getReader();
     const decoder = new TextDecoder();
@@ -443,7 +443,7 @@ describe('removal paths publish `cancelled` for every pending gate they delete',
 
   it('archive', async () => {
     seedGates();
-    const { POST } = await import('@/app/api/sessions/[id]/archive/route');
+    const { POST } = await import('@/server/api/sessions/[id]/archive/route');
     const res = await POST(new Request(`http://localhost/api/sessions/${A}/archive`, { method: 'POST' }),
       { params: Promise.resolve({ id: A }) });
     expect(res.status).toBe(200);
@@ -456,7 +456,7 @@ describe('removal paths publish `cancelled` for every pending gate they delete',
     db.insert(schema.sessionMessages).values({ sessionId: A, role: 'user', content: 'rewind me', tsMs: 1_000 }).run();
     const user = db.select().from(schema.sessionMessages).all()[0];
     agent.call.mockResolvedValue({ claude_session_id: 'native-fork', strategy: 'fork' });
-    const { POST } = await import('@/app/api/sessions/[id]/rollback/route');
+    const { POST } = await import('@/server/api/sessions/[id]/rollback/route');
     const res = await POST(new Request(`http://localhost/api/sessions/${A}/rollback`, {
       method: 'POST', body: JSON.stringify({ messageId: `m${user.id}` }),
     }), { params: Promise.resolve({ id: A }) });
@@ -470,7 +470,7 @@ describe('removal paths publish `cancelled` for every pending gate they delete',
     db.insert(schema.sessionMessages).values({ sessionId: A, role: 'user', content: 'keep me', tsMs: 1_000 }).run();
     const user = db.select().from(schema.sessionMessages).all()[0];
     agent.call.mockRejectedValue(new Error('rollback refused'));
-    const { POST } = await import('@/app/api/sessions/[id]/rollback/route');
+    const { POST } = await import('@/server/api/sessions/[id]/rollback/route');
     const res = await POST(new Request(`http://localhost/api/sessions/${A}/rollback`, {
       method: 'POST', body: JSON.stringify({ messageId: `m${user.id}` }),
     }), { params: Promise.resolve({ id: A }) });
@@ -678,7 +678,7 @@ describe('deleting a VPS publishes the removal of its sessions and gates (G7)', 
     // Unreachable agent: every remote kill fails (the common reason to delete).
     agent.call.mockRejectedValue(new Error('unreachable'));
 
-    const { DELETE } = await import('@/app/api/vps/[id]/route');
+    const { DELETE } = await import('@/server/api/vps/[id]/route');
     const res = await DELETE(new Request(`http://localhost/api/vps/${vpsId}`, { method: 'DELETE' }),
       { params: Promise.resolve({ id: vpsId }) });
     expect(res.status).toBe(200);

@@ -265,7 +265,7 @@ describe('a replay extending a SIGTERM partial row', () => {
 
 describe('session GET during the replay', () => {
   const get = async () => {
-    const { GET } = await import('@/app/api/sessions/[id]/route');
+    const { GET } = await import('@/server/api/sessions/[id]/route');
     return (await GET(new Request(`http://localhost/api/sessions/${GET_SID}?open=1`),
       { params: Promise.resolve({ id: GET_SID }) })).json();
   };

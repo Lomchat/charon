@@ -74,7 +74,7 @@ beforeAll(async () => {
   db.insert(schema.agentSessions).values({ id: SID, vpsId: VPS_ID, cwd: '/tmp', status: 'active' }).onConflictDoNothing().run();
   db.insert(schema.appSettings).values({ key: 'notif.global_enabled', value: 'false' }).onConflictDoNothing().run();
   ({ getOrCreateStream, subscribeGlobalSessionEvents } = await import('@/lib/server/agent/sessionOps'));
-  ({ POST } = await import('@/app/api/sessions/[id]/input/route'));
+  ({ POST } = await import('@/server/api/sessions/[id]/input/route'));
 });
 
 beforeEach(() => {

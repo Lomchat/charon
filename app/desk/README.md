@@ -26,7 +26,7 @@ Ce qui existe côté Charon est **importé, jamais recopié** — deux définiti
 | `sidebarPathKey`, `sidebarPathOrderedIds` | `app/sidebarPathGroups.ts` |
 | `canSleepSession`, `canResumeSession` | `app/sessionBulkActions.ts` |
 | `SessionView`, `SessionContextMenu`, `ConfirmModal`, `PromptModal` | `app/*` |
-| `GET /api/sessions` (filet de 60 s), `GET /api/events` (SSE) | `app/api/{sessions,events}/**` |
+| `GET /api/sessions` (filet de 60 s), `GET /api/events` (SSE) | `server/api/{sessions,events}/**` |
 | `requireSession()`, tables `vps` / `vps_folders` | `lib/**` |
 
 Le desk lit ; il n'écrit que ce que l'utilisateur demande depuis un modal ou un

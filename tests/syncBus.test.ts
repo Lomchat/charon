@@ -562,7 +562,7 @@ describe('publishers and the legacy SSE route on the bus', () => {
   });
 
   it('legacy route: snapshot without ids, then a heartbeat at currentRev, then id-stamped bus frames', async () => {
-    const { GET } = await import('@/app/api/events/route');
+    const { GET } = await import('@/server/api/events/route');
     const ac = new AbortController();
     const res = await GET(new Request(
       `http://localhost/api/events?conn=conn-route-0001&focus=${S1}&focusSeq=1`,

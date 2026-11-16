@@ -153,8 +153,8 @@ vi.mock('@/lib/server/session', () => ({
 describe('live preview: the routes', () => {
   let db: any;
   let schema: any;
-  let GET: typeof import('@/app/api/preview/[token]/[[...path]]/route').GET;
-  let MINT: typeof import('@/app/api/vps/[id]/fs/preview/route').POST;
+  let GET: typeof import('@/server/api/preview/[token]/[[...path]]/route').GET;
+  let MINT: typeof import('@/server/api/vps/[id]/fs/preview/route').POST;
   let key: Buffer;
 
   beforeAll(async () => {
@@ -171,8 +171,8 @@ describe('live preview: the routes', () => {
     const [u] = db.select().from(schema.users).all();
     db.insert(schema.sessions).values({ id: 'sess-live', userId: u.id, expiresAt: Math.floor(Date.now() / 1000) + 3600 }).run();
     db.insert(schema.sessions).values({ id: 'sess-old', userId: u.id, expiresAt: Math.floor(Date.now() / 1000) - 10 }).run();
-    ({ GET } = await import('@/app/api/preview/[token]/[[...path]]/route'));
-    ({ POST: MINT } = await import('@/app/api/vps/[id]/fs/preview/route'));
+    ({ GET } = await import('@/server/api/preview/[token]/[[...path]]/route'));
+    ({ POST: MINT } = await import('@/server/api/vps/[id]/fs/preview/route'));
     key = (await import('@/lib/server/hub/livePreviewAuth')).livePreviewKey();
   });
 

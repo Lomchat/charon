@@ -73,7 +73,7 @@ describe('FRAME_CLASS', () => {
   });
 
   it('covers every literal frame type a hub publisher emits (source scan)', () => {
-    const files = [...walk(path.join(ROOT, 'lib/server')), ...walk(path.join(ROOT, 'app/api'))];
+    const files = [...walk(path.join(ROOT, 'lib/server')), ...walk(path.join(ROOT, 'server/api'))];
     const re = /(?:emitGlobalSession|_broadcast|_emitBroadcast|publish|emitInstallBusEvent)\(\{\s*type: '([a-z_]+)'/g;
     const found = new Set<string>();
     for (const f of files) {

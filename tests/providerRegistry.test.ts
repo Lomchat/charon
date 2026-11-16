@@ -263,7 +263,7 @@ describe('provider registry', () => {
     const declared = SESSION_PROVIDERS
       .flatMap((p) => PROVIDERS[p].backend.versions.map((v) => v.column));
     expect([...PROVIDER_VERSION_COLUMNS].sort()).toEqual([...new Set(declared)].sort());
-    const route = read('app/api/vps/[id]/agent/update/route.ts');
+    const route = read('server/api/vps/[id]/agent/update/route.ts');
     expect(route, 'the update route no longer derives its version fields')
       .toContain('PROVIDER_VERSION_COLUMNS');
   });
@@ -365,10 +365,10 @@ describe('provider registry', () => {
       expect(bootstrap, `bootstrap has no '${d.installPhase}' phase`)
         .toContain(`'${d.installPhase}'`);
       // Declared but unwired = an import tab that can never list history.
-      const scanRoute = path.join(ROOT, 'app/api/vps/[id]', d.scanRouteDir, 'scan/route.ts');
+      const scanRoute = path.join(ROOT, 'server/api/vps/[id]', d.scanRouteDir, 'scan/route.ts');
       expect(
         fs.existsSync(scanRoute),
-        `missing scan route for ${p}: app/api/vps/[id]/${d.scanRouteDir}/scan/route.ts`,
+        `missing scan route for ${p}: server/api/vps/[id]/${d.scanRouteDir}/scan/route.ts`,
       ).toBe(true);
     }
   });
