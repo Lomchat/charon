@@ -14,6 +14,7 @@ import { isOpenCodeGo } from '@/lib/opencodeModels';
 import SessionSettingsModal from './SessionSettingsModal';
 import { IconGear, IconPause, IconPlay, IconStop, IconRewind, IconGitBranch, IconBullseye, IconChatSide, IconSparkle } from './icons';
 import { goalIsLive, shownGoal } from '@/lib/sessionGoal';
+import { sameModel } from '@/lib/strictModel';
 import type { SessionRecap } from '@/lib/sessionRecap';
 import { toggleBubbleFold, useBubbleFold } from './bubbleFold';
 import { coldResumeShare, fmtTokens as fmtDriverTokens } from '@/lib/usageDrivers';
@@ -2574,13 +2575,13 @@ function fmtTokens(n: number): string {
 
 // The model the provider answered with INSTEAD of the selected one, or null.
 // ONE rule for the runtime cell and every bubble's model chip, so both turn
-// red together. Only the backend with a fallback model can substitute, and
-// the alias allow-list is its own vocabulary: a provider whose configured id
-// (`default`) is a ROUTER legitimately answers with another model (§14.102).
+// red together. Only the backend with a fallback model can substitute (a
+// provider whose configured id is a ROUTER legitimately answers with another
+// model, §14.102); "same model" is strict mode's rule (`sameModel`: an alias
+// resolves to `claude-<alias>-…`), so the warning and §14.118 never disagree.
 function substitutedModel(kind: AgentKind, model: string | null, effectiveModel: string | null): string | null {
   return supportsSessionCapability(kind, 'fallbackModel')
-    && !!model && !!effectiveModel && effectiveModel !== model
-    && !['opus', 'sonnet', 'haiku'].includes(model) ? effectiveModel : null;
+    && !!model && !!effectiveModel && !sameModel(model, effectiveModel) ? effectiveModel : null;
 }
 
 /** The phone header's gauges, reading the usage store themselves: a reading
