@@ -174,6 +174,10 @@ const CustomEndpointModal = dynamic(() => import('./CustomEndpointModal'), { ssr
 
 const SYNC_CUE_DELAY_MS = 400;
 
+/** Aside (§14.119) whenever the session's process is up — mid-turn or idle:
+ *  the CLI answers it either way. Asleep there is nothing to ask. */
+const ASIDE_STATUSES = new Set(['active', 'thinking', 'background', 'failed']);
+
 export default function SessionView({
   sessionId, selected, showTools, showToolsReady, selectedVps, handle, handleConfirmed, siblings: siblingsProp,
   onImportError, onKilled, onAfterRevert: onAfterRevertProp, onUsageRefresh: onUsageRefreshProp, usageAccountLabel,
@@ -1322,7 +1326,7 @@ export default function SessionView({
             clearInsertRequest={clearInsertRequest}
             siblings={siblings}
             compacting={liveCompacting}
-            onAside={status === 'thinking' && supportsSessionCapability(sessionKind, 'sideQuestion') ? askAside : undefined}
+            onAside={ASIDE_STATUSES.has(status ?? '') && supportsSessionCapability(sessionKind, 'sideQuestion') ? askAside : undefined}
           />
           </>
         )}

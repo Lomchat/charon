@@ -3473,7 +3473,7 @@ html[data-density='small'] .cs-sub-fold { font-size: 8.5px; }
   min-height: 40px;
 }
 .app-input-bar .send:hover:not(:disabled) { background: color-mix(in srgb, var(--accent) 10%, transparent); }
-/* Ask aside (§14.119): beside send while a turn runs, in the aside colour. */
+/* Ask aside (§14.119): beside send while the session is awake, in the aside colour. */
 .app-input-bar .aside {
   display: flex; align-items: center; justify-content: center; gap: 6px;
   background: var(--bg-inset); border: 1px dashed color-mix(in srgb, var(--lavender) 70%, transparent);
@@ -5790,6 +5790,7 @@ html[data-density='small'] .cs-sub-fold { font-size: 8.5px; }
   /* On touch there IS no drag & drop — the paperclip is the only way in, so it
      must never be the cramped button. */
   .app-input-bar .ci-attach svg,
+  .app-input-bar .aside svg,
   .app-input-bar .send-icon { width: 18px; height: 18px; }
   .app-input-bar .ci-chip-name { max-width: 150px; }
   .app-input-bar .ci-drop-card { padding: 20px 22px; font-size: 11px; }
