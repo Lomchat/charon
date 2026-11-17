@@ -14,6 +14,8 @@ import { isOpenCodeGo } from '@/lib/opencodeModels';
 import SessionSettingsModal from './SessionSettingsModal';
 import { IconGear, IconPause, IconPlay, IconStop, IconRewind, IconGitBranch, IconBullseye, IconChatSide, IconSparkle } from './icons';
 import { goalIsLive, shownGoal } from '@/lib/sessionGoal';
+import type { SessionRecap } from '@/lib/sessionRecap';
+import { toggleBubbleFold, useBubbleFold } from './bubbleFold';
 import { coldResumeShare, fmtTokens as fmtDriverTokens } from '@/lib/usageDrivers';
 import type { InsightUsage } from './SessionInsight';
 import type { TurnLedger } from '@/lib/promptCache';
@@ -1276,12 +1278,7 @@ export default function SessionView({
                     <span>checking for new messages…</span>
                   </div>
                 )}
-                {shownRecap && (
-                  <div className="recap-bubble" role="note" aria-label="recap">
-                    <span className="recap-label"><IconSparkle />recap</span>
-                    <p>{shownRecap.text.split('`').map((part, i) => (i % 2 ? <code key={i}>{part}</code> : part))}</p>
-                  </div>
-                )}
+                {shownRecap && <RecapNote recap={shownRecap} />}
                 {liveMessage?.id === '__streaming' && (
                   <Message m={{ ...liveMessage, model: effectiveModel }} streaming kind={sessionKind}
                     substitutedFor={substitute ? model : null}
@@ -1675,6 +1672,35 @@ const MessageHistory = memo(function MessageHistory({
 // (new message, status change) doesn't needlessly re-render it either.
 // See CLAUDE.md §11 / §14.
 type InsertRequest = { text: string; nonce: number; block?: boolean };
+
+/** The recap under the last answer (§14.122). The whole note is its fold
+ *  button (bubbleFold's store: in memory, per answer); a click that ends a
+ *  text selection inside it does not fold. */
+const RecapNote = memo(function RecapNote({ recap }: { recap: SessionRecap }) {
+  const key = `recap:${recap.afterRowId}`;
+  const isFolded = useBubbleFold(key);
+  const toggle = (el: HTMLElement) => {
+    const sel = window.getSelection();
+    if (sel && !sel.isCollapsed && sel.anchorNode && el.contains(sel.anchorNode)) return;
+    toggleBubbleFold(el);
+  };
+  const parts = recap.text.split('`');
+  return (
+    <div className={`recap-bubble${isFolded ? ' is-folded' : ''}`} data-fold-key={key}
+      role="button" tabIndex={0} aria-expanded={!isFolded} aria-label="recap"
+      onClick={(e) => toggle(e.currentTarget)}
+      onKeyDown={(e) => {
+        if (e.key !== 'Enter' && e.key !== ' ') return;
+        e.preventDefault();
+        toggleBubbleFold(e.currentTarget);
+      }}>
+      <span className="recap-label"><IconSparkle />recap</span>
+      {isFolded
+        ? <span className="recap-fold-text">{parts.join('')}</span>
+        : <p>{parts.map((part, i) => (i % 2 ? <code key={i}>{part}</code> : part))}</p>}
+    </div>
+  );
+});
 
 /** "sub-session of @parent": read from the summary store (a sleeping parent is
  *  not in `siblings`), as a string so only this chip re-renders. */

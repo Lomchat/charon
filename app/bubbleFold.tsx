@@ -91,6 +91,12 @@ function onFoldClickCapture(e: MouseEvent<HTMLElement>) {
   toggle(bubble, onEdge && e.altKey);
 }
 
+/** A bubble that is its own button (the recap): same store, same scroll
+ *  anchoring as an edge click. */
+export function toggleBubbleFold(bubble: HTMLElement) {
+  toggle(bubble, false);
+}
+
 /** Unfold the bubble holding `el` before a jump scrolls to it. */
 export function unfoldBubbleAt(el: Element) {
   const key = el.closest<HTMLElement>('[data-fold-key]')?.dataset.foldKey;
