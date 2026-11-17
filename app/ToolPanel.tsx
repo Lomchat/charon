@@ -492,19 +492,12 @@ function EditsTab({ sessionId, kind, edits, onRevert }: { sessionId: string | nu
   // and a revert button for a pre-image it never sends.
   const shape = PROVIDERS[kind].editSnapshot;
   const isPair = shape === 'contents';
-  const prepared = useMemo(() => edits.map((edit) => {
-    const patch = isPair
-      ? makeUnifiedDiff(edit.filePath, edit.before ?? '', edit.after ?? '')
-      : (edit.after ?? '');
-    return { edit, patch, stats: countDiff(patch) };
-  }), [edits, isPair]);
+  // Cards mount by pages (a long session holds a thousand): the next page
+  // when the end of the list nears.
+  const [shown, setShown] = useState(EDIT_CARDS_PAGE);
+  const showMore = useCallback(() => setShown((n) => n + EDIT_CARDS_PAGE), []);
 
-  if (shape === 'none') {
-    return <div className="tp-empty">{providerText.noEditSnapshots(kind)}</div>;
-  }
-  if (edits.length === 0) return <div className="tp-empty">no files modified in this session</div>;
-
-  async function revert(filePath: string) {
+  const revert = useCallback(async (filePath: string) => {
     if (!sessionId) return;
     if (!confirm(`Restore "${filePath}" to its initial state?`)) return;
     setBusy(filePath);
@@ -514,41 +507,24 @@ function EditsTab({ sessionId, kind, edits, onRevert }: { sessionId: string | nu
     } catch (e: any) {
       alert('revert: ' + (e?.message ?? e));
     } finally { setBusy(null); }
+  }, [sessionId, onRevert]);
+
+  if (shape === 'none') {
+    return <div className="tp-empty">{providerText.noEditSnapshots(kind)}</div>;
   }
+  if (edits.length === 0) return <div className="tp-empty">no files modified in this session</div>;
 
   return (
     <>
       <div className="tp-edits">
-        {prepared.map(({ edit: e, patch, stats }) => {
-          return (
-            <div key={e.toolUseId + e.filePath} className="diff-card">
-              <div className="diff-head">
-                <div className="diff-path-row">
-                  <span className="path">{e.filePath}</span>
-                </div>
-                <div className="diff-meta-row">
-                  <span className="stats">
-                    <span className="add">+{stats.add}</span>
-                    <span className="del">−{stats.del}</span>
-                  </span>
-                  {isPair && (
-                    <>
-                      <button className="compare" onClick={() => setOpen(e)} title="compare side by side">⇄ split</button>
-                      <button className="revert" disabled={busy === e.filePath || e.truncated}
-                        title={e.truncated ? 'Cannot safely restore a truncated snapshot' : 'Restore this exact snapshot if the file has not changed since'}
-                        onClick={() => revert(e.filePath)}>
-                        {busy === e.filePath ? '…' : 'revert'}
-                      </button>
-                    </>
-                  )}
-                </div>
-              </div>
-              {e.truncated && <div className="warn">⚠ truncated snapshot (file &gt; 256KB)</div>}
-              {isPair && e.before == null && <div className="note">new file (Write)</div>}
-              <pre className="diff-body">{isPair ? renderDiffHtml(patch) : renderRawPatch(patch)}</pre>
-            </div>
-          );
-        })}
+        {edits.slice(0, shown).map((e) => (
+          <EditCard key={e.toolUseId + e.filePath} edit={e} isPair={isPair}
+            busy={busy === e.filePath} onSplit={setOpen} onRevert={revert} />
+        ))}
+        {edits.length > shown && (
+          // Keyed by page: a fresh observer reports at once if the end is still near.
+          <MoreWhenNear key={shown} onMore={showMore}>{edits.length - shown} more edits</MoreWhenNear>
+        )}
       </div>
       {open && (
         <SplitDiffModal
@@ -561,6 +537,178 @@ function EditsTab({ sessionId, kind, edits, onRevert }: { sessionId: string | nu
     </>
   );
 }
+
+/** A diff past this is computed off the click (`callback` mode, sliced by the
+ *  library) instead of in one go. */
+const QUICK_DIFF_MS = 40;
+/** Lines drawn per card until asked: the box shows ~25 of them anyway. */
+const DIFF_LINES_SHOWN = 400;
+const EDIT_CARDS_PAGE = 40;
+
+/** Calls `onMore` when it comes within reach of the panel's viewport; a
+ *  button too, for a click or an engine without IntersectionObserver. */
+function MoreWhenNear({ onMore, children }: { onMore: () => void; children: React.ReactNode }) {
+  const ref = useRef<HTMLButtonElement | null>(null);
+  useEffect(() => {
+    const el = ref.current;
+    if (!el || typeof IntersectionObserver === 'undefined') return;
+    const io = new IntersectionObserver((entries) => {
+      if (entries.some((x) => x.isIntersecting)) onMore();
+    }, { root: el.closest('.tp-body'), rootMargin: '600px 0px' });
+    io.observe(el);
+    return () => io.disconnect();
+  }, [onMore]);
+  return <button ref={ref} type="button" className="tp-more" onClick={onMore}>{children}</button>;
+}
+
+// One card's diff per task, in the order they come into view: a tab opened on
+// a session with dozens of edits used to diff and lay out every one of them
+// inside the click (§14.38).
+const diffJobs: Array<{ run: () => void; dead: boolean }> = [];
+let diffPumping = false;
+function pumpDiffs() {
+  diffPumping = true;
+  setTimeout(() => {
+    const job = diffJobs.shift();
+    if (job && !job.dead) job.run();
+    if (diffJobs.length) pumpDiffs(); else diffPumping = false;
+  }, 0);
+}
+function scheduleDiff(run: () => void): () => void {
+  const job = { run, dead: false };
+  diffJobs.push(job);
+  if (!diffPumping) pumpDiffs();
+  return () => { job.dead = true; };
+}
+
+/** A computed diff per snapshot (the objects live as long as the session's
+ *  state): reopening the tab draws, it does not diff again. */
+const patchCache = new WeakMap<EditSnapshot, string>();
+
+// A diff past QUICK_DIFF_MS finishes in a worker (app/diffWorker.ts), at full
+// speed and off the page's thread. No worker (it failed to load): the
+// library's own sliced mode, slow but never blocking.
+let diffWorker: Worker | null | undefined;
+let diffAskId = 0;
+const diffAsks = new Map<number, { ask: { filePath: string; before: string; after: string }; done: (patch: string) => void }>();
+function slicedDiff(filePath: string, before: string, after: string, done: (patch: string) => void) {
+  createPatch(filePath, before, after, '', '', { context: 3, callback: (patch: string | undefined) => done(patch ?? '') });
+}
+function diffOffThread(filePath: string, before: string, after: string, done: (patch: string) => void) {
+  if (diffWorker === undefined) {
+    try {
+      diffWorker = new Worker(new URL('./diffWorker.ts', import.meta.url), { type: 'module' });
+      diffWorker.onmessage = (ev: MessageEvent<{ id: number; patch: string }>) => {
+        const ask = diffAsks.get(ev.data.id);
+        diffAsks.delete(ev.data.id);
+        ask?.done(ev.data.patch);
+      };
+      diffWorker.onerror = () => {
+        diffWorker?.terminate();
+        diffWorker = null;
+        const waiting = [...diffAsks.values()];
+        diffAsks.clear();
+        for (const { ask, done } of waiting) slicedDiff(ask.filePath, ask.before, ask.after, done);
+      };
+    } catch { diffWorker = null; }
+  }
+  if (!diffWorker) { slicedDiff(filePath, before, after, done); return; }
+  const id = ++diffAskId;
+  diffAsks.set(id, { ask: { filePath, before, after }, done });
+  diffWorker.postMessage({ id, filePath, before, after });
+}
+
+/** One edit: its diff is computed and drawn once the card nears the panel's
+ *  viewport, so opening the tab costs what is on screen. */
+const EditCard = memo(function EditCard({ edit: e, isPair, busy, onSplit, onRevert }: {
+  edit: EditSnapshot;
+  isPair: boolean;
+  busy: boolean;
+  onSplit: (edit: EditSnapshot) => void;
+  onRevert: (filePath: string) => void;
+}) {
+  const ref = useRef<HTMLDivElement | null>(null);
+  const [near, setNear] = useState(false);
+  const [diffed, setDiffed] = useState<string | null>(() => (isPair ? patchCache.get(e) ?? null : null));
+  const [allLines, setAllLines] = useState(false);
+
+  useEffect(() => {
+    const el = ref.current;
+    if (near || !el) return;
+    if (typeof IntersectionObserver === 'undefined') { setNear(true); return; }
+    // Root = the panel's scroller: a margin on the window would not reach
+    // the cards its overflow clips.
+    const io = new IntersectionObserver((entries) => {
+      if (entries.some((x) => x.isIntersecting)) { setNear(true); io.disconnect(); }
+    }, { root: el.closest('.tp-body'), rootMargin: '600px 0px' });
+    io.observe(el);
+    return () => io.disconnect();
+  }, [near]);
+
+  useEffect(() => {
+    if (!near || !isPair || diffed != null) return;
+    let live = true;
+    const before = e.before ?? '';
+    const after = e.after ?? '';
+    const done = (patch: string) => {
+      patchCache.set(e, patch);
+      if (live) setDiffed(patch);
+    };
+    const cancel = scheduleDiff(() => {
+      const quick = createPatch(e.filePath, before, after, '', '', { context: 3, timeout: QUICK_DIFF_MS });
+      if (quick !== undefined) done(quick);
+      else diffOffThread(e.filePath, before, after, done);
+    });
+    return () => { live = false; cancel(); };
+  }, [near, isPair, diffed, e]);
+
+  // A backend's own patch needs no diffing, only drawing. A cached diff gives
+  // the counts at once; the lines wait for the card to near the viewport.
+  const patch = isPair ? diffed : (near ? (e.after ?? '') : null);
+  const stats = useMemo(() => (patch == null ? null : countDiff(patch)), [patch]);
+  const body = useMemo(() => {
+    if (patch == null || !near) return null;
+    const lines = isPair ? patch.split('\n').slice(4) : patch.split('\n'); // createPatch's 4-line header
+    const shown = allLines ? lines : lines.slice(0, DIFF_LINES_SHOWN);
+    return { nodes: isPair ? renderDiffLines(shown) : renderRawPatchLines(shown), hidden: lines.length - shown.length };
+  }, [patch, near, isPair, allLines]);
+
+  return (
+    <div ref={ref} className="diff-card">
+      <div className="diff-head">
+        <div className="diff-path-row">
+          <span className="path">{e.filePath}</span>
+        </div>
+        <div className="diff-meta-row">
+          <span className="stats">
+            <span className="add">+{stats ? stats.add : '…'}</span>
+            <span className="del">−{stats ? stats.del : '…'}</span>
+          </span>
+          {isPair && (
+            <>
+              <button className="compare" onClick={() => onSplit(e)} title="compare side by side">⇄ split</button>
+              <button className="revert" disabled={busy || e.truncated}
+                title={e.truncated ? 'Cannot safely restore a truncated snapshot' : 'Restore this exact snapshot if the file has not changed since'}
+                onClick={() => onRevert(e.filePath)}>
+                {busy ? '…' : 'revert'}
+              </button>
+            </>
+          )}
+        </div>
+      </div>
+      {e.truncated && <div className="warn">⚠ truncated snapshot (file &gt; 256KB)</div>}
+      {isPair && e.before == null && <div className="note">new file (Write)</div>}
+      <pre className="diff-body" aria-busy={body ? undefined : true}>
+        {body ? body.nodes : <span className="dline ctx">…</span>}
+      </pre>
+      {body && body.hidden > 0 && (
+        <button type="button" className="tp-more" onClick={() => setAllLines(true)}>
+          {body.hidden} more lines
+        </button>
+      )}
+    </div>
+  );
+});
 
 /**
  * Files attached to the session.
@@ -750,10 +898,6 @@ function CallsTab({ calls }: { calls: ToolCallEntry[] }) {
 }
 
 // ── Helpers ────────────────────────────────────────────────────────────────
-function makeUnifiedDiff(filePath: string, before: string, after: string): string {
-  return createPatch(filePath, before, after, '', '', { context: 3 });
-}
-
 function countDiff(patch: string): { add: number; del: number } {
   let add = 0, del = 0;
   for (const l of patch.split('\n')) {
@@ -763,8 +907,7 @@ function countDiff(patch: string): { add: number; del: number } {
   return { add, del };
 }
 
-function renderDiffHtml(patch: string): React.ReactNode {
-  const lines = patch.split('\n').slice(4); // strip header
+function renderDiffLines(lines: string[]): React.ReactNode {
   return lines.map((l, i) => {
     let cls = 'ctx';
     if (l.startsWith('+')) cls = 'add';
@@ -778,8 +921,7 @@ function renderDiffHtml(patch: string): React.ReactNode {
 // patch — we must NOT re-diff it). Classifies every line: file/patch headers
 // dimmed, @@ hunks highlighted, +/− add/del. No fixed header slice (Codex
 // patches don't share createPatch's exact 4-line preamble).
-function renderRawPatch(patch: string): React.ReactNode {
-  const lines = patch.split('\n');
+function renderRawPatchLines(lines: string[]): React.ReactNode {
   return lines.map((l, i) => {
     let cls = 'ctx';
     if (l.startsWith('+++') || l.startsWith('---') || l.startsWith('diff ') || l.startsWith('index ') || l.startsWith('*** ')) cls = 'meta';

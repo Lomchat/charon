@@ -317,6 +317,36 @@ function PeerRequestLink({ requestId, onHover, onJump }: {
 
 // Memoized on its three strings: a bubble re-render (a new prop on <Message>)
 // must not re-run remark/rehype + language detection on unchanged text.
+// Rendered Markdown by (vps, cwd, text): a bubble remounted by a session
+// switch reuses its tree instead of parsing and highlighting again — most of
+// a switch's cost (§14.38). The output depends on nothing else (the plugins
+// and components below derive from vps + cwd), and a completed message's text
+// IS its version. LRU, bounded in entries and in source characters.
+const MD_CACHE_ENTRIES = 400;
+const MD_CACHE_CHARS = 2_000_000;
+const MD_CACHEABLE_CHARS = 100_000;
+const mdGlobals = globalThis as unknown as { __charonMarkdownCache?: { map: Map<string, { el: React.ReactElement; chars: number }>; chars: number } };
+const mdCache = (mdGlobals.__charonMarkdownCache ??= { map: new Map(), chars: 0 });
+function cachedMarkdown(key: string, chars: number, render: () => React.ReactElement): React.ReactElement {
+  const hit = mdCache.map.get(key);
+  if (hit) {
+    mdCache.map.delete(key);
+    mdCache.map.set(key, hit);
+    return hit.el;
+  }
+  const el = render();
+  if (chars <= MD_CACHEABLE_CHARS) {
+    mdCache.map.set(key, { el, chars });
+    mdCache.chars += chars;
+    for (const [k, v] of mdCache.map) {
+      if (mdCache.map.size <= MD_CACHE_ENTRIES && mdCache.chars <= MD_CACHE_CHARS) break;
+      mdCache.map.delete(k);
+      mdCache.chars -= v.chars;
+    }
+  }
+  return el;
+}
+
 export const MessageMarkdown = memo(function MessageMarkdown({ content, vpsId, cwd }: {
   content: string; vpsId?: string; cwd?: string | null;
 }) {
@@ -337,12 +367,11 @@ export const MessageMarkdown = memo(function MessageMarkdown({ content, vpsId, c
       <MessageLink {...props} vpsId={vpsId} cwd={cwd} />
     ),
   }), [vpsId, cwd]);
-  return (
-    <ReactMarkdown remarkPlugins={remarkPlugins} rehypePlugins={MARKDOWN_REHYPE_PLUGINS}
-      components={components} urlTransform={urlTransform}>
-      {content}
-    </ReactMarkdown>
-  );
+  // react-markdown's sync `Markdown` is a plain function (no hooks): its tree
+  // can be computed here and kept.
+  return useMemo(() => cachedMarkdown(`${vpsId ?? ''}\u0000${cwd ?? ''}\u0000${content}`, content.length, () => ReactMarkdown({
+    children: content, remarkPlugins, rehypePlugins: MARKDOWN_REHYPE_PLUGINS, components, urlTransform,
+  })), [content, vpsId, cwd, remarkPlugins, components, urlTransform]);
 });
 
 /** YOUR bubble's body, where `> ` lines (a quote made from the chat,
