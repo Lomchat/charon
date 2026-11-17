@@ -3175,6 +3175,19 @@ html[data-density='small'] .cs-sub-fold { font-size: 8.5px; }
 .bubble .content.md a:hover { text-decoration-color: var(--accent); }
 /* A `code` path that opens in the explorer reads as the link it is. */
 .bubble .content.md a.file-path-link code { color: inherit; }
+/* An http image the https page cannot show (Message.tsx § MarkdownImage): a
+   chip that opens it. Children are flex items, so the link underline skips them. */
+.md-img-blocked {
+  display: inline-flex; align-items: center; gap: 6px;
+  max-width: 100%; padding: 2px 8px;
+  border: 1px dashed var(--border-strong);
+  border-radius: var(--radius-sm);
+  vertical-align: middle;
+}
+.md-img-blocked > span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.md-img-blocked svg { flex: none; }
+.md-img-blocked:hover { border-color: var(--accent); }
+.md-img-blocked .md-img-blocked-note { flex: none; color: var(--text-muted); font-size: 0.85em; }
 .bubble .content .msg-quote {
   display: block;
   border-left: 2px solid var(--border-strong);

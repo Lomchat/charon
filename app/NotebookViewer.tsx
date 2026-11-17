@@ -6,7 +6,7 @@ import {
 import ReactMarkdown, { defaultUrlTransform } from 'react-markdown';
 import { api } from '@/lib/api';
 import {
-  MARKDOWN_COMPONENTS, MARKDOWN_REHYPE_PLUGINS, MARKDOWN_REMARK_PLUGINS, MessageLink,
+  MARKDOWN_COMPONENTS, MARKDOWN_REHYPE_PLUGINS, MARKDOWN_REMARK_PLUGINS, MarkdownImage, MessageLink,
 } from './Message';
 import { remarkFilePaths } from './messageLinks';
 import { hastText } from './hastText';
@@ -204,8 +204,7 @@ const MarkdownCell = memo(function MarkdownCell({ source, attachments, ctx }: {
           }
         }
         if (!url) return <span className="nbv-missing">[{alt || 'missing image'}]</span>;
-        // eslint-disable-next-line @next/next/no-img-element
-        return <img {...props} src={url} alt={alt ?? ''} loading="lazy" />;
+        return <MarkdownImage {...props} src={url} alt={alt} loading="lazy" />;
       },
     };
   }, [vpsId, root, docDir, jump, attachments]);

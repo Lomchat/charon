@@ -3,7 +3,7 @@ import { useMemo, useRef, type ComponentProps, type ReactNode } from 'react';
 import ReactMarkdown from 'react-markdown';
 import { api } from '@/lib/api';
 import {
-  MARKDOWN_COMPONENTS, MARKDOWN_REHYPE_PLUGINS, MARKDOWN_REMARK_PLUGINS, MessageLink,
+  MARKDOWN_COMPONENTS, MARKDOWN_REHYPE_PLUGINS, MARKDOWN_REMARK_PLUGINS, MarkdownImage, MessageLink,
 } from './Message';
 import { remarkFilePaths } from './messageLinks';
 import { hastText } from './hastText';
@@ -67,8 +67,7 @@ export default function MarkdownFileView({ vpsId, root, path, text }: {
           const at = rootedPath(root, abs.split('#', 1)[0]);
           url = api.fsFileUrl(vpsId, at.root, at.path, { inline: true });
         }
-        // eslint-disable-next-line @next/next/no-img-element
-        return <img {...props} src={url} alt={alt ?? ''} loading="lazy" />;
+        return <MarkdownImage {...props} src={url} alt={alt} loading="lazy" />;
       },
     };
   }, [vpsId, root, docDir]);

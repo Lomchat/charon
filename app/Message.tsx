@@ -10,7 +10,7 @@ import { TurnLedgerLine } from './PromptCacheMarks';
 import { providerName, providerText } from '@/lib/providerText';
 import { apiErrorText, providerAccountLabel, type ProviderAccount } from '@/lib/providerAccounts';
 import { useAccounts } from './accountsStore';
-import { IconAlarm, IconBullseye, IconChatSide, IconClipboard } from './icons';
+import { IconAlarm, IconBullseye, IconChatSide, IconClipboard, IconImage } from './icons';
 import { hastText, hastCodeLanguage } from './hastText';
 import { isClaudeAuthExpired } from '@/lib/authExpired';
 import { isTurnInterrupted } from '@/lib/turnInterrupted';
@@ -42,8 +42,26 @@ const MermaidDiagram = dynamic(() => import('./MermaidDiagram'), {
 export const MARKDOWN_REHYPE_PLUGINS: NonNullable<React.ComponentProps<typeof ReactMarkdown>['rehypePlugins']> = [
   [rehypeHighlight, { detect: true, ignoreMissing: true }],
 ];
+// An `http:` image on the `https:` hub is mixed content: the browser upgrades it
+// to https and, when the host speaks only plain HTTP, draws a broken icon. A
+// link still opens it (a top-level navigation is not mixed content). Never
+// proxy it through the hub: an agent-written URL would make the hub fetch it.
+export function MarkdownImage({ src, alt, ...props }: React.ComponentProps<'img'>) {
+  if (typeof src === 'string' && /^http:\/\//i.test(src.trim())
+    && typeof window !== 'undefined' && window.location.protocol === 'https:') {
+    return (
+      <a className="md-img-blocked" href={src} target="_blank" rel="noopener noreferrer"
+        title="Open the image in a new tab — plain HTTP: this HTTPS page cannot show it">
+        <IconImage /><span>{alt || 'image'}</span><span className="md-img-blocked-note">http · open</span>
+      </a>
+    );
+  }
+  return <img {...props} src={src} alt={alt ?? ''} />;
+}
+
 export const MARKDOWN_COMPONENTS: NonNullable<React.ComponentProps<typeof ReactMarkdown>['components']> = {
   pre: CodeBlock,
+  img: ({ node: _node, ...props }) => <MarkdownImage {...props} />,
   table: ({ node: _node, ...props }) => (
     <div className="md-table-scroll" role="region" aria-label="Scrollable table" tabIndex={0}>
       <table {...props} />
