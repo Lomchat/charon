@@ -240,7 +240,8 @@ export function navAttentionClass(rows: readonly NavRow[]): NavAttentionClass {
  *  effect stayed off by each element's own commit→effect latency. */
 export function lockPulsePhase(el: Element | null | undefined): void {
   if (!el || typeof el.getAnimations !== 'function') return;
-  for (const a of el.getAnimations()) {
+  // `subtree`: the pulse runs on the element's ::before layer (app.css).
+  for (const a of el.getAnimations({ subtree: true })) {
     const name = (a as Animation & { animationName?: string }).animationName;
     if (name && name.startsWith('row-pulse') && a.startTime !== 0) a.startTime = 0;
   }

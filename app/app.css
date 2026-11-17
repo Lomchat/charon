@@ -144,7 +144,7 @@
 .ready > .hnav-dot { background: var(--success); }
 /* Green is READY in the sidebar, so it cannot also mean "finished, unread"
    here — two greens a shade apart is no distinction at all. "Finished, unread"
-   is the sidebar's own GREEN PULSE (`row-pulse-green`, §14.47), reused frame
+   is the sidebar's own GREEN PULSE (`row-pulse` layer, §14.47), reused frame
    for frame: the trigger carries it while a READY session is waiting to be
    read, and those rows carry it inside the panel, so the eye follows the same
    signal from the header to the card. Who qualifies is one shared predicate
@@ -152,16 +152,24 @@
    colour and does not also pulse green. */
 .hnav-dot.unread { background: var(--success); animation: none; }
 .hnav-row.unread {
-  border-color: var(--success);
-  animation: row-pulse-green 1.8s infinite ease-in-out;
+  border-color: var(--success); position: relative;
+  --pulse: var(--success);
+  --pulse-t: 1.8s;
+  background-color: color-mix(in srgb, var(--success) 8%, transparent);
 }
 /* The red twin: a turn or a session that ended in an error nobody has opened
    yet (attention `error`, lib/sessionAttention.ts). Same apparatus, the
-   sidebar card's own `row-pulse-red`. */
+   sidebar card's own red `row-pulse`. */
 .hnav-dot.errored { background: var(--danger); animation: none; }
 .hnav-row.errored {
   border-color: var(--danger);
-  animation: row-pulse-red 1.6s infinite ease-in-out;
+  position: relative;
+  --pulse-t: 1.6s;
+  --pulse: var(--danger);
+  --pulse-peak: 15%;
+  --pulse-blur: 14px;
+  --pulse-glow: 36%;
+  background-color: color-mix(in srgb, var(--danger) 8%, transparent);
 }
 /* The same apparatus in orange for the louder half of the pair: a session
    BLOCKED on your answer. Same frames as the sidebar's own attention card
@@ -170,7 +178,12 @@
    (`sessionUnread.ts`). */
 .hnav-row.needs-you {
   border-color: var(--attention);
-  animation: row-pulse 1.6s infinite ease-in-out;
+  position: relative;
+  --pulse-t: 1.6s;
+  --pulse: var(--attention);
+  --pulse-blur: 14px;
+  --pulse-glow: 35%;
+  background-color: color-mix(in srgb, var(--attention) 10%, transparent);
 }
 @keyframes hnav-pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.35; } }
 .hnav-empty { color: var(--text-faint); font: 10px/1.4 var(--mono); padding: 6px 8px; }
@@ -193,21 +206,36 @@
 /* After the hover rule on purpose: a session waiting to be read outranks the
    pointer being nearby. */
 .app-head .hnav-trigger.has-unread, .app-head .acct-nav-item.has-unread {
-  border-color: var(--success); color: var(--text);
-  animation: row-pulse-green 1.8s infinite ease-in-out;
+  border-color: var(--success); color: var(--text); position: relative;
+  --pulse: var(--success);
+  --pulse-t: 1.8s;
+  background-color: color-mix(in srgb, var(--success) 8%, transparent);
 }
 /* A session that ended in an error outranks one that ended well. */
 .app-head .hnav-trigger.has-error, .app-head .acct-nav-item.has-error {
-  border-color: var(--danger); color: var(--text);
-  animation: row-pulse-red 1.5s infinite ease-in-out;
+  border-color: var(--danger);
+  color: var(--text);
+  position: relative;
+  --pulse-t: 1.5s;
+  --pulse: var(--danger);
+  --pulse-peak: 15%;
+  --pulse-blur: 14px;
+  --pulse-glow: 36%;
+  background-color: color-mix(in srgb, var(--danger) 8%, transparent);
 }
 /* Last of the four on purpose: a session cannot run until you answer it, so
    it outranks both the pointer and a finished one waiting to be read. The
    class itself is exclusive (HeaderSessionNav picks one), this is the
    belt-and-braces half. */
 .app-head .hnav-trigger.has-waiting, .app-head .acct-nav-item.has-waiting {
-  border-color: var(--attention); color: var(--text);
-  animation: row-pulse 1.3s infinite ease-in-out;
+  border-color: var(--attention);
+  color: var(--text);
+  position: relative;
+  --pulse-t: 1.3s;
+  --pulse: var(--attention);
+  --pulse-blur: 14px;
+  --pulse-glow: 35%;
+  background-color: color-mix(in srgb, var(--attention) 10%, transparent);
 }
 .hnav-trigger-count { color: var(--text); font: 600 12px/1 var(--mono); }
 .hnav-trigger-unread, .hnav-trigger-waiting, .hnav-trigger-error {
@@ -451,16 +479,37 @@
   .acct-nav.is-expanded .acct-nav-more { border-color: var(--accent); color: var(--text); font-size: 16px; }
   /* A folded login that needs you: its call moves onto the toggle. */
   .acct-nav:not(.is-expanded):has(> .acct-nav-item:not(.is-current).has-unread) .acct-nav-more {
-    border-color: var(--success); color: var(--text);
-    animation: row-pulse-green 1.8s infinite ease-in-out;
+    border-color: var(--success); color: var(--text); position: relative;
+    --pulse: var(--success);
+    --pulse-t: 1.8s;
+    background-color: color-mix(in srgb, var(--success) 8%, transparent);
   }
   .acct-nav:not(.is-expanded):has(> .acct-nav-item:not(.is-current).has-error) .acct-nav-more {
-    border-color: var(--danger); color: var(--text);
-    animation: row-pulse-red 1.5s infinite ease-in-out;
+    border-color: var(--danger);
+    color: var(--text);
+    position: relative;
+    --pulse-t: 1.5s;
+    --pulse: var(--danger);
+    --pulse-peak: 15%;
+    --pulse-blur: 14px;
+    --pulse-glow: 36%;
+    background-color: color-mix(in srgb, var(--danger) 8%, transparent);
   }
   .acct-nav:not(.is-expanded):has(> .acct-nav-item:not(.is-current).has-waiting) .acct-nav-more {
-    border-color: var(--attention); color: var(--text);
-    animation: row-pulse 1.3s infinite ease-in-out;
+    border-color: var(--attention);
+    color: var(--text);
+    position: relative;
+    --pulse-t: 1.3s;
+    --pulse: var(--attention);
+    --pulse-blur: 14px;
+    --pulse-glow: 35%;
+    background-color: color-mix(in srgb, var(--attention) 10%, transparent);
+  }
+  .acct-nav:not(.is-expanded):has(> .acct-nav-item:not(.is-current):is(.has-unread, .has-error, .has-waiting)) .acct-nav-more::before {
+    content: ''; position: absolute; inset: 0; border-radius: inherit; pointer-events: none;
+    background: color-mix(in srgb, var(--pulse) var(--pulse-peak, 13%), transparent);
+    box-shadow: inset 0 0 var(--pulse-blur, 12px) 0 color-mix(in srgb, var(--pulse) var(--pulse-glow, 32%), transparent);
+    opacity: 0; animation: row-pulse var(--pulse-t, 1.6s) infinite ease-in-out;
   }
   .app-head .acct-nav-item { height: 36px; }
   .acct-nav-label { max-width: 18ch; }
@@ -827,15 +876,26 @@
 .session-row.attention {
   background: color-mix(in srgb, var(--attention) 10%, transparent);
   border-left: 3px solid var(--attention);
-  animation: row-pulse 1.3s infinite ease-in-out;
 }
 .session-row.attention.selected {
   background: color-mix(in srgb, var(--attention) 18%, transparent);
 }
-@keyframes row-pulse {
-  0%, 100% { background-color: color-mix(in srgb, var(--attention) 10%, transparent); box-shadow: inset 0 0 0 0 color-mix(in srgb, var(--attention) 0%, transparent); }
-  50%      { background-color: color-mix(in srgb, var(--attention) 22%, transparent); box-shadow: inset 0 0 14px 0 color-mix(in srgb, var(--attention) 35%, transparent); }
+/* The attention pulse (CLAUDE.md §14.38): the host keeps its resting tint
+   and sets --pulse (+ --pulse-t period, --pulse-peak/-blur/-glow); the peak
+   (tint + inner glow) sits on a ::before layer and only its OPACITY
+   animates, on the compositor. Animating background, border or box-shadow
+   instead repaints every frame on the main thread, for as long as anything
+   is unread. `row-pulse*` is the name HeaderSessionNav § lockPulsePhase
+   re-anchors. */
+.hnav-row:is(.unread, .errored, .needs-you)::before,
+.app-head :is(.hnav-trigger, .acct-nav-item):is(.has-unread, .has-error, .has-waiting)::before,
+.cs-card:is(.attention, .finished-unread, .error-unread)::before {
+  content: ''; position: absolute; inset: 0; border-radius: inherit; pointer-events: none;
+  background: color-mix(in srgb, var(--pulse) var(--pulse-peak, 13%), transparent);
+  box-shadow: inset 0 0 var(--pulse-blur, 12px) 0 color-mix(in srgb, var(--pulse) var(--pulse-glow, 32%), transparent);
+  opacity: 0; animation: row-pulse var(--pulse-t, 1.6s) infinite ease-in-out;
 }
+@keyframes row-pulse { 50% { opacity: 1; } }
 .dot-gray        { color: var(--text-muted); opacity: 0.5; }
 .dot-red         { color: var(--danger); }
 .dot-violet-pulse { color: var(--violet); animation: cpulse 1.6s infinite ease-in-out; }
@@ -1177,7 +1237,11 @@
 }
 .cs-card.attention {
   border-color: var(--attention); box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--attention) 30%, transparent);
-  animation: row-pulse 1.6s infinite ease-in-out;
+  --pulse: var(--attention);
+  --pulse-t: 1.6s;
+  --pulse-blur: 14px;
+  --pulse-glow: 35%;
+  background-color: color-mix(in srgb, var(--attention) 10%, transparent);
 }
 /* Session finished its turn but you haven't opened it yet (DB: unread_stop).
    A distinct GREEN glow (vs the orange "needs you" attention) so a glance at
@@ -1186,11 +1250,9 @@
    tabs/devices via the session_unread bus event. cf. CLAUDE.md §14.47. */
 .cs-card.finished-unread {
   border-color: var(--success); box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--success) 30%, transparent);
-  animation: row-pulse-green 1.8s infinite ease-in-out;
-}
-@keyframes row-pulse-green {
-  0%, 100% { background-color: color-mix(in srgb, var(--success) 8%, transparent); box-shadow: inset 0 0 0 0 color-mix(in srgb, var(--success) 0%, transparent); }
-  50%      { background-color: color-mix(in srgb, var(--success) 20%, transparent); box-shadow: inset 0 0 12px 0 color-mix(in srgb, var(--success) 32%, transparent); }
+  --pulse: var(--success);
+  --pulse-t: 1.8s;
+  background-color: color-mix(in srgb, var(--success) 8%, transparent);
 }
 /* Its red twin: the turn or the session ended in an ERROR while you weren't
    looking (unread_stop on a failed/error row — attention `error`). Pulses
@@ -1198,11 +1260,12 @@
    failure you have already seen keeps. */
 .cs-card.error-unread {
   border-color: var(--danger); box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--danger) 30%, transparent);
-  animation: row-pulse-red 1.6s infinite ease-in-out;
-}
-@keyframes row-pulse-red {
-  0%, 100% { background-color: color-mix(in srgb, var(--danger) 8%, transparent); box-shadow: inset 0 0 0 0 color-mix(in srgb, var(--danger) 0%, transparent); }
-  50%      { background-color: color-mix(in srgb, var(--danger) 22%, transparent); box-shadow: inset 0 0 14px 0 color-mix(in srgb, var(--danger) 36%, transparent); }
+  --pulse: var(--danger);
+  --pulse-t: 1.6s;
+  --pulse-peak: 15%;
+  --pulse-blur: 14px;
+  --pulse-glow: 36%;
+  background-color: color-mix(in srgb, var(--danger) 8%, transparent);
 }
 .cs-unread {
   font-family: var(--mono); font-size: 10px; line-height: 1; flex-shrink: 0;
@@ -1230,24 +1293,30 @@
   border: 1px solid var(--pill-c); color: var(--text-strong);
   background: color-mix(in srgb, var(--pill-c) 14%, var(--bg-elevated));
   font: 600 11px/1 var(--mono);
-  animation: cs-offscreen-pulse 1.6s infinite ease-in-out;
+  position: relative;
+  --pulse-t: 1.6s;
+  box-shadow: 0 3px 10px color-mix(in srgb, var(--shadow-color) 45%, transparent);
+}
+.cs-offscreen-pill::before {
+  content: ''; position: absolute; inset: -1px; border-radius: inherit; pointer-events: none;
+  box-shadow: 0 0 10px 1px color-mix(in srgb, var(--pill-c) 55%, transparent);
+  opacity: 0; animation: row-pulse var(--pulse-t) infinite ease-in-out;
 }
 .cs-offscreen-pill:hover { background: color-mix(in srgb, var(--pill-c) 28%, var(--bg-elevated)); }
 .cs-offscreen-pill:focus-visible { outline: 2px solid var(--accent-strong); outline-offset: 1px; }
 .cs-offscreen-pill.waiting {
-  --pill-c: var(--attention); animation-duration: 1.3s;
+  --pill-c: var(--attention);
+  --pulse-t: 1.3s;
 }
 .cs-offscreen-pill.error {
-  --pill-c: var(--danger); animation-duration: 1.5s;
+  --pill-c: var(--danger);
+  --pulse-t: 1.5s;
 }
 .cs-offscreen-pill.unread {
-  --pill-c: var(--success); animation-duration: 1.8s;
+  --pill-c: var(--success);
+  --pulse-t: 1.8s;
 }
 .cs-offscreen-tri { width: 9px; height: 8px; flex: none; fill: var(--pill-c); }
-@keyframes cs-offscreen-pulse {
-  0%, 100% { box-shadow: 0 3px 10px color-mix(in srgb, var(--shadow-color) 45%, transparent), 0 0 0 0 color-mix(in srgb, var(--pill-c) 0%, transparent); }
-  50%      { box-shadow: 0 3px 10px color-mix(in srgb, var(--shadow-color) 45%, transparent), 0 0 10px 1px color-mix(in srgb, var(--pill-c) 55%, transparent); }
-}
 /* A folded server's lit rows, on its head: a dot + count per colour. */
 .cs-vps-attention { display: inline-flex; align-items: center; gap: 6px; flex: none; margin-left: auto; font: 600 10px/1 var(--mono); }
 .cs-vps-attention-n { display: inline-flex; align-items: center; gap: 3px; }
@@ -2887,7 +2956,14 @@ html[data-density='small'] .cs-sub-fold { font-size: 8.5px; }
   --finish: var(--success);
   position: relative;
   cursor: pointer;
-  animation: bubble-finish-halo 1.8s infinite ease-in-out;
+  border-color: color-mix(in srgb, var(--finish) 70%, transparent);
+}
+/* The halo's peak (full border + glow) on a layer: opacity alone animates. */
+.bubble.finish-cue::before {
+  content: ''; position: absolute; inset: calc(-1 * var(--bubble-edge)); pointer-events: none;
+  border: var(--bubble-edge) solid var(--finish); border-radius: inherit;
+  box-shadow: 0 0 10px 2px color-mix(in srgb, var(--finish) 40%, transparent);
+  opacity: 0; animation: row-pulse 1.8s infinite ease-in-out;
 }
 .bubble.finish-cue.is-error {
   --finish: var(--danger);
@@ -2905,12 +2981,9 @@ html[data-density='small'] .cs-sub-fold { font-size: 8.5px; }
     pointer-events: none;
   }
 }
-@keyframes bubble-finish-halo {
-  0%, 100% { border-color: color-mix(in srgb, var(--finish) 70%, transparent); box-shadow: 0 0 0 0 color-mix(in srgb, var(--finish) 0%, transparent); }
-  50%      { border-color: var(--finish); box-shadow: 0 0 10px 2px color-mix(in srgb, var(--finish) 40%, transparent); }
-}
 @media (prefers-reduced-motion: reduce) {
-  .bubble.finish-cue { animation: none; border-color: var(--finish); box-shadow: 0 0 8px 1px color-mix(in srgb, var(--finish) 35%, transparent); }
+  .bubble.finish-cue { border-color: var(--finish); box-shadow: 0 0 8px 1px color-mix(in srgb, var(--finish) 35%, transparent); }
+  .bubble.finish-cue::before { display: none; }
 }
 .bubble.role-error .error-kind {
   font-family: var(--mono); font-size: 9.5px; color: var(--danger-soft); opacity: 0.8;
