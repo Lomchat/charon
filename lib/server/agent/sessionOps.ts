@@ -79,6 +79,7 @@ import {
   gateOutcome, type GateKind, type GateOutcome, type GateRef,
 } from './pendingInteractions';
 import { flushSummaryNow, markSummaryDirty, publish, subscribeFrames } from '@/lib/server/sync/syncBus';
+import { RECAP_MAX_CHARS, RECAP_QUESTION, type SessionRecap } from '@/lib/sessionRecap';
 import { markAsyncQuestionDelivering } from '@/lib/server/agent/asyncQuestionDelivery';
 import { providerText, providerName } from '@/lib/providerText';
 import {
@@ -932,6 +933,10 @@ export class SessionStream {
    *  held until the interrupted turn's `stop` fails it. Not part of the
    *  terminal latch — a `thinking` frame must not clear it. */
   private strictViolation: string | null = null;
+  // The recap after each finished turn (§14.122): one side question at a
+  // time; a finish meanwhile asks again once it lands.
+  private recapInflight = false;
+  private recapAgain: number | null = null;
   private pendingTurnErrorKind: string | null = null;
   // The turn's prompt-cache ledger (lib/promptCache.ts), held from its
   // `usage final:true` until `stop` names the final assistant row it lands
@@ -2774,6 +2779,11 @@ export class SessionStream {
         this._broadcast({ type: 'stop', subtype: ev.subtype, finalAssistantId, ...(turnUsage ? { turnUsage } : {}) });
         if (writtenStatus) {
           this._broadcast({ type: 'status', status: writtenStatus });
+        }
+        // A recap under the answer (§14.122): live, new, successful finishes
+        // only — never a replayed one, which would re-ask for every old turn.
+        if (!this.isReplaying && isNewFinish && !terminalError && typeof finalAssistantId === 'number') {
+          this._scheduleRecap(finalAssistantId);
         }
         // Order (§14.47): stop → status → unread (DB + `session_unread`) →
         // finish cursor → usage poll → push → Telegram. The in-app marker
@@ -4846,6 +4856,38 @@ export class SessionStream {
       });
     })();
     return { rowId: row };
+  }
+
+  /** Ask the session, aside, where it stands (lib/sessionRecap.ts, §14.122):
+   *  no tools, nothing written into the conversation, no turn — so no unread
+   *  marker and no notification. Stored on the session row and published with
+   *  its summary; a failure leaves the previous recap (the client shows one
+   *  only under the row it follows). */
+  private _scheduleRecap(afterRowId: number): void {
+    if (!supportsSessionCapability(asSessionProvider(this.kind), 'sideQuestion')) return;
+    if (getSetting('claude.auto_recap') === 'false') return;
+    if (this.recapInflight) { this.recapAgain = afterRowId; return; }
+    this.recapInflight = true;
+    void (async () => {
+      try {
+        const r = await getAgentClientForVpsId(this.vpsId).call<{ ok?: boolean; answer?: string; synthetic?: boolean }>(
+          'side_question', { session_id: this.id, question: RECAP_QUESTION, history: [] },
+          { timeoutMs: SIDE_QUESTION_RPC_MS },
+        );
+        // `synthetic` = the CLI's own error text (an API failure), not a recap.
+        const text = r?.ok && !r.synthetic && typeof r.answer === 'string' ? r.answer.trim() : '';
+        if (!text) return;
+        const recap: SessionRecap = { text: text.slice(0, RECAP_MAX_CHARS), afterRowId, at: Date.now() };
+        db.update(agentSessions).set({ recapJson: JSON.stringify(recap) })
+          .where(eq(agentSessions.id, this.id)).run();
+        markSummaryDirty(this.id);
+      } catch { /* the next finish asks again */ } finally {
+        this.recapInflight = false;
+        const again = this.recapAgain;
+        this.recapAgain = null;
+        if (again != null) this._scheduleRecap(again);
+      }
+    })();
   }
 
   private _unattended(): boolean {

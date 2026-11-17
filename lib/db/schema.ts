@@ -339,6 +339,9 @@ export const agentSessions = sqliteTable('agent_sessions', {
   // The session's goal (Claude `/goal`, Codex `thread/goal/*`): JSON
   // `SessionGoal` (lib/sessionGoal.ts). NULL = none ever set. Read as `goal`.
   goalJson: text('goal'),
+  // The recap after the last finished turn (lib/sessionRecap.ts, §14.122):
+  // JSON `SessionRecap`. Read as `recap`.
+  recapJson: text('recap'),
   // The routine whose run created this session (§14.120); NULL = a human's.
   // No foreign key (it would rebuild this table): a deleted routine clears it.
   routineId: text('routine_id'),
@@ -702,6 +705,19 @@ export type VpsFolder = typeof vpsFolders.$inferSelect;
 export type VpsPath = typeof vpsPaths.$inferSelect;
 export type AgentSession = typeof agentSessions.$inferSelect;
 export type Routine = typeof routines.$inferSelect;
+
+// The user's own `/` commands (lib/slashCommands.ts): a named prompt the
+// composer expands before sending, for every provider. `$ARGUMENTS` = what
+// follows the name.
+export const userCommands = sqliteTable('user_commands', {
+  id: text('id').primaryKey(),
+  name: text('name').notNull().unique(),
+  description: text('description').notNull().default(''),
+  prompt: text('prompt').notNull(),
+  createdAt: integer('created_at').notNull().default(sql`(unixepoch())`),
+  updatedAt: integer('updated_at').notNull().default(sql`(unixepoch())`),
+});
+export type UserCommandRow = typeof userCommands.$inferSelect;
 export type AgentSessionMessageRow = typeof sessionMessages.$inferSelect;
 export type SessionScheduledResume = typeof sessionScheduledResumes.$inferSelect;
 // Internal compact-storage fields are deliberately not part of the API type:

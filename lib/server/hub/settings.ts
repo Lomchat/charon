@@ -121,6 +121,8 @@ const DEFAULTS = {
   'claude.default_effort': '',
   // 'true' = new Claude sessions start with ultracode on (§14.56).
   'claude.default_ultracode': '',
+  // 'false' = no recap under each finished turn (§14.122); '' = on.
+  'claude.auto_recap': '',
   // Safe source default. An installation may explicitly choose Claude's
   // total-bypass `auto` mode in Settings; new sessions copy the resolved mode.
   'claude.default_permission_mode': 'normal',

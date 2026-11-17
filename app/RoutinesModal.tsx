@@ -69,8 +69,10 @@ function statusLabel(status: string | null): string {
   return status;
 }
 
-export default function RoutinesModal({ onClose, vpsList, vpsPaths, sessions, onOpenSession }: {
+export default function RoutinesModal({ onClose, vpsList, vpsPaths, sessions, onOpenSession, initial }: {
   onClose: () => void;
+  /** Open on a NEW routine prefilled with these (the composer's `/routine`). */
+  initial?: Pick<RoutineInput, 'vpsId' | 'cwd' | 'kind' | 'prompt'> | null;
   vpsList: Vps[];
   vpsPaths: VpsPath[];
   /** For the folder suggestions: where sessions already run. */
@@ -80,8 +82,8 @@ export default function RoutinesModal({ onClose, vpsList, vpsPaths, sessions, on
   const [routines, setRoutines] = useState<RoutineView[] | null>(null);
   const [runs, setRuns] = useState<RoutineRun[] | null>(null);
   const [sel, setSel] = useState<string>('new');
-  const [draft, setDraft] = useState<Draft>(() => blankDraft(vpsList));
-  const [dirty, setDirty] = useState(false);
+  const [draft, setDraft] = useState<Draft>(() => ({ ...blankDraft(vpsList), ...(initial ?? {}) }));
+  const [dirty, setDirty] = useState(!!initial);
   const [busy, setBusy] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
@@ -97,7 +99,7 @@ export default function RoutinesModal({ onClose, vpsList, vpsPaths, sessions, on
   useEffect(() => {
     api.listRoutines().then((r) => {
       setRoutines(r.routines);
-      if (r.routines.length) { setSel(r.routines[0].id); setDraft(draftOf(r.routines[0])); }
+      if (r.routines.length && !initial) { setSel(r.routines[0].id); setDraft(draftOf(r.routines[0])); }
     }).catch((e) => { setRoutines([]); setError(e instanceof Error ? e.message : String(e)); });
     loadRuns();
     const t = setInterval(() => setNow(Date.now()), 30_000);

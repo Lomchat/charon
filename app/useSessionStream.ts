@@ -151,7 +151,8 @@ export type SessionStreamState = {
 };
 
 export type SessionStreamActions = {
-  send(content: string): Promise<void>;
+  /** `codexInputs`: a Codex message's text + `skill` items (slashCommands.ts). */
+  send(content: string, codexInputs?: Array<Record<string, unknown>>): Promise<void>;
   interrupt(): Promise<void>;
   forceStop(): Promise<void>;
   setMode(mode: SessionMode): Promise<void>;
@@ -657,7 +658,7 @@ export function useSessionStream(
     }
   }, [sessionId, publish]);
 
-  const send = useCallback(async (content: string) => {
+  const send = useCallback(async (content: string, codexInputs?: Array<Record<string, unknown>>) => {
     const trimmed = content.trim();
     if (!trimmed) return;
     // Optimistic bubble `u-<clientMessageId>` + a `thinking` overlay: the id
@@ -675,7 +676,7 @@ export function useSessionStream(
     watchOverlays();
     resetResponseSpeed();
     try {
-      const res = await settle(h, sessionApi.sendInput(sessionId, trimmed, clientMessageId));
+      const res = await settle(h, sessionApi.sendInput(sessionId, trimmed, clientMessageId, codexInputs));
       const rowId = typeof res?.rowId === 'number' ? res.rowId : null;
       if (rowId != null) {
         stateRef.current = applyLocalSendAck(stateRef.current, clientMessageId, rowId);

@@ -1,6 +1,7 @@
 'use client';
 import dynamic from '@/app/dynamic';
 const CustomEndpointsSettings = dynamic(() => import('./CustomEndpointsSettings'), { ssr: false });
+const UserCommandsSettings = dynamic(() => import('./UserCommandsSettings'), { ssr: false });
 import Switch from './Switch';
 import PickerControl, { PickerOption } from './PickerControl';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
@@ -56,7 +57,7 @@ type Props = {
 // its own section, badge and green/red dot without a literal to update here.
 // Its PANEL BODY stays bespoke — an empty one is visible, so it cannot be
 // silently forgotten the way a missing list entry could.
-type Cat = 'general' | SessionProvider | 'notifications' | 'updates' | 'endpoints';
+type Cat = 'general' | SessionProvider | 'notifications' | 'updates' | 'endpoints' | 'commands';
 const DENSITY_CHOICES = [
   { id: 'default', label: 'Default', hint: 'Comfortable spacing · 16px chat' },
   { id: 'small', label: 'Small', hint: 'More on screen · 14px chat' },
@@ -79,6 +80,7 @@ const NAV_GROUPS: { id: string; label: string; cats: { id: Cat; label: string }[
     { id: 'general', label: 'general' },
     { id: 'notifications', label: 'notifications' },
     { id: 'endpoints', label: 'custom endpoints' },
+    { id: 'commands', label: 'commands' },
   ] },
   { id: 'agents', label: 'agents', cats: SESSION_PROVIDERS.map((p) => (
     { id: p, label: p }
@@ -265,6 +267,7 @@ export default function SettingsModal({ onClose, vpsList, initialCat, modelNotic
     if (id === 'general') return <span className="nav-ico">⚙</span>;
     if (id === 'notifications') return <span className="nav-ico">✉</span>;
     if (id === 'endpoints') return <span className="nav-ico"><IconPlug /></span>;
+    if (id === 'commands') return <span className="nav-ico">/</span>;
     return <span className="nav-ico">↻</span>;
   };
 
@@ -335,6 +338,7 @@ export default function SettingsModal({ onClose, vpsList, initialCat, modelNotic
 
               <div className="settings-pane">
                 {cat === 'endpoints' && <CustomEndpointsSettings vpsList={vpsList} />}
+                {cat === 'commands' && <UserCommandsSettings />}
                 {cat === 'general' && (
                   <>
                     <ModelReleaseNotice notices={modelNotices} onSeen={onModelsSeen} />
@@ -446,6 +450,22 @@ export default function SettingsModal({ onClose, vpsList, initialCat, modelNotic
                 {cat === 'claude' && (
                   <>
                     {backendSwitch('claude')}
+                    <div className="settings-sub">every session</div>
+                    <div className="switch-row">
+                      <span>recap after each turn</span>
+                      <Toggle
+                        checked={s['claude.auto_recap'] !== 'false'}
+                        onChange={(v) => set('claude.auto_recap', v ? '' : 'false')}
+                        label="Recap after each turn"
+                      />
+                    </div>
+                    <p className="set-meta">
+                      One or two sentences under each finished answer: what was
+                      done, what is left. Asked aside — never added to the
+                      conversation. Applies at once to every session. Each one re-reads
+                      the session's context from the cache: a small share of
+                      the usage of a turn.
+                    </p>
                     <div className="settings-sub">new session defaults</div>
                     <p className="set-hint">{providerText.newSessionDefaults('claude')} — blank = SDK default.</p>
                     <label>default model
@@ -784,8 +804,8 @@ export default function SettingsModal({ onClose, vpsList, initialCat, modelNotic
             </div>
 
             <div className="settings-foot modal-actions">
-              {cat === 'endpoints' && !Object.keys(dirty).length
-                ? <><span className="set-meta endpoint-settings-footnote">Connections are saved individually.</span><button onClick={close}>done</button></>
+              {(cat === 'endpoints' || cat === 'commands') && !Object.keys(dirty).length
+                ? <><span className="set-meta endpoint-settings-footnote">{cat === 'commands' ? 'Commands are saved individually.' : 'Connections are saved individually.'}</span><button onClick={close}>done</button></>
                 : <><button className="primary" onClick={save} disabled={busy}>save</button><button onClick={close}>cancel</button></>}
             </div>
           </>

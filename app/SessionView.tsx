@@ -12,20 +12,27 @@ import EndpointEffortPicker, { EndpointEffortSummary } from './EndpointEffortPic
 import { isOpenCodeGo } from '@/lib/opencodeModels';
 
 import SessionSettingsModal from './SessionSettingsModal';
-import { IconGear, IconPause, IconPlay, IconStop, IconRewind, IconGitBranch, IconBullseye, IconChatSide } from './icons';
+import { IconGear, IconPause, IconPlay, IconStop, IconRewind, IconGitBranch, IconBullseye, IconChatSide, IconSparkle } from './icons';
 import { goalIsLive, shownGoal } from '@/lib/sessionGoal';
 import { coldResumeShare, fmtTokens as fmtDriverTokens } from '@/lib/usageDrivers';
 import type { InsightUsage } from './SessionInsight';
 import type { TurnLedger } from '@/lib/promptCache';
-import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
+import { Fragment, memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
 import type { Vps } from '@/lib/db/schema';
 import { addOverlay, getSummary, subscribeSummaries } from './sync/summaryStore';
 import type { SessionListItem, AgentKind, SessionAttachment } from '@/lib/types/api';
 import {
-  asSessionProvider, hasEffortAxis, sessionCapabilities, sessionModes,
+  asSessionProvider, hasEffortAxis, isSessionEffort, PROVIDERS, sessionCapabilities, sessionModes,
   showsTurnCost, supportsSessionCapability,
   type SessionMode,
 } from '@/lib/sessionCapabilities';
+import {
+  expandUserCommand, filterSlash, isSkillItem, parseCharonCommand, skillInputItems, slashMenu, userSlashItems,
+  type SlashAction, type SlashItem,
+} from '@/lib/slashCommands';
+import { useSlashCatalog } from './slashCatalog';
+import { ensureUserCommands, useUserCommands } from './userCommandsStore';
+import { openTab as openWorkspaceTab } from './tabStore';
 import { isTurnInterrupted } from '@/lib/turnInterrupted';
 import { parseSessionError } from '@/lib/sessionError';
 import { isClaudeAuthExpired } from '@/lib/authExpired';
@@ -42,7 +49,7 @@ import type { SessionTokenUsage } from '@/lib/sessionTokenUsage';
 import QuestionCard from './QuestionCard';
 import AsyncQuestionBubble from './AsyncQuestionBubble';
 import AsyncQuestionStrip, { ComposerWithAsyncStrip } from './AsyncQuestionStrip';
-import { liveStreamingMessage } from './sync/transcriptReducer';
+import { liveStreamingMessage, rowKey } from './sync/transcriptReducer';
 import ExitPlanCard from './ExitPlanCard';
 import ApprovalDeadline from './ApprovalDeadline';
 import PermissionActions from './PermissionActions';
@@ -66,7 +73,7 @@ import {
   extendWithOlder as extendCacheWithOlder,
 } from './sessionCache';
 import { useInputDraft } from './inputDraftStore';
-import { useStableOptionalCallback, useStableValue, shallowEqualRows } from './useStable';
+import { useStableCallback, useStableOptionalCallback, useStableValue, shallowEqualRows } from './useStable';
 import { useUsage } from './usageStore';
 import { COMPOSER_MAX_VIEWPORT_SHARE, revealComposer, useComposerSize, type ComposerSize } from './composerSize';
 import { formatQuote, insertQuoteBlock } from './chatQuote';
@@ -155,6 +162,10 @@ type Props = {
   /** The explorer's folder tabs and "New Session Here…" (ToolPanel). */
   onOpenFolder?: (vpsId: string, cwd: string) => void;
   onNewSessionIn?: (vpsId: string, cwd: string) => void;
+  /** `/shell`: a terminal in this folder (the shell wizard, prefilled). */
+  onNewShellIn?: (vpsId: string, cwd: string) => void;
+  /** `/routine`: the Routines modal on a new routine prefilled from here. */
+  onNewRoutine?: (draft: { vpsId: string; cwd: string; kind: AgentKind; prompt: string }) => void;
 };
 
 // Module-side session cache — sessionCache.ts shared desktop/mobile.
@@ -187,6 +198,7 @@ export default function SessionView({
   onNewAgentHere,
   onOpenFolder: onOpenFolderProp,
   onNewSessionIn: onNewSessionInProp,
+  onNewShellIn, onNewRoutine,
 }: Props) {
   // The parent passes inline arrows and a freshly mapped `siblings` on every
   // render; below this line they keep ONE identity, so memo(MessageHistory),
@@ -387,6 +399,185 @@ export default function SessionView({
       setRewindError(String(e?.message || e)); setRewinding(false);
     }
   }, [rewinding, sessionId, status]);
+  // The recap under the last answer (§14.122): shown only while the row it
+  // follows is still the conversation's last word and nothing is running.
+  const recap = selected.recap ?? null;
+  const shownRecap = useMemo(() => {
+    if (!recap || status === 'thinking' || status === 'starting' || currentAssistant) return null;
+    for (let i = messages.length - 1; i >= 0; i--) {
+      const m = messages[i]!;
+      if (m.role === 'user' || m.role === 'assistant' || m.role === 'external' || m.role === 'error') {
+        return m.id === rowKey(recap.afterRowId) ? recap : null;
+      }
+    }
+    return null;
+  }, [recap, messages, status, currentAssistant]);
+  // ── Charon's own `/` commands (lib/slashCommands.ts) ──────────────────────
+  // The note under the composer says why one did nothing; its text then stays
+  // in the box (the handler answers false).
+  // `ok` = a confirmation (it fades), not a refusal.
+  const [slashNote, setSlashNote] = useState<{ text: string; ok?: boolean } | null>(null);
+  useEffect(() => {
+    if (!slashNote?.ok) return;
+    const t = setTimeout(() => setSlashNote(null), 4000);
+    return () => clearTimeout(t);
+  }, [slashNote]);
+  const [runtimeOpen, setRuntimeOpen] = useState<{ which: 'model' | 'effort'; nonce: number } | null>(null);
+  const openRuntimePicker = useCallback((which: 'model' | 'effort') => {
+    setBarExpanded(true);   // the phone's folded header hides the pickers
+    setRuntimeOpen({ which, nonce: Date.now() });
+  }, []);
+  // `/diff`, `/mcp`: the Tools panel on that tab (a one-shot request).
+  const [toolTabRequest, setToolTabRequest] = useState<'git' | 'calls' | null>(null);
+  const clearToolTabRequest = useCallback(() => setToolTabRequest(null), []);
+  const runSlash = useStableCallback(async (action: SlashAction, arg: string): Promise<boolean> => {
+    setSlashNote(null);
+    const refuse = (why: string) => { setSlashNote({ text: why }); return false; };
+    const inform = (what: string) => { setSlashNote({ text: what, ok: true }); return true; };
+    const live = ['active', 'failed', 'background'].includes(status ?? '');
+    const cwd = selected.cwd ?? '';
+    try {
+      switch (action) {
+        case 'model':
+          if (!arg) { openRuntimePicker('model'); return true; }
+          await setModel(arg, supportsSessionCapability(sessionKind, 'fallbackModel') ? fallbackModel : null);
+          return true;
+        case 'effort': {
+          if (!arg) { openRuntimePicker('effort'); return true; }
+          const word = arg.toLowerCase();
+          if (sessionKind === 'claude' && /^ultracode(\s+(on|off))?$/.test(word)) {
+            await setUltracode(!word.endsWith('off'));
+            return true;
+          }
+          if (!isSessionEffort(sessionKind, word)) {
+            openRuntimePicker('effort');
+            return refuse(`/effort: "${arg}" is not a level this session knows — pick one above.`);
+          }
+          await setEffort(word);
+          return true;
+        }
+        case 'rename':
+          if (!arg) return refuse('/rename: write the new name after it.');
+          await api.renameAgentSession(sessionId, arg.slice(0, 200));
+          return true;
+        case 'clear':
+          if (!onNewSessionIn || !vpsId || !selected.cwd) return refuse('/clear: no new session can be opened from here.');
+          onNewSessionIn(vpsId, selected.cwd);
+          return true;
+        case 'aside':
+          if (!arg) return refuse('/btw: write the question after it.');
+          if (!ASIDE_STATUSES.has(status ?? '')) return refuse('/btw: resume the session to ask it aside.');
+          // A refusal is already shown by the aside's own note.
+          try { await askAside(arg); } catch { return false; }
+          return true;
+        case 'rewind':
+          if (!live) return refuse(status === 'thinking' || status === 'starting'
+            ? '/rewind: wait for the turn to end.' : '/rewind: resume the session first.');
+          setRewindError(null);
+          setRewindOpen(true);
+          return true;
+        case 'compact':
+          if (!compactAllowed) return refuse('/compact: the session must be awake and idle.');
+          void doCompact();
+          return true;
+        case 'goal':
+          if (!arg) { setGoalEditorOpen(true); return true; }
+          await api.setSessionGoal(sessionId, arg);
+          return true;
+        case 'mode': {
+          const modes = sessionModes(sessionKind);
+          const key = (v: string) => v.toLowerCase().replace(/[^a-z0-9]/g, '');
+          const want = key(arg);
+          const exact = modes.find((m) => key(m) === want || key(MODE_SWITCH_META[m]?.label ?? '') === want);
+          const prefix = want ? modes.filter((m) => key(m).startsWith(want) || key(MODE_SWITCH_META[m]?.label ?? '').startsWith(want)) : [];
+          const mode = exact ?? (prefix.length === 1 ? prefix[0] : undefined);
+          if (!mode) return refuse(`/mode: one of ${modes.join(', ')}.`);
+          await setMode(mode);
+          return true;
+        }
+        case 'review': {
+          const words = arg.split(/\s+/).filter(Boolean);
+          const target = !words.length ? { type: 'uncommittedChanges' }
+            : /^(base|branch)$/i.test(words[0]!) && words[1] ? { type: 'baseBranch', branch: words[1] }
+            : /^commit$/i.test(words[0]!) && words[1] ? { type: 'commit', sha: words[1] }
+            : null;
+          if (!target) return refuse('/review: nothing, `base <branch>` or `commit <sha>`.');
+          const r = await fetch(`/api/sessions/${sessionId}/review`, {
+            method: 'POST', headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ target, delivery: 'inline' }),
+          });
+          const j = await r.json().catch(() => null);
+          if (!r.ok || !j?.ok) return refuse(`/review: ${j?.error || 'the review did not start'}`);
+          return true;
+        }
+        case 'fork':
+          if (!selected.nativeSessionId) return refuse('/fork: send a message before forking.');
+          setForkError(null);
+          setForkModalOpen(true);
+          return true;
+        case 'export': {
+          const a = document.createElement('a');
+          a.href = `/api/sessions/${sessionId}/export`;
+          a.download = '';
+          document.body.appendChild(a);
+          a.click();
+          a.remove();
+          return true;
+        }
+        case 'shell':
+          if (!onNewShellIn || !vpsId || !cwd) return refuse('/shell: no terminal can be opened from here.');
+          onNewShellIn(vpsId, cwd);
+          return true;
+        case 'diff':
+        case 'mcp':
+          setToolTabRequest(action === 'diff' ? 'git' : 'calls');
+          onOpenTools?.();
+          return true;
+        case 'memory': {
+          const file = PROVIDERS[sessionKind].instructionsFile;
+          if (!vpsId || !cwd) return refuse('/memory: this session has no folder.');
+          try { await api.fsReadRange(vpsId, cwd, file, 0, 1); }
+          catch { return refuse(`/memory: this folder has no ${file} yet.`); }
+          await openWorkspaceTab({ vpsId, path: cwd, kind: 'file', ref: file, pin: true });
+          return true;
+        }
+        case 'copy': {
+          const last = [...messages].reverse().find((m) => m.role === 'assistant' && m.content.trim()
+            && m.assistantFinal !== 0) ?? [...messages].reverse().find((m) => m.role === 'assistant' && m.content.trim());
+          if (!last) return refuse('/copy: no answer yet.');
+          await navigator.clipboard.writeText(last.content);
+          return inform('Copied the last answer.');
+        }
+        case 'retry': {
+          const last = [...messages].reverse().find((m) => m.role === 'user' && m.content.trim());
+          if (!last) return refuse('/retry: no message to send again.');
+          await streamSend(last.content);
+          return true;
+        }
+        case 'sleep':
+          await doSleep();
+          return true;
+        case 'stop':
+          await forceStop();
+          return true;
+        case 'unattended': {
+          const word = arg.toLowerCase();
+          if (word && !/^(on|off)$/.test(word)) return refuse('/unattended: on or off.');
+          const on = word ? word === 'on' : selected.unattended !== 1;
+          await api.setSessionUnattended(sessionId, on);
+          return inform(on ? 'Unattended: questions and permission requests are now refused for it.'
+            : 'Attended again: it asks you as usual.');
+        }
+        case 'routine':
+          if (!onNewRoutine || !vpsId || !cwd) return refuse('/routine: this session has no folder.');
+          onNewRoutine({ vpsId, cwd, kind: sessionKind, prompt: arg });
+          return true;
+      }
+    } catch (e) {
+      return refuse(`/${action === 'aside' ? 'btw' : action}: ${e instanceof Error ? e.message : String(e)}`);
+    }
+    return false;
+  });
   const doFork = useCallback(async (targetKind: AgentKind, options?: {
     lastTurnId?: string; cutoffMessageId?: number; replacementPrompt?: string; targetProfile?: string;
   }) => {
@@ -968,6 +1159,7 @@ export default function SessionView({
             effectiveModel={effectiveModel}
             onSetModel={setModel} onSetEffort={setEffort}
             onApplyNow={doRestart}
+            openRequest={runtimeOpen}
             context={(
               <HeaderContextGauge
                 context={endpoint.active && !endpoint.active.checks?.[sessionKind as 'claude' | 'codex']?.contextWindow ? null : sessionContext}
@@ -1082,6 +1274,12 @@ export default function SessionView({
                     title="What you see may be out of date — fetching the latest from the server">
                     <span className="app-history-loading-spinner" aria-hidden />
                     <span>checking for new messages…</span>
+                  </div>
+                )}
+                {shownRecap && (
+                  <div className="recap-bubble" role="note" aria-label="recap">
+                    <span className="recap-label"><IconSparkle />recap</span>
+                    <p>{shownRecap.text.split('`').map((part, i) => (i % 2 ? <code key={i}>{part}</code> : part))}</p>
                   </div>
                 )}
                 {liveMessage?.id === '__streaming' && (
@@ -1311,6 +1509,10 @@ export default function SessionView({
             <span>aside: {asideError}</span>
             <button type="button" onClick={() => setAsideError(null)} aria-label="dismiss">×</button>
           </div>}
+          {slashNote && <div className={`aside-error${slashNote.ok ? ' is-ok' : ''}`} role={slashNote.ok ? 'status' : 'alert'}>
+            <span>{slashNote.text}</span>
+            <button type="button" onClick={() => setSlashNote(null)} aria-label="dismiss">×</button>
+          </div>}
           <ChatInputBar
             sessionId={sessionId}
             kind={sessionKind}
@@ -1327,6 +1529,8 @@ export default function SessionView({
             siblings={siblings}
             compacting={liveCompacting}
             onAside={ASIDE_STATUSES.has(status ?? '') && supportsSessionCapability(sessionKind, 'sideQuestion') ? askAside : undefined}
+            slashKey={`${sessionKind}|${vpsId}|${selected.cwd ?? ''}`}
+            onSlashAction={runSlash}
           />
           </>
         )}
@@ -1343,6 +1547,8 @@ export default function SessionView({
         onRevert={revertAndRefresh}
         attachments={attachments}
         onRemoveAttachment={removeAttachment}
+        requestedTab={toolTabRequest}
+        onTabConsumed={clearToolTabRequest}
         onInsertPath={requestInsertPath}
         vpsId={vpsId || null}
         cwd={selected.cwd || null}
@@ -1492,16 +1698,21 @@ const ParentChip = memo(function ParentChip({ parentId, onOpen }: {
 const ChatInputBar = memo(function ChatInputBar({
   sessionId, kind, permissionMode, onSetMode, onSend, prefillInput, clearPrefillInput,
   pending, onUploadFiles, onDismissPending, insertRequest, clearInsertRequest, siblings, compacting = false,
-  onAside,
+  onAside, slashKey, onSlashAction,
 }: {
-  /** Ask beside the conversation (§14.119), offered while a turn runs; the
-   *  answer never enters the context. Absent = no button. */
+  /** Ask beside the conversation (§14.119), offered while the session is
+   *  awake; the answer never enters the context. Absent = no button. */
   onAside?: (question: string) => Promise<void>;
+  /** The `/` menu (lib/slashCommands.ts): its list is cached per
+   *  provider|vps|folder; a Charon command runs through `onSlashAction`
+   *  (true = done, the box empties; false = the text stays). */
+  slashKey: string;
+  onSlashAction: (action: SlashAction, arg: string) => Promise<boolean>;
   sessionId: string;
   kind: AgentKind;
   permissionMode: SessionMode;
   onSetMode: (mode: SessionMode) => void;
-  onSend: (content: string) => Promise<void>;
+  onSend: (content: string, codexInputs?: Array<Record<string, unknown>>) => Promise<void>;
   prefillInput: string | null;
   clearPrefillInput: () => void;
   pending: PendingUpload[];
@@ -1667,15 +1878,70 @@ const ChatInputBar = memo(function ChatInputBar({
       .slice(0, 8);
   }, [mention, siblings]);
 
+  // ── `/` command menu ────────────────────────────────────────────────────
+  // At the very START of the message, like the CLI: the provider's commands
+  // and skills plus Charon's own (lib/slashCommands.ts). Picking one writes
+  // it and a space; Enter then sends — or, for a Charon command, runs it here.
+  const catalog = useSlashCatalog(sessionId, kind, slashKey);
+  const ensureCatalog = catalog.ensure;
+  const userCommands = useUserCommands();
+  const slashItems = useMemo(
+    () => slashMenu(kind, catalog.native ?? [], userSlashItems(userCommands)),
+    [kind, catalog.native, userCommands],
+  );
+  const [slash, setSlash] = useState<{ query: string } | null>(null);
+  const [slashIdx, setSlashIdx] = useState(0);
+  const slashMatches = useMemo(() => (slash ? filterSlash(slashItems, slash.query) : []), [slash, slashItems]);
+  const slashListRef = useRef<HTMLDivElement | null>(null);
+  useEffect(() => {
+    slashListRef.current?.querySelector('.ci-mention.on')?.scrollIntoView({ block: 'nearest' });
+  }, [slashIdx, slash]);
+  // What the command at the start of the box does and takes, under the menu's
+  // shape, once it is written out.
+  const slashHint = useMemo(() => {
+    if (slash) return null;
+    const m = /^[/$]\S+/.exec(input);
+    return m ? slashItems.find((it) => it.insert === m[0]) ?? null : null;
+  }, [input, slash, slashItems]);
+
   /** Re-derive the pending mention from the text and caret. `@` only opens a
    *  menu at a word boundary — an email address or a decorator must not. */
   const syncMention = useCallback((value: string, caret: number) => {
     const upto = value.slice(0, caret);
+    const s = /^\/(\S*)$/.exec(upto);
+    if (s) {
+      setSlash({ query: s[1]! });
+      setSlashIdx(0);
+      setMention(null);
+      ensureCatalog();
+      ensureUserCommands();
+      return;
+    }
+    setSlash(null);
+    // A `$skill` typed by hand still needs its path at send time.
+    if (/(?:^|\s)\$\S*$/.test(upto)) ensureCatalog();
     const m = /(?:^|\s)@([a-zA-Z0-9-]*)$/.exec(upto);
     if (!m) { setMention(null); return; }
     setMention({ start: caret - m[1].length - 1, query: m[1] });
     setMentionIdx(0);
-  }, []);
+  }, [ensureCatalog]);
+
+  const applySlash = useCallback((item: SlashItem) => {
+    const rest = inputRef.current.replace(/^\S*/, '').replace(/^[ \t]+/, '');
+    const head = `${item.insert} `;
+    const next = head + rest;
+    const pos = head.length;
+    inputRef.current = next;
+    setInput(next);
+    caretRef.current = pos;
+    setSlash(null);
+    requestAnimationFrame(() => {
+      const ta = taRef.current;
+      if (!ta) return;
+      ta.focus();
+      try { ta.setSelectionRange(pos, pos); } catch { /* detached */ }
+    });
+  }, [setInput]);
 
   const applyMention = useCallback((handle: string) => {
     if (!mention) return;
@@ -1842,8 +2108,19 @@ const ChatInputBar = memo(function ChatInputBar({
     setInput('');
     inputRef.current = '';
     caretRef.current = 0;
-    await onSend(content);
-  }, [input, onSend, setInput, compacting]);
+    setSlash(null);
+    const command = parseCharonCommand(content, slashItems);
+    if (command) {
+      let done = false;
+      try { done = await onSlashAction(command.item.action!, command.arg); } catch { done = false; }
+      if (!done && !inputRef.current) { setInput(content); inputRef.current = content; }
+      return;
+    }
+    // A user command goes out as the prompt it names (the transcript shows it).
+    const text = expandUserCommand(content, slashItems) ?? content;
+    const skills = skillInputItems(text, slashItems);
+    await onSend(text, skills.length ? [{ type: 'text', text }, ...skills] : undefined);
+  }, [input, onSend, setInput, compacting, slashItems, onSlashAction]);
 
   const aside = useCallback(async () => {
     const question = input.trim();
@@ -1906,6 +2183,47 @@ const ChatInputBar = memo(function ChatInputBar({
           })}
         </PickerControl>
       </div>
+      {slash && slashMatches.length > 0 && (
+        <div className="ci-mentions ci-slash" role="listbox" aria-label="commands and skills" ref={slashListRef}>
+          {slashMatches.map((it, i) => {
+            // Commands first, then skills, each under its title.
+            const group = isSkillItem(it) ? 'Skills' : 'Commands';
+            const prev = slashMatches[i - 1];
+            const head = !prev || (isSkillItem(prev) ? 'Skills' : 'Commands') !== group;
+            return (
+              <Fragment key={it.insert}>
+                {head && <div className="cis-group" role="presentation">{group}</div>}
+                <button
+                  type="button"
+                  role="option"
+                  aria-selected={i === slashIdx}
+                  className={`ci-mention${i === slashIdx ? ' on' : ''}`}
+                  // mousedown, not click: same reason as the `@` menu below.
+                  onMouseDown={(e) => { e.preventDefault(); applySlash(it); }}
+                  onMouseEnter={() => setSlashIdx(i)}
+                >
+                  <span className="cis-line">
+                    <span className="cis-name">{it.insert}</span>
+                    {(it.tag === 'charon' || it.tag === 'mine') && (
+                      <span className={`cis-tag ${it.tag}`}>{it.tag === 'charon' ? 'Charon' : 'mine'}</span>
+                    )}
+                    {it.hint && <span className="cis-hint">{it.hint}</span>}
+                  </span>
+                  {it.description && <span className="cis-desc">{it.description}</span>}
+                </button>
+              </Fragment>
+            );
+          })}
+          {catalog.loading && <div className="cis-loading" role="status">loading this session's commands…</div>}
+        </div>
+      )}
+      {slashHint && (slashHint.hint || slashHint.description) && !(mention && mentionMatches.length > 0) && (
+        <div className="ci-slash-hint" aria-live="polite">
+          <span className="cis-name">{slashHint.insert}</span>
+          {slashHint.hint && <span className="cis-hint">{slashHint.hint}</span>}
+          {slashHint.description && <span className="cis-desc">{slashHint.description}</span>}
+        </div>
+      )}
       {mention && mentionMatches.length > 0 && (
         <div className="ci-mentions" role="listbox" aria-label="sessions on this machine">
           {mentionMatches.map((x, i) => (
@@ -1951,6 +2269,24 @@ const ChatInputBar = memo(function ChatInputBar({
           if (e.nativeEvent.isComposing) return;
           // Mobile Enter always inserts a newline, even with the @ menu open.
           if (e.key === 'Enter' && window.matchMedia?.('(pointer: coarse)').matches) return;
+          // An open `/` menu owns the same keys: Enter/Tab writes the command
+          // out (a second Enter sends it).
+          if (slash && slashMatches.length > 0) {
+            if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+              e.preventDefault();
+              setSlashIdx((i) => {
+                const n = slashMatches.length;
+                return (i + (e.key === 'ArrowDown' ? 1 : n - 1)) % n;
+              });
+              return;
+            }
+            if (e.key === 'Enter' || e.key === 'Tab') {
+              e.preventDefault();
+              applySlash(slashMatches[Math.min(slashIdx, slashMatches.length - 1)]!);
+              return;
+            }
+            if (e.key === 'Escape') { e.preventDefault(); setSlash(null); return; }
+          }
           // While the @ menu is open it owns the navigation keys — otherwise
           // Enter would send a half-typed handle instead of completing it.
           if (mention && mentionMatches.length > 0) {
@@ -2236,7 +2572,11 @@ function SessionRuntimePanel({
   ultracode = false, onSetUltracode,
   modelPendingApply, effortPendingApply, effectiveModel,
   onSetModel, onSetEffort, onApplyNow, sessionId, endpoint, onEndpointChanged, context, accountSwitch,
+  openRequest,
 }: {
+  /** `/model` or `/effort` with nothing after it: open that picker (a new
+   *  nonce = a new request). */
+  openRequest?: { which: 'model' | 'effort'; nonce: number } | null;
   /** Claude's ultracode switch beside effort (§14.56); no setter = no switch. */
   ultracode?: boolean;
   onSetUltracode?: (on: boolean) => Promise<void>;
@@ -2278,6 +2618,11 @@ function SessionRuntimePanel({
     (open === 'model' ? modelButton : effortButton).current?.focus({ preventScroll: true });
     setOpen(null);
   }
+  useEffect(() => {
+    if (!openRequest) return;
+    setSaveError(null);
+    setOpen(openRequest.which);
+  }, [openRequest]);
   useEffect(() => {
     if (!open) return;
     const onKey = (e: KeyboardEvent) => {

@@ -1139,6 +1139,10 @@ export type ScanVpsSessionsQuery = {
 
 export type AgentSessionListQuery = { vpsId?: string; status?: string; includeArchived?: boolean };
 
+// ── The user's own `/` commands (§14.121) ─────────────────────────────────
+export type UserCommandInput = { name: string; description: string; prompt: string };
+export type UserCommand = UserCommandInput & { id: string; updatedAt: number };
+
 // ── Routines (§14.120) ────────────────────────────────────────────────────
 /** What a create/update carries (an update: any subset). */
 export type RoutineInput = {
@@ -1215,6 +1219,8 @@ export type SessionListItem = AgentSession & {
   promptCache?: import('@/lib/promptCache').PromptCacheState | null;
   /** The session's goal (lib/sessionGoal.ts, §14.119); null = none. */
   goal?: import('@/lib/sessionGoal').SessionGoal | null;
+  /** The recap after the last finished turn (lib/sessionRecap.ts, §14.122). */
+  recap?: import('@/lib/sessionRecap').SessionRecap | null;
   /** Claude's ultracode switch (§14.56), off its private construction JSON. */
   ultracode?: boolean;
 };

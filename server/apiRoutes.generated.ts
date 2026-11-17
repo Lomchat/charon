@@ -9,143 +9,145 @@ import * as r5 from './api/auth/check/route';
 import * as r6 from './api/claude/models/refresh/route';
 import * as r7 from './api/claude/models/route';
 import * as r8 from './api/codex/models/route';
-import * as r9 from './api/cursor/models/route';
-import * as r10 from './api/custom-endpoints/probe/route';
-import * as r11 from './api/custom-endpoints/route';
-import * as r12 from './api/custom-endpoints/test-all/route';
-import * as r13 from './api/events/route';
-import * as r14 from './api/focus/route';
-import * as r15 from './api/health/route';
-import * as r16 from './api/installs/[id]/retry/route';
-import * as r17 from './api/installs/[id]/route';
-import * as r18 from './api/installs/[id]/stream/route';
-import * as r19 from './api/installs/route';
-import * as r20 from './api/local-agent/status/route';
-import * as r21 from './api/local-agent/update/route';
-import * as r22 from './api/models/notices/route';
-import * as r23 from './api/pdfjs/[kind]/[name]/route';
-import * as r24 from './api/perf/route';
-import * as r25 from './api/preview/[token]/[[...path]]/route';
-import * as r26 from './api/push/key/route';
-import * as r27 from './api/push/subscribe/route';
-import * as r28 from './api/push/unsubscribe/route';
-import * as r29 from './api/routines/[id]/route';
-import * as r30 from './api/routines/[id]/run/route';
-import * as r31 from './api/routines/route';
-import * as r32 from './api/routines/runs/route';
-import * as r33 from './api/search/files/route';
-import * as r34 from './api/search/route';
-import * as r35 from './api/session-notifications/route';
-import * as r36 from './api/sessions/[id]/account/route';
-import * as r37 from './api/sessions/[id]/archive/route';
-import * as r38 from './api/sessions/[id]/attachments/[attId]/route';
-import * as r39 from './api/sessions/[id]/attachments/route';
-import * as r40 from './api/sessions/[id]/background-terminals/route';
-import * as r41 from './api/sessions/[id]/bg-tasks/[taskId]/stop/route';
-import * as r42 from './api/sessions/[id]/compact/route';
-import * as r43 from './api/sessions/[id]/context/route';
-import * as r44 from './api/sessions/[id]/edits/route';
-import * as r45 from './api/sessions/[id]/effort/route';
-import * as r46 from './api/sessions/[id]/endpoint/route';
-import * as r47 from './api/sessions/[id]/exit-plan/route';
-import * as r48 from './api/sessions/[id]/export/route';
-import * as r49 from './api/sessions/[id]/force-stop/route';
-import * as r50 from './api/sessions/[id]/fork/route';
-import * as r51 from './api/sessions/[id]/goal/route';
-import * as r52 from './api/sessions/[id]/hidden/route';
-import * as r53 from './api/sessions/[id]/input/route';
-import * as r54 from './api/sessions/[id]/mcp/route';
-import * as r55 from './api/sessions/[id]/mode/route';
-import * as r56 from './api/sessions/[id]/model/route';
-import * as r57 from './api/sessions/[id]/notifications/route';
-import * as r58 from './api/sessions/[id]/permission/route';
-import * as r59 from './api/sessions/[id]/probe/route';
-import * as r60 from './api/sessions/[id]/question/route';
-import * as r61 from './api/sessions/[id]/read/route';
-import * as r62 from './api/sessions/[id]/resources/route';
-import * as r63 from './api/sessions/[id]/restart/route';
-import * as r64 from './api/sessions/[id]/resume/route';
-import * as r65 from './api/sessions/[id]/revert/route';
-import * as r66 from './api/sessions/[id]/review/route';
-import * as r67 from './api/sessions/[id]/rollback/route';
-import * as r68 from './api/sessions/[id]/route';
-import * as r69 from './api/sessions/[id]/scheduled-resume/route';
-import * as r70 from './api/sessions/[id]/security/route';
-import * as r71 from './api/sessions/[id]/side/route';
-import * as r72 from './api/sessions/[id]/sleep/route';
-import * as r73 from './api/sessions/[id]/subagents/route';
-import * as r74 from './api/sessions/[id]/tool-calls/route';
-import * as r75 from './api/sessions/[id]/unattended/route';
-import * as r76 from './api/sessions/bulk-delete/route';
-import * as r77 from './api/sessions/import/route';
-import * as r78 from './api/sessions/reorder/route';
-import * as r79 from './api/sessions/route';
-import * as r80 from './api/settings/route';
-import * as r81 from './api/shells/[id]/route';
-import * as r82 from './api/shells/route';
-import * as r83 from './api/sync/route';
-import * as r84 from './api/tabs/[id]/route';
-import * as r85 from './api/tabs/reorder/route';
-import * as r86 from './api/tabs/route';
-import * as r87 from './api/telegram/test/route';
-import * as r88 from './api/vps-folders/[id]/route';
-import * as r89 from './api/vps-folders/layout/route';
-import * as r90 from './api/vps-folders/route';
-import * as r91 from './api/vps-paths/[id]/route';
-import * as r92 from './api/vps-paths/route';
-import * as r93 from './api/vps/[id]/account/route';
-import * as r94 from './api/vps/[id]/activity/route';
-import * as r95 from './api/vps/[id]/agent/refresh/route';
-import * as r96 from './api/vps/[id]/agent/update/route';
-import * as r97 from './api/vps/[id]/claude/account/route';
-import * as r98 from './api/vps/[id]/claude/bootstrap/route';
-import * as r99 from './api/vps/[id]/claude/check-login/route';
-import * as r100 from './api/vps/[id]/claude/check/route';
-import * as r101 from './api/vps/[id]/claude/scan/route';
-import * as r102 from './api/vps/[id]/claude/setup/route';
-import * as r103 from './api/vps/[id]/codex/account/route';
-import * as r104 from './api/vps/[id]/codex/login/route';
-import * as r105 from './api/vps/[id]/codex/scan/route';
-import * as r106 from './api/vps/[id]/cursor/account/route';
-import * as r107 from './api/vps/[id]/cursor/check-login/route';
-import * as r108 from './api/vps/[id]/cursor/login/route';
-import * as r109 from './api/vps/[id]/cursor/scan/route';
-import * as r110 from './api/vps/[id]/fs/archive/route';
-import * as r111 from './api/vps/[id]/fs/convert/route';
-import * as r112 from './api/vps/[id]/fs/file/route';
-import * as r113 from './api/vps/[id]/fs/list/route';
-import * as r114 from './api/vps/[id]/fs/op/route';
-import * as r115 from './api/vps/[id]/fs/preview/route';
-import * as r116 from './api/vps/[id]/fs/range/route';
-import * as r117 from './api/vps/[id]/fs/route';
-import * as r118 from './api/vps/[id]/fs/search/route';
-import * as r119 from './api/vps/[id]/fs/sqlite/route';
-import * as r120 from './api/vps/[id]/fs/upload/[uploadId]/route';
-import * as r121 from './api/vps/[id]/fs/upload/route';
-import * as r122 from './api/vps/[id]/fs/write/route';
-import * as r123 from './api/vps/[id]/git/branches/route';
-import * as r124 from './api/vps/[id]/git/checkout/route';
-import * as r125 from './api/vps/[id]/git/commit/route';
-import * as r126 from './api/vps/[id]/git/diff/route';
-import * as r127 from './api/vps/[id]/git/discard/route';
-import * as r128 from './api/vps/[id]/git/fetch/route';
-import * as r129 from './api/vps/[id]/git/log/route';
-import * as r130 from './api/vps/[id]/git/message/route';
-import * as r131 from './api/vps/[id]/git/pull/route';
-import * as r132 from './api/vps/[id]/git/push/route';
-import * as r133 from './api/vps/[id]/git/show/route';
-import * as r134 from './api/vps/[id]/git/status/route';
-import * as r135 from './api/vps/[id]/history/preview/route';
-import * as r136 from './api/vps/[id]/history/route';
-import * as r137 from './api/vps/[id]/installs/route';
-import * as r138 from './api/vps/[id]/login/code/route';
-import * as r139 from './api/vps/[id]/login/route';
-import * as r140 from './api/vps/[id]/lsp/route';
-import * as r141 from './api/vps/[id]/route';
-import * as r142 from './api/vps/[id]/shells/route';
-import * as r143 from './api/vps/[id]/test/route';
-import * as r144 from './api/vps/[id]/usage/route';
-import * as r145 from './api/vps/route';
+import * as r9 from './api/commands/[id]/route';
+import * as r10 from './api/commands/route';
+import * as r11 from './api/cursor/models/route';
+import * as r12 from './api/custom-endpoints/probe/route';
+import * as r13 from './api/custom-endpoints/route';
+import * as r14 from './api/custom-endpoints/test-all/route';
+import * as r15 from './api/events/route';
+import * as r16 from './api/focus/route';
+import * as r17 from './api/health/route';
+import * as r18 from './api/installs/[id]/retry/route';
+import * as r19 from './api/installs/[id]/route';
+import * as r20 from './api/installs/[id]/stream/route';
+import * as r21 from './api/installs/route';
+import * as r22 from './api/local-agent/status/route';
+import * as r23 from './api/local-agent/update/route';
+import * as r24 from './api/models/notices/route';
+import * as r25 from './api/pdfjs/[kind]/[name]/route';
+import * as r26 from './api/perf/route';
+import * as r27 from './api/preview/[token]/[[...path]]/route';
+import * as r28 from './api/push/key/route';
+import * as r29 from './api/push/subscribe/route';
+import * as r30 from './api/push/unsubscribe/route';
+import * as r31 from './api/routines/[id]/route';
+import * as r32 from './api/routines/[id]/run/route';
+import * as r33 from './api/routines/route';
+import * as r34 from './api/routines/runs/route';
+import * as r35 from './api/search/files/route';
+import * as r36 from './api/search/route';
+import * as r37 from './api/session-notifications/route';
+import * as r38 from './api/sessions/[id]/account/route';
+import * as r39 from './api/sessions/[id]/archive/route';
+import * as r40 from './api/sessions/[id]/attachments/[attId]/route';
+import * as r41 from './api/sessions/[id]/attachments/route';
+import * as r42 from './api/sessions/[id]/background-terminals/route';
+import * as r43 from './api/sessions/[id]/bg-tasks/[taskId]/stop/route';
+import * as r44 from './api/sessions/[id]/compact/route';
+import * as r45 from './api/sessions/[id]/context/route';
+import * as r46 from './api/sessions/[id]/edits/route';
+import * as r47 from './api/sessions/[id]/effort/route';
+import * as r48 from './api/sessions/[id]/endpoint/route';
+import * as r49 from './api/sessions/[id]/exit-plan/route';
+import * as r50 from './api/sessions/[id]/export/route';
+import * as r51 from './api/sessions/[id]/force-stop/route';
+import * as r52 from './api/sessions/[id]/fork/route';
+import * as r53 from './api/sessions/[id]/goal/route';
+import * as r54 from './api/sessions/[id]/hidden/route';
+import * as r55 from './api/sessions/[id]/input/route';
+import * as r56 from './api/sessions/[id]/mcp/route';
+import * as r57 from './api/sessions/[id]/mode/route';
+import * as r58 from './api/sessions/[id]/model/route';
+import * as r59 from './api/sessions/[id]/notifications/route';
+import * as r60 from './api/sessions/[id]/permission/route';
+import * as r61 from './api/sessions/[id]/probe/route';
+import * as r62 from './api/sessions/[id]/question/route';
+import * as r63 from './api/sessions/[id]/read/route';
+import * as r64 from './api/sessions/[id]/resources/route';
+import * as r65 from './api/sessions/[id]/restart/route';
+import * as r66 from './api/sessions/[id]/resume/route';
+import * as r67 from './api/sessions/[id]/revert/route';
+import * as r68 from './api/sessions/[id]/review/route';
+import * as r69 from './api/sessions/[id]/rollback/route';
+import * as r70 from './api/sessions/[id]/route';
+import * as r71 from './api/sessions/[id]/scheduled-resume/route';
+import * as r72 from './api/sessions/[id]/security/route';
+import * as r73 from './api/sessions/[id]/side/route';
+import * as r74 from './api/sessions/[id]/sleep/route';
+import * as r75 from './api/sessions/[id]/subagents/route';
+import * as r76 from './api/sessions/[id]/tool-calls/route';
+import * as r77 from './api/sessions/[id]/unattended/route';
+import * as r78 from './api/sessions/bulk-delete/route';
+import * as r79 from './api/sessions/import/route';
+import * as r80 from './api/sessions/reorder/route';
+import * as r81 from './api/sessions/route';
+import * as r82 from './api/settings/route';
+import * as r83 from './api/shells/[id]/route';
+import * as r84 from './api/shells/route';
+import * as r85 from './api/sync/route';
+import * as r86 from './api/tabs/[id]/route';
+import * as r87 from './api/tabs/reorder/route';
+import * as r88 from './api/tabs/route';
+import * as r89 from './api/telegram/test/route';
+import * as r90 from './api/vps-folders/[id]/route';
+import * as r91 from './api/vps-folders/layout/route';
+import * as r92 from './api/vps-folders/route';
+import * as r93 from './api/vps-paths/[id]/route';
+import * as r94 from './api/vps-paths/route';
+import * as r95 from './api/vps/[id]/account/route';
+import * as r96 from './api/vps/[id]/activity/route';
+import * as r97 from './api/vps/[id]/agent/refresh/route';
+import * as r98 from './api/vps/[id]/agent/update/route';
+import * as r99 from './api/vps/[id]/claude/account/route';
+import * as r100 from './api/vps/[id]/claude/bootstrap/route';
+import * as r101 from './api/vps/[id]/claude/check-login/route';
+import * as r102 from './api/vps/[id]/claude/check/route';
+import * as r103 from './api/vps/[id]/claude/scan/route';
+import * as r104 from './api/vps/[id]/claude/setup/route';
+import * as r105 from './api/vps/[id]/codex/account/route';
+import * as r106 from './api/vps/[id]/codex/login/route';
+import * as r107 from './api/vps/[id]/codex/scan/route';
+import * as r108 from './api/vps/[id]/cursor/account/route';
+import * as r109 from './api/vps/[id]/cursor/check-login/route';
+import * as r110 from './api/vps/[id]/cursor/login/route';
+import * as r111 from './api/vps/[id]/cursor/scan/route';
+import * as r112 from './api/vps/[id]/fs/archive/route';
+import * as r113 from './api/vps/[id]/fs/convert/route';
+import * as r114 from './api/vps/[id]/fs/file/route';
+import * as r115 from './api/vps/[id]/fs/list/route';
+import * as r116 from './api/vps/[id]/fs/op/route';
+import * as r117 from './api/vps/[id]/fs/preview/route';
+import * as r118 from './api/vps/[id]/fs/range/route';
+import * as r119 from './api/vps/[id]/fs/route';
+import * as r120 from './api/vps/[id]/fs/search/route';
+import * as r121 from './api/vps/[id]/fs/sqlite/route';
+import * as r122 from './api/vps/[id]/fs/upload/[uploadId]/route';
+import * as r123 from './api/vps/[id]/fs/upload/route';
+import * as r124 from './api/vps/[id]/fs/write/route';
+import * as r125 from './api/vps/[id]/git/branches/route';
+import * as r126 from './api/vps/[id]/git/checkout/route';
+import * as r127 from './api/vps/[id]/git/commit/route';
+import * as r128 from './api/vps/[id]/git/diff/route';
+import * as r129 from './api/vps/[id]/git/discard/route';
+import * as r130 from './api/vps/[id]/git/fetch/route';
+import * as r131 from './api/vps/[id]/git/log/route';
+import * as r132 from './api/vps/[id]/git/message/route';
+import * as r133 from './api/vps/[id]/git/pull/route';
+import * as r134 from './api/vps/[id]/git/push/route';
+import * as r135 from './api/vps/[id]/git/show/route';
+import * as r136 from './api/vps/[id]/git/status/route';
+import * as r137 from './api/vps/[id]/history/preview/route';
+import * as r138 from './api/vps/[id]/history/route';
+import * as r139 from './api/vps/[id]/installs/route';
+import * as r140 from './api/vps/[id]/login/code/route';
+import * as r141 from './api/vps/[id]/login/route';
+import * as r142 from './api/vps/[id]/lsp/route';
+import * as r143 from './api/vps/[id]/route';
+import * as r144 from './api/vps/[id]/shells/route';
+import * as r145 from './api/vps/[id]/test/route';
+import * as r146 from './api/vps/[id]/usage/route';
+import * as r147 from './api/vps/route';
 
 export const API_ROUTES: ApiRouteEntry[] = [
   { file: "account-profiles/route.ts", mod: r0 },
@@ -157,141 +159,143 @@ export const API_ROUTES: ApiRouteEntry[] = [
   { file: "claude/models/refresh/route.ts", mod: r6 },
   { file: "claude/models/route.ts", mod: r7 },
   { file: "codex/models/route.ts", mod: r8 },
-  { file: "cursor/models/route.ts", mod: r9 },
-  { file: "custom-endpoints/probe/route.ts", mod: r10 },
-  { file: "custom-endpoints/route.ts", mod: r11 },
-  { file: "custom-endpoints/test-all/route.ts", mod: r12 },
-  { file: "events/route.ts", mod: r13 },
-  { file: "focus/route.ts", mod: r14 },
-  { file: "health/route.ts", mod: r15 },
-  { file: "installs/[id]/retry/route.ts", mod: r16 },
-  { file: "installs/[id]/route.ts", mod: r17 },
-  { file: "installs/[id]/stream/route.ts", mod: r18 },
-  { file: "installs/route.ts", mod: r19 },
-  { file: "local-agent/status/route.ts", mod: r20 },
-  { file: "local-agent/update/route.ts", mod: r21 },
-  { file: "models/notices/route.ts", mod: r22 },
-  { file: "pdfjs/[kind]/[name]/route.ts", mod: r23 },
-  { file: "perf/route.ts", mod: r24 },
-  { file: "preview/[token]/[[...path]]/route.ts", mod: r25 },
-  { file: "push/key/route.ts", mod: r26 },
-  { file: "push/subscribe/route.ts", mod: r27 },
-  { file: "push/unsubscribe/route.ts", mod: r28 },
-  { file: "routines/[id]/route.ts", mod: r29 },
-  { file: "routines/[id]/run/route.ts", mod: r30 },
-  { file: "routines/route.ts", mod: r31 },
-  { file: "routines/runs/route.ts", mod: r32 },
-  { file: "search/files/route.ts", mod: r33 },
-  { file: "search/route.ts", mod: r34 },
-  { file: "session-notifications/route.ts", mod: r35 },
-  { file: "sessions/[id]/account/route.ts", mod: r36 },
-  { file: "sessions/[id]/archive/route.ts", mod: r37 },
-  { file: "sessions/[id]/attachments/[attId]/route.ts", mod: r38 },
-  { file: "sessions/[id]/attachments/route.ts", mod: r39 },
-  { file: "sessions/[id]/background-terminals/route.ts", mod: r40 },
-  { file: "sessions/[id]/bg-tasks/[taskId]/stop/route.ts", mod: r41 },
-  { file: "sessions/[id]/compact/route.ts", mod: r42 },
-  { file: "sessions/[id]/context/route.ts", mod: r43 },
-  { file: "sessions/[id]/edits/route.ts", mod: r44 },
-  { file: "sessions/[id]/effort/route.ts", mod: r45 },
-  { file: "sessions/[id]/endpoint/route.ts", mod: r46 },
-  { file: "sessions/[id]/exit-plan/route.ts", mod: r47 },
-  { file: "sessions/[id]/export/route.ts", mod: r48 },
-  { file: "sessions/[id]/force-stop/route.ts", mod: r49 },
-  { file: "sessions/[id]/fork/route.ts", mod: r50 },
-  { file: "sessions/[id]/goal/route.ts", mod: r51 },
-  { file: "sessions/[id]/hidden/route.ts", mod: r52 },
-  { file: "sessions/[id]/input/route.ts", mod: r53 },
-  { file: "sessions/[id]/mcp/route.ts", mod: r54 },
-  { file: "sessions/[id]/mode/route.ts", mod: r55 },
-  { file: "sessions/[id]/model/route.ts", mod: r56 },
-  { file: "sessions/[id]/notifications/route.ts", mod: r57 },
-  { file: "sessions/[id]/permission/route.ts", mod: r58 },
-  { file: "sessions/[id]/probe/route.ts", mod: r59 },
-  { file: "sessions/[id]/question/route.ts", mod: r60 },
-  { file: "sessions/[id]/read/route.ts", mod: r61 },
-  { file: "sessions/[id]/resources/route.ts", mod: r62 },
-  { file: "sessions/[id]/restart/route.ts", mod: r63 },
-  { file: "sessions/[id]/resume/route.ts", mod: r64 },
-  { file: "sessions/[id]/revert/route.ts", mod: r65 },
-  { file: "sessions/[id]/review/route.ts", mod: r66 },
-  { file: "sessions/[id]/rollback/route.ts", mod: r67 },
-  { file: "sessions/[id]/route.ts", mod: r68 },
-  { file: "sessions/[id]/scheduled-resume/route.ts", mod: r69 },
-  { file: "sessions/[id]/security/route.ts", mod: r70 },
-  { file: "sessions/[id]/side/route.ts", mod: r71 },
-  { file: "sessions/[id]/sleep/route.ts", mod: r72 },
-  { file: "sessions/[id]/subagents/route.ts", mod: r73 },
-  { file: "sessions/[id]/tool-calls/route.ts", mod: r74 },
-  { file: "sessions/[id]/unattended/route.ts", mod: r75 },
-  { file: "sessions/bulk-delete/route.ts", mod: r76 },
-  { file: "sessions/import/route.ts", mod: r77 },
-  { file: "sessions/reorder/route.ts", mod: r78 },
-  { file: "sessions/route.ts", mod: r79 },
-  { file: "settings/route.ts", mod: r80 },
-  { file: "shells/[id]/route.ts", mod: r81 },
-  { file: "shells/route.ts", mod: r82 },
-  { file: "sync/route.ts", mod: r83 },
-  { file: "tabs/[id]/route.ts", mod: r84 },
-  { file: "tabs/reorder/route.ts", mod: r85 },
-  { file: "tabs/route.ts", mod: r86 },
-  { file: "telegram/test/route.ts", mod: r87 },
-  { file: "vps-folders/[id]/route.ts", mod: r88 },
-  { file: "vps-folders/layout/route.ts", mod: r89 },
-  { file: "vps-folders/route.ts", mod: r90 },
-  { file: "vps-paths/[id]/route.ts", mod: r91 },
-  { file: "vps-paths/route.ts", mod: r92 },
-  { file: "vps/[id]/account/route.ts", mod: r93 },
-  { file: "vps/[id]/activity/route.ts", mod: r94 },
-  { file: "vps/[id]/agent/refresh/route.ts", mod: r95 },
-  { file: "vps/[id]/agent/update/route.ts", mod: r96 },
-  { file: "vps/[id]/claude/account/route.ts", mod: r97 },
-  { file: "vps/[id]/claude/bootstrap/route.ts", mod: r98 },
-  { file: "vps/[id]/claude/check-login/route.ts", mod: r99 },
-  { file: "vps/[id]/claude/check/route.ts", mod: r100 },
-  { file: "vps/[id]/claude/scan/route.ts", mod: r101 },
-  { file: "vps/[id]/claude/setup/route.ts", mod: r102 },
-  { file: "vps/[id]/codex/account/route.ts", mod: r103 },
-  { file: "vps/[id]/codex/login/route.ts", mod: r104 },
-  { file: "vps/[id]/codex/scan/route.ts", mod: r105 },
-  { file: "vps/[id]/cursor/account/route.ts", mod: r106 },
-  { file: "vps/[id]/cursor/check-login/route.ts", mod: r107 },
-  { file: "vps/[id]/cursor/login/route.ts", mod: r108 },
-  { file: "vps/[id]/cursor/scan/route.ts", mod: r109 },
-  { file: "vps/[id]/fs/archive/route.ts", mod: r110 },
-  { file: "vps/[id]/fs/convert/route.ts", mod: r111 },
-  { file: "vps/[id]/fs/file/route.ts", mod: r112 },
-  { file: "vps/[id]/fs/list/route.ts", mod: r113 },
-  { file: "vps/[id]/fs/op/route.ts", mod: r114 },
-  { file: "vps/[id]/fs/preview/route.ts", mod: r115 },
-  { file: "vps/[id]/fs/range/route.ts", mod: r116 },
-  { file: "vps/[id]/fs/route.ts", mod: r117 },
-  { file: "vps/[id]/fs/search/route.ts", mod: r118 },
-  { file: "vps/[id]/fs/sqlite/route.ts", mod: r119 },
-  { file: "vps/[id]/fs/upload/[uploadId]/route.ts", mod: r120 },
-  { file: "vps/[id]/fs/upload/route.ts", mod: r121 },
-  { file: "vps/[id]/fs/write/route.ts", mod: r122 },
-  { file: "vps/[id]/git/branches/route.ts", mod: r123 },
-  { file: "vps/[id]/git/checkout/route.ts", mod: r124 },
-  { file: "vps/[id]/git/commit/route.ts", mod: r125 },
-  { file: "vps/[id]/git/diff/route.ts", mod: r126 },
-  { file: "vps/[id]/git/discard/route.ts", mod: r127 },
-  { file: "vps/[id]/git/fetch/route.ts", mod: r128 },
-  { file: "vps/[id]/git/log/route.ts", mod: r129 },
-  { file: "vps/[id]/git/message/route.ts", mod: r130 },
-  { file: "vps/[id]/git/pull/route.ts", mod: r131 },
-  { file: "vps/[id]/git/push/route.ts", mod: r132 },
-  { file: "vps/[id]/git/show/route.ts", mod: r133 },
-  { file: "vps/[id]/git/status/route.ts", mod: r134 },
-  { file: "vps/[id]/history/preview/route.ts", mod: r135 },
-  { file: "vps/[id]/history/route.ts", mod: r136 },
-  { file: "vps/[id]/installs/route.ts", mod: r137 },
-  { file: "vps/[id]/login/code/route.ts", mod: r138 },
-  { file: "vps/[id]/login/route.ts", mod: r139 },
-  { file: "vps/[id]/lsp/route.ts", mod: r140 },
-  { file: "vps/[id]/route.ts", mod: r141 },
-  { file: "vps/[id]/shells/route.ts", mod: r142 },
-  { file: "vps/[id]/test/route.ts", mod: r143 },
-  { file: "vps/[id]/usage/route.ts", mod: r144 },
-  { file: "vps/route.ts", mod: r145 },
+  { file: "commands/[id]/route.ts", mod: r9 },
+  { file: "commands/route.ts", mod: r10 },
+  { file: "cursor/models/route.ts", mod: r11 },
+  { file: "custom-endpoints/probe/route.ts", mod: r12 },
+  { file: "custom-endpoints/route.ts", mod: r13 },
+  { file: "custom-endpoints/test-all/route.ts", mod: r14 },
+  { file: "events/route.ts", mod: r15 },
+  { file: "focus/route.ts", mod: r16 },
+  { file: "health/route.ts", mod: r17 },
+  { file: "installs/[id]/retry/route.ts", mod: r18 },
+  { file: "installs/[id]/route.ts", mod: r19 },
+  { file: "installs/[id]/stream/route.ts", mod: r20 },
+  { file: "installs/route.ts", mod: r21 },
+  { file: "local-agent/status/route.ts", mod: r22 },
+  { file: "local-agent/update/route.ts", mod: r23 },
+  { file: "models/notices/route.ts", mod: r24 },
+  { file: "pdfjs/[kind]/[name]/route.ts", mod: r25 },
+  { file: "perf/route.ts", mod: r26 },
+  { file: "preview/[token]/[[...path]]/route.ts", mod: r27 },
+  { file: "push/key/route.ts", mod: r28 },
+  { file: "push/subscribe/route.ts", mod: r29 },
+  { file: "push/unsubscribe/route.ts", mod: r30 },
+  { file: "routines/[id]/route.ts", mod: r31 },
+  { file: "routines/[id]/run/route.ts", mod: r32 },
+  { file: "routines/route.ts", mod: r33 },
+  { file: "routines/runs/route.ts", mod: r34 },
+  { file: "search/files/route.ts", mod: r35 },
+  { file: "search/route.ts", mod: r36 },
+  { file: "session-notifications/route.ts", mod: r37 },
+  { file: "sessions/[id]/account/route.ts", mod: r38 },
+  { file: "sessions/[id]/archive/route.ts", mod: r39 },
+  { file: "sessions/[id]/attachments/[attId]/route.ts", mod: r40 },
+  { file: "sessions/[id]/attachments/route.ts", mod: r41 },
+  { file: "sessions/[id]/background-terminals/route.ts", mod: r42 },
+  { file: "sessions/[id]/bg-tasks/[taskId]/stop/route.ts", mod: r43 },
+  { file: "sessions/[id]/compact/route.ts", mod: r44 },
+  { file: "sessions/[id]/context/route.ts", mod: r45 },
+  { file: "sessions/[id]/edits/route.ts", mod: r46 },
+  { file: "sessions/[id]/effort/route.ts", mod: r47 },
+  { file: "sessions/[id]/endpoint/route.ts", mod: r48 },
+  { file: "sessions/[id]/exit-plan/route.ts", mod: r49 },
+  { file: "sessions/[id]/export/route.ts", mod: r50 },
+  { file: "sessions/[id]/force-stop/route.ts", mod: r51 },
+  { file: "sessions/[id]/fork/route.ts", mod: r52 },
+  { file: "sessions/[id]/goal/route.ts", mod: r53 },
+  { file: "sessions/[id]/hidden/route.ts", mod: r54 },
+  { file: "sessions/[id]/input/route.ts", mod: r55 },
+  { file: "sessions/[id]/mcp/route.ts", mod: r56 },
+  { file: "sessions/[id]/mode/route.ts", mod: r57 },
+  { file: "sessions/[id]/model/route.ts", mod: r58 },
+  { file: "sessions/[id]/notifications/route.ts", mod: r59 },
+  { file: "sessions/[id]/permission/route.ts", mod: r60 },
+  { file: "sessions/[id]/probe/route.ts", mod: r61 },
+  { file: "sessions/[id]/question/route.ts", mod: r62 },
+  { file: "sessions/[id]/read/route.ts", mod: r63 },
+  { file: "sessions/[id]/resources/route.ts", mod: r64 },
+  { file: "sessions/[id]/restart/route.ts", mod: r65 },
+  { file: "sessions/[id]/resume/route.ts", mod: r66 },
+  { file: "sessions/[id]/revert/route.ts", mod: r67 },
+  { file: "sessions/[id]/review/route.ts", mod: r68 },
+  { file: "sessions/[id]/rollback/route.ts", mod: r69 },
+  { file: "sessions/[id]/route.ts", mod: r70 },
+  { file: "sessions/[id]/scheduled-resume/route.ts", mod: r71 },
+  { file: "sessions/[id]/security/route.ts", mod: r72 },
+  { file: "sessions/[id]/side/route.ts", mod: r73 },
+  { file: "sessions/[id]/sleep/route.ts", mod: r74 },
+  { file: "sessions/[id]/subagents/route.ts", mod: r75 },
+  { file: "sessions/[id]/tool-calls/route.ts", mod: r76 },
+  { file: "sessions/[id]/unattended/route.ts", mod: r77 },
+  { file: "sessions/bulk-delete/route.ts", mod: r78 },
+  { file: "sessions/import/route.ts", mod: r79 },
+  { file: "sessions/reorder/route.ts", mod: r80 },
+  { file: "sessions/route.ts", mod: r81 },
+  { file: "settings/route.ts", mod: r82 },
+  { file: "shells/[id]/route.ts", mod: r83 },
+  { file: "shells/route.ts", mod: r84 },
+  { file: "sync/route.ts", mod: r85 },
+  { file: "tabs/[id]/route.ts", mod: r86 },
+  { file: "tabs/reorder/route.ts", mod: r87 },
+  { file: "tabs/route.ts", mod: r88 },
+  { file: "telegram/test/route.ts", mod: r89 },
+  { file: "vps-folders/[id]/route.ts", mod: r90 },
+  { file: "vps-folders/layout/route.ts", mod: r91 },
+  { file: "vps-folders/route.ts", mod: r92 },
+  { file: "vps-paths/[id]/route.ts", mod: r93 },
+  { file: "vps-paths/route.ts", mod: r94 },
+  { file: "vps/[id]/account/route.ts", mod: r95 },
+  { file: "vps/[id]/activity/route.ts", mod: r96 },
+  { file: "vps/[id]/agent/refresh/route.ts", mod: r97 },
+  { file: "vps/[id]/agent/update/route.ts", mod: r98 },
+  { file: "vps/[id]/claude/account/route.ts", mod: r99 },
+  { file: "vps/[id]/claude/bootstrap/route.ts", mod: r100 },
+  { file: "vps/[id]/claude/check-login/route.ts", mod: r101 },
+  { file: "vps/[id]/claude/check/route.ts", mod: r102 },
+  { file: "vps/[id]/claude/scan/route.ts", mod: r103 },
+  { file: "vps/[id]/claude/setup/route.ts", mod: r104 },
+  { file: "vps/[id]/codex/account/route.ts", mod: r105 },
+  { file: "vps/[id]/codex/login/route.ts", mod: r106 },
+  { file: "vps/[id]/codex/scan/route.ts", mod: r107 },
+  { file: "vps/[id]/cursor/account/route.ts", mod: r108 },
+  { file: "vps/[id]/cursor/check-login/route.ts", mod: r109 },
+  { file: "vps/[id]/cursor/login/route.ts", mod: r110 },
+  { file: "vps/[id]/cursor/scan/route.ts", mod: r111 },
+  { file: "vps/[id]/fs/archive/route.ts", mod: r112 },
+  { file: "vps/[id]/fs/convert/route.ts", mod: r113 },
+  { file: "vps/[id]/fs/file/route.ts", mod: r114 },
+  { file: "vps/[id]/fs/list/route.ts", mod: r115 },
+  { file: "vps/[id]/fs/op/route.ts", mod: r116 },
+  { file: "vps/[id]/fs/preview/route.ts", mod: r117 },
+  { file: "vps/[id]/fs/range/route.ts", mod: r118 },
+  { file: "vps/[id]/fs/route.ts", mod: r119 },
+  { file: "vps/[id]/fs/search/route.ts", mod: r120 },
+  { file: "vps/[id]/fs/sqlite/route.ts", mod: r121 },
+  { file: "vps/[id]/fs/upload/[uploadId]/route.ts", mod: r122 },
+  { file: "vps/[id]/fs/upload/route.ts", mod: r123 },
+  { file: "vps/[id]/fs/write/route.ts", mod: r124 },
+  { file: "vps/[id]/git/branches/route.ts", mod: r125 },
+  { file: "vps/[id]/git/checkout/route.ts", mod: r126 },
+  { file: "vps/[id]/git/commit/route.ts", mod: r127 },
+  { file: "vps/[id]/git/diff/route.ts", mod: r128 },
+  { file: "vps/[id]/git/discard/route.ts", mod: r129 },
+  { file: "vps/[id]/git/fetch/route.ts", mod: r130 },
+  { file: "vps/[id]/git/log/route.ts", mod: r131 },
+  { file: "vps/[id]/git/message/route.ts", mod: r132 },
+  { file: "vps/[id]/git/pull/route.ts", mod: r133 },
+  { file: "vps/[id]/git/push/route.ts", mod: r134 },
+  { file: "vps/[id]/git/show/route.ts", mod: r135 },
+  { file: "vps/[id]/git/status/route.ts", mod: r136 },
+  { file: "vps/[id]/history/preview/route.ts", mod: r137 },
+  { file: "vps/[id]/history/route.ts", mod: r138 },
+  { file: "vps/[id]/installs/route.ts", mod: r139 },
+  { file: "vps/[id]/login/code/route.ts", mod: r140 },
+  { file: "vps/[id]/login/route.ts", mod: r141 },
+  { file: "vps/[id]/lsp/route.ts", mod: r142 },
+  { file: "vps/[id]/route.ts", mod: r143 },
+  { file: "vps/[id]/shells/route.ts", mod: r144 },
+  { file: "vps/[id]/test/route.ts", mod: r145 },
+  { file: "vps/[id]/usage/route.ts", mod: r146 },
+  { file: "vps/route.ts", mod: r147 },
 ];

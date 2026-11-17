@@ -1,4 +1,5 @@
 import 'server-only';
+import { parseSessionRecap } from '@/lib/sessionRecap';
 import { parsePromptCache } from '@/lib/promptCache';
 import { eq, sql } from 'drizzle-orm';
 import { accountProfileId, accountProfileNumber } from '@/lib/accountProfiles';
@@ -142,6 +143,8 @@ export function annotateSessionRows(
       promptCache: parsePromptCache(r.promptCacheJson),
       goalJson: undefined as unknown as AgentSession['goalJson'],
       goal: parseSessionGoal(r.goalJson),
+      recapJson: undefined as unknown as AgentSession['recapJson'],
+      recap: parseSessionRecap(r.recapJson),
       ultracode: ultracodeOf(r.providerConfig),
       accountProfile: accountProfileId(r.providerConfig), accountProfileNumber: accountProfileNumber(r.providerConfig),
       endpoint: publicConnection(r.providerConfig),

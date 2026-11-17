@@ -1,7 +1,7 @@
 import type { AccountProfile } from './accountProfiles';
 import type { AccountLoginAttempt, AccountsResponse } from './providerAccounts';
 import type { AccountUsage } from '@/lib/server/hub/types';
-import type { AccountProfilesResponse, CreateAccountProfileResponse, UpdateAccountProfileResponse, RoutineInput, RoutineRun, RoutineView } from './types/api';
+import type { AccountProfilesResponse, CreateAccountProfileResponse, UpdateAccountProfileResponse, RoutineInput, RoutineRun, RoutineView, UserCommand, UserCommandInput } from './types/api';
 import type { CustomEndpoint, EndpointState } from '@/lib/customEndpoints';
 // Typed HTTP client for the dashboard's API routes.
 // For shapes: cf. lib/types/api.ts. Every new method must have its
@@ -696,6 +696,12 @@ export const api = {
   unarchiveSession: (id: string) =>
     send<OkResponse & ActionSyncStamp>('DELETE', `/api/sessions/${id}/archive`),
   /** Hide or show a session with its sub-sessions (§14.118). */
+  listUserCommands: () => send<{ commands: UserCommand[] }>('GET', '/api/commands'),
+  createUserCommand: (input: Partial<UserCommandInput>) =>
+    send<OkResponse & { id: string; commands: UserCommand[] }>('POST', '/api/commands', input),
+  updateUserCommand: (id: string, input: Partial<UserCommandInput>) =>
+    send<OkResponse & { commands: UserCommand[] }>('PATCH', `/api/commands/${id}`, input),
+  deleteUserCommand: (id: string) => send<OkResponse & { commands: UserCommand[] }>('DELETE', `/api/commands/${id}`),
   listRoutines: () => send<{ routines: RoutineView[] }>('GET', '/api/routines'),
   createRoutine: (input: RoutineInput) =>
     send<OkResponse & { id: string; routines: RoutineView[] }>('POST', '/api/routines', input),
@@ -737,7 +743,7 @@ export const api = {
   // client's ready — give it a generous timeout.
   restartSession: (id: string) =>
     send<ResumeAgentSessionResponse>('POST', `/api/sessions/${id}/restart`, undefined, { timeoutMs: 60_000 }),
-  sendSessionInput: (id: string, content: string, clientMessageId?: string) =>
+  sendSessionInput: (id: string, content: string, clientMessageId?: string, codexInputs?: Array<Record<string, unknown>>) =>
     // A message is the one request that must outlive the agent RPC's 60s
     // bound. Inspector traffic is isolated separately, but a real VPS/network
     // stall should still produce a precise error rather than Chrome's opaque
@@ -746,6 +752,8 @@ export const api = {
     // key, echoed on `user_echo` (an older hub answers a bare `{ok}`).
     send<SendAgentInputResponse>('POST', `/api/sessions/${id}/input`, {
       content, ...(clientMessageId ? { clientMessageId } : {}),
+      // Codex only: the text plus `skill` items for the `$name`s it holds.
+      ...(codexInputs?.length ? { codexInputs } : {}),
     } satisfies SendAgentInputBody, {
       timeoutMs: 90_000,
       timeoutMessage: 'Sending the message timed out after 90s. It may already have been accepted; the transcript will reconcile automatically.',

@@ -1050,6 +1050,9 @@ class AgentSession:
             "ok": True, "provider": "claude",
             "skills": self._discovered_skills(),
             "commands": commands, "plugins": plugins,
+            # The CLI's own skill names (from its init message), so a caller
+            # can tell skills from commands; absent before the first turn.
+            **({"skill_names": self._init_skills} if getattr(self, "_init_skills", None) else {}),
             "running": self._client is not None,
             "configured_skills": self.session_config.get("skills"),
             # What the panel needs to explain a greyed-out skill without the
@@ -2408,6 +2411,11 @@ class AgentSession:
                     efforts = _extract_effort_support(sdata)
                     if efforts:
                         info["model_efforts"] = efforts
+                    # Which commands are SKILLS: get_server_info() lists both
+                    # without telling them apart (the composer's `/` menu).
+                    skills = sdata.get("skills")
+                    if isinstance(skills, list):
+                        self._init_skills = [x for x in skills if isinstance(x, str)][:500]
                     if info:
                         out.append({"event": "session_info", **info})
         except Exception as e:

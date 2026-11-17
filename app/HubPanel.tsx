@@ -10,7 +10,7 @@ import {
 import { providerName } from '@/lib/providerText';
 import { PROVIDER_LOGIN } from './loginModals';
 import type { Vps, VpsFolder, VpsPath, AgentSession } from '@/lib/db/schema';
-import type { AgentKind, TabDTO, VpsStalenessBaselines } from '@/lib/types/api';
+import type { AgentKind, RoutineInput, TabDTO, VpsStalenessBaselines } from '@/lib/types/api';
 import Sidebar, { type SessionListItem, type ShellListItem, type InstallInfo } from './Sidebar';
 import SidebarPathFilter from './SidebarPathFilter';
 import {
@@ -981,6 +981,13 @@ export default function HubPanel({ vpsList: initialVpsList, vpsFolders: initialF
   const { notices: modelNotices, markSeen: markModelsSeen, hasNewModels } = useModelNotices();
   const [dataOpen, setDataOpen] = useState(false);
   const [routinesOpen, setRoutinesOpen] = useState(false);
+  // `/routine` in a composer: the modal opens on a new routine prefilled.
+  const [routineDraft, setRoutineDraft] = useState<Pick<RoutineInput, 'vpsId' | 'cwd' | 'kind' | 'prompt'> | null>(null);
+  const newRoutineFrom = useCallback((draft: Pick<RoutineInput, 'vpsId' | 'cwd' | 'kind' | 'prompt'>) => {
+    setRoutineDraft(draft);
+    setRoutinesOpen(true);
+  }, []);
+  const newShellIn = useCallback((vpsId: string, cwd: string) => setWizard({ kind: 'shell', vpsId, cwd }), []);
   const browserNotifications = useBrowserNotifications();
   const pushOn = browserNotifications.enabled;
   const notifSoundEnabled = browserNotifications.sound;
@@ -1982,6 +1989,7 @@ export default function HubPanel({ vpsList: initialVpsList, vpsFolders: initialF
       { id: 'paused-sessions', label: 'Paused sessions…', keywords: 'sleeping cleanup delete', run: () => setPausedCleanupOpen({ hidden: showHidden }) },
       { id: 'settings', label: 'Settings', keywords: 'preferences config', run: () => setSettingsOpen(true) },
       { id: 'routines', label: 'Routines', keywords: 'schedule cron weekly automation', run: () => setRoutinesOpen(true) },
+      { id: 'user-commands', label: 'Your commands', keywords: 'slash prompts snippets templates', run: () => { setSettingsCat('commands'); setSettingsOpen(true); } },
       { id: 'vps-data', label: 'VPS & paths', keywords: 'servers machines projects data', run: () => setDataOpen(true) },
       { id: 'toggle-tools', label: 'Toggle tools panel', keywords: 'explorer git search side panel', run: toggleShowTools },
     );
@@ -2417,6 +2425,8 @@ export default function HubPanel({ vpsList: initialVpsList, vpsFolders: initialF
             : undefined}
           onOpenFolder={openFolderPicker}
           onNewSessionIn={newSessionIn}
+          onNewShellIn={newShellIn}
+          onNewRoutine={newRoutineFrom}
           onImportError={(vps) => {
             // The VPS agent crashed an "import claude_agent_sdk" → we trigger
             // the install in a new install session (instead of the
@@ -2602,8 +2612,8 @@ export default function HubPanel({ vpsList: initialVpsList, vpsFolders: initialF
         />
       )}
 
-      {routinesOpen && <RoutinesModal onClose={() => setRoutinesOpen(false)} vpsList={vpsList} vpsPaths={vpsPaths} sessions={sessions}
-        onOpenSession={openSessionFromPanel} />}
+      {routinesOpen && <RoutinesModal onClose={() => { setRoutinesOpen(false); setRoutineDraft(null); }} vpsList={vpsList} vpsPaths={vpsPaths} sessions={sessions}
+        onOpenSession={openSessionFromPanel} initial={routineDraft} />}
       {settingsOpen && <SettingsModal onClose={() => { setSettingsOpen(false); setSettingsCat(null); }} vpsList={vpsList} initialCat={settingsCat ?? undefined} modelNotices={modelNotices} onModelsSeen={markModelsSeen} />}
       {dataOpen && (
         <DataModal

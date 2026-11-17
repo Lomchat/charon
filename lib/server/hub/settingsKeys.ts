@@ -44,6 +44,8 @@ export const SETTINGS_WRITE_ALLOWLIST = [
   ]),
   'claude.default_fallback_model',
   'claude.default_ultracode',
+  // 'false' = no recap under each finished turn (§14.122); default on.
+  'claude.auto_recap',
   // Fleet default for the Claude settings scope (§14.100). A VPS and a session
   // may each override it; validated below through the shared parser so 'none'
   // and an unknown token can't be confused.
