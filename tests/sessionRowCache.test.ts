@@ -640,20 +640,28 @@ describe('observability', () => {
   it('every fold (synchronous slice or background continuation) is timed as `fold:<key>`', async () => {
     const lag = await import('@/lib/server/perf/loopLag');
     let t = 0;
+    let ours = false;
     const warn = vi.fn();
-    // Each clock read advances 300 ms: every section is slow (ring + warn).
-    lag.startLoopLagMonitor({ now: () => (t += 300), warn });
+    // The clock moves ONLY inside this test's own folds: there each read
+    // advances 300 ms (every section slow: ring + warn). A fold left running
+    // by an earlier test (a slow CI runner lands it in this window) reads a
+    // frozen clock, takes 0 ms and is never counted here.
+    lag.startLoopLagMonitor({ now: () => (ours ? (t += 300) : t), warn });
     try {
       const a = newSession();
       insert(a, 'event', { type: 'endpoint_usage', requestId: 'x', inputTokens: 1, outputTokens: 1, totalTokens: 2 });
-      sessionTokenUsage(a);
-      recordedSessionUsage(a);
-      bg.runningBgTasksFromDb(a);
+      ours = true;
+      try {
+        sessionTokenUsage(a);
+        recordedSessionUsage(a);
+        bg.runningBgTasksFromDb(a);
+      } finally { ours = false; }
       const b = newSession();
       for (let i = 0; i < 20; i++) insert(b, 'event', { type: 'turn_usage', provider: 'codex', inputTokens: i });
+      // Its slices run in later ticks: the rows they fold move the clock.
       const done = new Promise<void>((resolve) => {
         rowCache.foldSessionEventRows('recorded', b, {
-          likes: ['%"type":"turn_usage"%'], init: () => 0, clone: (n) => n, step: () => true,
+          likes: ['%"type":"turn_usage"%'], init: () => 0, clone: (n) => n, step: () => { t += 300; return true; },
           sliceRows: 7, onComplete: () => resolve(),
         });
       });
