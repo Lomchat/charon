@@ -67,6 +67,17 @@ type LoadedState = {
 };
 
 const FOCUS_REFRESH_AFTER_MS = 30_000;
+/** A Codex account can list thousands of apps: rows past this wait for a
+ *  click, else every render of the inspector (mounted while hidden) rebuilds
+ *  them all. */
+const APPS_SHOWN = 100;
+
+/** The hub's stamp on a snapshot answer (`_snapshot.updated_at`): the same
+ *  stamp is the same data, only its freshness label moved. */
+function snapshotStamp(value: unknown): number | null {
+  const at = (value as { _snapshot?: { updated_at?: unknown } } | null)?._snapshot?.updated_at;
+  return typeof at === 'number' ? at : null;
+}
 
 function LoadingInsight() {
   return <p className="si-loading" role="status"><span aria-hidden="true" />loading…</p>;
@@ -176,6 +187,9 @@ export default function SessionInsight({
   const [resourcePrompt, setResourcePrompt] = useState('');
   const [resourceBusy, setResourceBusy] = useState<string | null>(null);
   const [mcpOauthUrls, setMcpOauthUrls] = useState<Record<string, string>>({});
+  const [allApps, setAllApps] = useState(false);
+  /** Per section, the stamp of the answer on screen (`snapshotStamp`). */
+  const appliedStamp = useRef<Partial<Record<keyof LoadedState, number>>>({});
   const loadGeneration = useRef(0);
   const loadInflight = useRef<Promise<void> | null>(null);
   const loadController = useRef<AbortController | null>(null);
@@ -259,8 +273,16 @@ export default function SessionInsight({
         const value = await get(request.path);
         if (controller.signal.aborted || loadGeneration.current !== generation) return;
         const requestState = insightSnapshotRequestState(value);
-        if (!requestState.waiting) {
-          finish(request.key, () => request.apply(value));
+        // A retry round re-reads every section while one refreshes (~10 s
+        // apart for as long as it lasts): an answer with the stamp already
+        // on screen keeps its state object, so nothing re-renders.
+        const stamp = snapshotStamp(value);
+        if (!requestState.waiting && (stamp == null || appliedStamp.current[request.key] !== stamp)) {
+          finish(request.key, () => {
+            request.apply(value);
+            if (stamp == null) delete appliedStamp.current[request.key];
+            else appliedStamp.current[request.key] = stamp;
+          });
         }
         if (requestState.shouldRetry) {
           shouldRetry = true;
@@ -519,7 +541,7 @@ export default function SessionInsight({
             </li>)}
           </ul>}
           {!!resources.apps?.length && <ul className="si-resources apps">
-            {resources.apps.map((app) => <li key={app.id}>
+            {(allApps ? resources.apps : resources.apps.slice(0, APPS_SHOWN)).map((app) => <li key={app.id}>
               <span><b>{app.name || app.id}</b><small>{app.description}</small></span>
               <button type="button" disabled={!!resourceBusy || app.is_accessible === false || app.is_enabled === false}
                 onClick={() => void invokeResource('app', app)}>
@@ -527,6 +549,10 @@ export default function SessionInsight({
               </button>
               {app.install_url && <a href={app.install_url} target="_blank" rel="noreferrer">connect</a>}
             </li>)}
+            {!allApps && resources.apps.length > APPS_SHOWN && <li>
+              <span><small>{resources.apps.length - APPS_SHOWN} more apps</small></span>
+              <button type="button" onClick={() => setAllApps(true)}>show all</button>
+            </li>}
           </ul>}
           {!resources.skills?.length && !resources.apps?.length && !resources.commands?.length
             && <p className="si-none">none available</p>}

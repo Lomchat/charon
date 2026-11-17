@@ -97,6 +97,13 @@ function emit(e: Entry, view: GitView) {
   for (const cb of e.subs) cb();
 }
 
+/** An answer identical to the one on screen keeps the screen's object, so a
+ *  poll that found nothing new re-renders nothing (`useGitWorkspace`): on a
+ *  long session the tools panel costs tens of ms per render (§14.38). */
+function keepIfSame(prev: GitWorkspaceResponse | null, next: GitWorkspaceResponse): GitWorkspaceResponse {
+  return prev && JSON.stringify(prev) === JSON.stringify(next) ? prev : next;
+}
+
 /** How long to wait before the next background poll, given what we last saw. */
 export function nextGitDelay(e: Pick<Entry, 'view' | 'failures' | 'lastFailure'>): number {
   if (e.lastFailure === 'unsupported' || e.lastFailure === 'no_git') return DEGRADED_POLL_MS;
@@ -119,14 +126,14 @@ export function applyGitAnswer(
   e: Pick<Entry, 'view' | 'failures' | 'lastFailure' | 'lastAt' | 'dirty'>,
   answer: { workspace: GitWorkspaceResponse } | { transportError: string },
 ): GitView {
+  const prev = e.view.workspace;
   if ('workspace' in answer && answer.workspace.ok) {
     e.failures = 0;
     e.lastFailure = null;
     e.lastAt = Date.now();
-    return { workspace: answer.workspace, loading: e.dirty, error: null };
+    return { workspace: keepIfSame(prev, answer.workspace), loading: e.dirty, error: null };
   }
   e.failures += 1;
-  const prev = e.view.workspace;
   if ('transportError' in answer) {
     e.lastFailure = 'transport';
     return { workspace: prev, loading: e.dirty, error: answer.transportError };
@@ -136,7 +143,7 @@ export function applyGitAnswer(
   if (prev?.ok) {
     return { workspace: prev, loading: e.dirty, error: gitReasonHint(w.reason) ?? w.error ?? 'git status failed' };
   }
-  return { workspace: w, loading: e.dirty, error: null };
+  return { workspace: keepIfSame(prev, w), loading: e.dirty, error: null };
 }
 
 function schedule(key: string, vpsId: string, cwd: string) {
@@ -277,6 +284,39 @@ export function useGitStatus(vpsId: string | null | undefined, cwd: string | nul
   }, [vpsId, cwd]);
   // Server snapshot: the store is client-only: the empty view.
   return useSyncExternalStore(sub, snapshot, () => EMPTY);
+}
+
+/** The workspace alone: a poll's `loading` flips and an unchanged answer
+ *  (`keepIfSame`) never re-render the caller. Only the git tab shows them. */
+export function useGitWorkspace(vpsId: string | null | undefined, cwd: string | null | undefined): GitWorkspaceResponse | null {
+  const sub = useCallback((cb: () => void) => {
+    if (!vpsId || !cwd) return () => {};
+    return subscribe(vpsId, cwd, cb);
+  }, [vpsId, cwd]);
+  const snapshot = useCallback(
+    () => (vpsId && cwd ? entryFor(keyOf(vpsId, cwd)).view.workspace : null),
+    [vpsId, cwd],
+  );
+  return useSyncExternalStore(sub, snapshot, () => null);
+}
+
+/** The workspace right now, for an event handler (no subscription). */
+export function peekGitWorkspace(vpsId: string | null | undefined, cwd: string | null | undefined): GitWorkspaceResponse | null {
+  return vpsId && cwd ? store.get(keyOf(vpsId, cwd))?.view.workspace ?? null : null;
+}
+
+/** The changed-file count alone (the tools panel's git badge): the panel
+ *  re-renders when the NUMBER moves, not on every answer. */
+export function useGitDirtyCount(vpsId: string | null | undefined, cwd: string | null | undefined): number {
+  const sub = useCallback((cb: () => void) => {
+    if (!vpsId || !cwd) return () => {};
+    return subscribe(vpsId, cwd, cb);
+  }, [vpsId, cwd]);
+  const snapshot = useCallback(
+    () => (vpsId && cwd ? workspaceDirtyCount(entryFor(keyOf(vpsId, cwd)).view.workspace) : 0),
+    [vpsId, cwd],
+  );
+  return useSyncExternalStore(sub, snapshot, () => 0);
 }
 
 // A tab coming back to the foreground is the cheapest, highest-value refresh

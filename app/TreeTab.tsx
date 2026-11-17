@@ -3,7 +3,7 @@ import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } fr
 import { api } from '@/lib/api';
 import type { FsEntry, GitFileEntry, GitStatusResponse } from '@/lib/types/api';
 import {
-  buildGitDecorations, fileStatusLabel, refreshGit, repoForPath, useGitStatus, workspaceRepoDirs,
+  buildGitDecorations, fileStatusLabel, refreshGit, repoForPath, useGitWorkspace, workspaceRepoDirs,
   workspaceRepos,
 } from './gitStore';
 import HistoryModal from './HistoryModal';
@@ -206,7 +206,7 @@ type PendingUpload = {
  * so there is exactly one place that can modify a file from the browser.
  */
 export default function TreeTab({ vpsId, cwd, sessionId = null, onInsertPath, onOpenSession, onNewSessionIn, onWillOpenFile }: Props) {
-  const { workspace } = useGitStatus(vpsId, cwd);
+  const workspace = useGitWorkspace(vpsId, cwd);
   // Who is reading/writing what on this machine, right now (§14.88).
   const activity = useFileActivity(vpsId);
   // Identity of this WORKSPACE tree. Sessions, files and SSH shells at this

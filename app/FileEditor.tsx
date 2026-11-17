@@ -5,7 +5,7 @@ import { api } from '@/lib/api';
 import type { FsLinkInfo, FsReadResponse } from '@/lib/types/api';
 import { fmtSize } from './sessionAttachments';
 import { setTabDirty } from './tabStore';
-import { gitDiffTargetForPath, refreshGit, repoForPath, useGitStatus } from './gitStore';
+import { gitDiffTargetForPath, refreshGit, repoForPath, useGitWorkspace } from './gitStore';
 import { subscribeReveal, subscribeView } from './revealLine';
 import { lspLabel, useLsp } from './useLsp';
 import {
@@ -424,7 +424,7 @@ export default function FileEditor({ tabId, vpsId, root, path, onInteract, onOpe
   // from the workspace snapshot the panel already polls: with several repos
   // under one cwd (§14.83) the file belongs to whichever root contains it, and
   // `git log` has to run there.
-  const { workspace } = useGitStatus(vpsId, root);
+  const workspace = useGitWorkspace(vpsId, root);
   const [historyOpen, setHistoryOpen] = useState(false);
   const [diffOpen, setDiffOpen] = useState(false);
   const history = useMemo(

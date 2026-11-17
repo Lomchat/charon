@@ -14,7 +14,7 @@ import TreeTab from './TreeTab';
 import ExplorerRootTabs from './ExplorerRootTabs';
 import { carryExplorerRoots, useExplorerRoots } from './explorerRoots';
 import SearchTab from './SearchTab';
-import { useGitStatus, workspaceDirtyCount, workspaceRepos } from './gitStore';
+import { peekGitWorkspace, useGitDirtyCount, workspaceRepos } from './gitStore';
 import { IconTree } from './fileIcons';
 import { workspaceScopeKey } from './workspaceScope';
 import {
@@ -286,8 +286,9 @@ function ToolPanel({
   /** Elsewhere than the workspace's own folder: what is the SESSION's (its
    *  review, its busy turn) does not apply to what is shown. */
   const away = roots.active != null;
-  const { workspace } = useGitStatus(vpsId, treeRoot);
-  const gitDirty = workspaceDirtyCount(workspace);
+  // The badge's NUMBER only: the panel keeps the inspector mounted (hidden),
+  // so a re-render per git poll cost tens of ms on a long session (§14.38).
+  const gitDirty = useGitDirtyCount(vpsId, treeRoot);
   const newSessionIn = useMemo(
     () => (onNewSessionIn && vpsId ? (dir: string) => onNewSessionIn(vpsId, dir) : undefined),
     [onNewSessionIn, vpsId],
@@ -353,6 +354,7 @@ function ToolPanel({
               }}
               onMouseEnter={(e) => {
                 if (!isDesktopBar()) return;
+                const workspace = peekGitWorkspace(vpsId, treeRoot);
                 const content = tabTip(id, n, workspaceRepos(workspace).length > 0 ? 'repo'
                   : workspace?.ok && workspace.mode === 'none' ? 'none' : 'unknown');
                 tip.show(e.currentTarget, {
