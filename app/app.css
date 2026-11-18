@@ -6530,7 +6530,7 @@ html[data-density='small'] .cs-sub-fold { font-size: 8.5px; }
 .st-card-title { display: inline-flex; align-items: center; gap: 8px; font: 650 13.5px/1.3 var(--body); color: var(--text-strong); }
 .st-card-title svg { width: 14px; height: 14px; color: var(--text-muted); }
 .st-card-aside { font-size: 11.5px; color: var(--text-muted); }
-.st-card > .density-choice-grid, .st-card > .fi-choice-grid, .st-card > .st-themes { margin: 2px 0 12px; }
+.st-card > .fi-choice-grid, .st-card > .st-themes { margin: 2px 0 12px; }
 
 /* Row: the setting's name (and its one-line fact) left, its control right. */
 .st-row {
@@ -6632,7 +6632,11 @@ html[data-density='small'] .cs-sub-fold { font-size: 8.5px; }
 /* Notifications: the table in a card, the Telegram connection folded. */
 .st-card-table { padding: 10px 16px 2px; }
 .st-card-flush { padding: 0 16px; }
-.st-card-flush .notification-exceptions { border-top: 0; }
+.st-card-flush .notification-exceptions { border-top: 0; margin-top: 0; }
+.app-modal .st-card-flush .notification-exceptions > button.notification-disclosure { padding: 12px 0; }
+.app-modal .st-card-flush .notification-exceptions > button.notification-disclosure:hover { background: transparent; }
+.st-card-flush .notification-exceptions > .notification-disclosure strong { font: 650 13.5px/1.3 var(--body); color: var(--text-strong); }
+.st-card-flush .notification-exceptions > .notification-disclosure > span:last-child { font-size: 16px; }
 .st-details > summary { display: flex; align-items: center; justify-content: space-between; padding: 12px 0; cursor: pointer; list-style: none; }
 .st-details > summary::-webkit-details-marker { display: none; }
 .st-details > summary > span:last-child { font-size: 16px; color: var(--text-muted); transition: transform .15s ease; }

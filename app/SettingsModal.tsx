@@ -402,7 +402,7 @@ export default function SettingsModal({ onClose, vpsList, initialCat, modelNotic
                       </div>
                     </SetCard>
                     <SetCard title="Display size" aside="Previewed live">
-                      <div className="density-choice-grid">
+                      <div className="fi-choice-grid">
                         {DENSITY_CHOICES.map((choice) => (
                           <label
                             key={choice.id}
@@ -418,25 +418,8 @@ export default function SettingsModal({ onClose, vpsList, initialCat, modelNotic
                               onChange={() => { set('app.density', choice.id); applyDensity(choice.id); }}
                             />
                             <span className="density-preview" aria-hidden="true">
-                              <span className="density-preview-side">
-                                <span className="density-preview-kicker">sessions</span>
-                                {['Build', 'Review', 'Notes', 'Shell'].map((name, index) => (
-                                  <span key={name} className={`density-preview-row${index === 0 ? ' selected' : ''}`}>
-                                    <span className="density-preview-dot" />{name}
-                                  </span>
-                                ))}
-                              </span>
-                              <span className="density-preview-main">
-                                <span className="density-preview-title">Build session</span>
-                                <span className="density-preview-bubble">
-                                  <span className="density-preview-speaker">Assistant</span>
-                                  <span>The update is ready. Review the changes here.</span>
-                                </span>
-                                <span className="density-preview-bubble user">
-                                  <span className="density-preview-speaker">You</span>
-                                  <span>Show me the result.</span>
-                                </span>
-                              </span>
+                              <span className="density-preview-rows"><i /><i /><i /></span>
+                              <span className="density-preview-text">Show me the result.</span>
                             </span>
                             <span className="density-choice-title">
                               <span>{choice.label}</span>
@@ -515,13 +498,13 @@ export default function SettingsModal({ onClose, vpsList, initialCat, modelNotic
                             { id: 'fast', label: 'Fast', tone: 'info', title: `${CLAUDE_FAST_HINT}, where the model and plan allow it` },
                           ]} />
                       </SetRow>
-                      {modeRow('claude', 'claude.default_permission_mode', CLAUDE_PERMISSION_MODES, 'normal')}
-                    </SetCard>
-                    <SetCard title="Behaviour">
                       <SetRow label="Ultracode" hint="Big tasks as parallel workflows">
                         <Toggle checked={s['claude.default_ultracode'] === 'true'} tone="violet" size="sm"
                           onChange={(v) => set('claude.default_ultracode', v ? 'true' : '')} label="Ultracode by default" />
                       </SetRow>
+                      {modeRow('claude', 'claude.default_permission_mode', CLAUDE_PERMISSION_MODES, 'normal')}
+                    </SetCard>
+                    <SetCard title="Behaviour">
                       <SetRow label="Recap" hint="A line under each answer">
                         <Toggle checked={s['claude.auto_recap'] !== 'false'} size="sm"
                           onChange={(v) => set('claude.auto_recap', v ? '' : 'false')} label="Recap after each turn" />
