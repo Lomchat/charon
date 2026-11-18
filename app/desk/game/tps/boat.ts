@@ -1,14 +1,15 @@
-// The gunboat: how it comes in and waits by the island, casts off, sails under
-// the pilot's hand, and where the eye sits behind it.
+// The gunboat — the machine's shape on the water: how it comes in and waits by
+// the island, casts off, sails under the pilot's hand, and where the eye sits
+// behind it. Run onto the mainland's beach, it becomes the tank (`takeTurn`).
 //
 // A helm and a turret: W / S for the engine, A / D for the rudder; the mouse
 // turns the view, and the turret points where the view does. Q or E throws
 // flares: a missile on its way loses the boat.
-import { AdditiveBlending, Group, Sprite, SpriteMaterial, Vector3 } from 'three';
-import type { Craft, CraftEnv, Gauges } from './craft';
-import { skyModels } from './models';
+import { Euler, Quaternion, Vector3, type Group } from 'three';
+import type { Form } from '../forms';
+import { MACHINE_GUN, type Craft, type CraftEnv, type CraftState, type Gauges } from './craft';
+import { DATUM, TURRET, type Machine } from './machine';
 import type { Rig, Stage } from './stage';
-import { instance } from './voxels';
 
 const TOP_SPEED = 46;
 const BOOST = 2.3;
@@ -19,20 +20,23 @@ const FLARE_TIME = 1.6;
 const FLARE_WAIT = 5;
 
 const v1 = new Vector3();
+const euler = new Euler();
 const look = { x: 0, y: 0 };
 
 export class Boat implements Craft {
   readonly kind = 'boat';
-  readonly mesh = new Group();
+  readonly mesh: Group;
+  readonly rootPos = new Vector3();
+  readonly rootQuat = new Quaternion();
   readonly pos = new Vector3();
   readonly vel = new Vector3();
   readonly fwd = new Vector3(0, 0, 1);
   readonly aim = new Vector3(0, 0, 1);
   readonly radius = RADIUS;
+  readonly gun = MACHINE_GUN;
   readonly gate: Vector3;
-  private turret = new Group();
-  private owned: Array<{ dispose: () => void }> = [];
-  private phase: 'in' | 'moored' | 'run' | 'live' | 'down' = 'in';
+  private phase: 'in' | 'moored' | 'run' | 'held' | 'live' | 'down' = 'in';
+  private turn: Form | null = null;
   private t = 0;
   private yaw: number;
   private speed = 0;
@@ -47,20 +51,11 @@ export class Boat implements Craft {
   private flareIn = 0;
   private fov = 62;
 
-  constructor(stage: Stage, private dock: { x: number; z: number; yaw: number }, gate: Vector3) {
+  constructor(stage: Stage, readonly machine: Machine, private dock: { x: number; z: number; yaw: number }, gate: Vector3) {
+    this.mesh = machine.root;
     this.gate = gate.clone();
     this.yaw = dock.yaw;
-    this.mesh.add(instance(skyModels().boat));
-    this.turret.add(instance(skyModels().turret));
-    for (const [colour, x] of [['#ff5d5d', 4], ['#4ade80', -4]] as const) {
-      const material = new SpriteMaterial({ map: stage.glow, color: colour, blending: AdditiveBlending, depthWrite: false, transparent: true, opacity: 0.85, fog: false });
-      this.owned.push(material);
-      const sprite = new Sprite(material);
-      sprite.position.set(x, 2.4, -3.6);
-      sprite.scale.setScalar(3.6);
-      this.mesh.add(sprite);
-    }
-    stage.scene.add(this.mesh, this.turret);
+    if (!this.mesh.parent) stage.scene.add(this.mesh);
     this.idle(0, stage);
   }
 
@@ -70,19 +65,47 @@ export class Boat implements Craft {
   get masked(): boolean { return this.flare > 0; }
 
   muzzle(side: number, out: Vector3): Vector3 {
-    out.copy(this.turret.position).addScaledVector(this.aim, 5.6);
-    out.y += 1.7;
+    this.machine.pivot(out).addScaledVector(this.aim, TURRET.boat.reach);
+    out.y += TURRET.boat.gun;
     if (side) out.addScaledVector(v1.set(-this.aim.z, 0, this.aim.x).normalize(), -0.65 * side);
     return out;
   }
 
   seat(out: Vector3): Vector3 {
-    return out.copy(this.pos).addScaledVector(this.fwd, -4.6).setY(this.pos.y + 3.4);
+    return out.copy(this.pos).addScaledVector(this.fwd, 0.3).setY(this.pos.y + 3.4);
   }
 
   moor(): void {
     this.phase = 'moored';
     this.t = 0;
+  }
+
+  takeTurn(): Form | null {
+    const turn = this.turn;
+    this.turn = null;
+    return turn;
+  }
+
+  state(): CraftState {
+    return { pos: this.pos.clone(), yaw: this.yaw, speed: this.speed, boost: this.boost, boostDry: this.boostDry };
+  }
+
+  hold(state: CraftState, stage: Stage): void {
+    if (this.phase !== 'held') { this.lookYaw = 0; this.lookPitch = 0.16; this.lean = 0; }
+    this.phase = 'held';
+    this.pos.copy(state.pos);
+    this.yaw = state.yaw;
+    this.speed = Math.max(-TOP_SPEED * 0.4, Math.min(TOP_SPEED * BOOST, state.speed));
+    this.boost = state.boost; this.boostDry = state.boostDry; this.boosting = false;
+    this.aim.copy(this.fwd.set(Math.sin(this.yaw), 0, Math.cos(this.yaw)));
+    this.vel.copy(this.fwd).multiplyScalar(this.speed);
+    this.place(0, stage);
+  }
+
+  release(): void {
+    this.phase = 'live';
+    this.machine.set('boat');
+    this.turn = null;
   }
 
   idle(dt: number, stage: Stage): void {
@@ -110,7 +133,7 @@ export class Boat implements Craft {
   step(dt: number, env: CraftEnv): void {
     const { stage, input } = env;
     this.t += dt;
-    if (this.phase === 'down') return;
+    if (this.phase === 'down' || this.phase === 'held') return;
     const live = this.phase === 'live';
     if (this.phase === 'run' && this.t > 0.9) this.phase = 'live';
 
@@ -154,7 +177,12 @@ export class Boat implements Craft {
     const nx = this.pos.x + this.fwd.x * this.speed * dt;
     const nz = this.pos.z + this.fwd.z * this.speed * dt;
     const bow = Math.sign(this.speed || 1) * 11;
-    if (stage.world.groundAt(nx + this.fwd.x * bow, nz + this.fwd.z * bow) > 0) {
+    // The mainland's beach shelves up under it: no wall there — its keel touches, it becomes the tank.
+    if (live && stage.world.mainland.heightAt(nx + this.fwd.x * bow * 0.6, nz + this.fwd.z * bow * 0.6) > -0.5) {
+      this.pos.x = nx;
+      this.pos.z = nz;
+      this.turn = 'tank';
+    } else if (stage.world.groundAt(nx + this.fwd.x * bow, nz + this.fwd.z * bow) > 0) {
       if (Math.abs(this.speed) > 16) {
         v1.set(nx + this.fwd.x * bow, 1.5, nz + this.fwd.z * bow);
         stage.fx.burst(v1, '#ffb86b', 14, 50, { size: 1.3, life: 0.5 });
@@ -195,19 +223,20 @@ export class Boat implements Craft {
     const cp = Math.cos(this.lookPitch);
     v1.set(Math.sin(yaw) * cp, -Math.sin(this.lookPitch) + 0.1, Math.cos(yaw) * cp).normalize();
     this.aim.copy(v1);
-    this.turret.lookAt(v1.add(this.turret.position));
+    this.machine.aim(this.aim);
   }
 
   private place(_dt: number, stage: Stage): void {
     const bob = Math.sin(this.t * 1.7) * 0.25;
     const way = this.speed / TOP_SPEED;
-    this.pos.y = 1.3 + bob;
-    this.mesh.position.copy(this.pos);
-    // It lifts its bow with the way on, and leans into its turns.
-    this.mesh.rotation.set(-Math.max(0, way) * 0.07 + Math.sin(this.t * 1.3) * 0.012, this.yaw, this.lean, 'YXZ');
-    this.turret.position.copy(this.pos).addScaledVector(this.fwd, 4.2);
-    this.turret.position.y += 1.7;
-    if (this.phase === 'in' || this.phase === 'moored') this.turret.rotation.set(0, this.yaw, 0);
+    this.pos.y = DATUM.boat + bob;
+    // It lifts its bow with the way on, and leans into its turns. The machine's root is at its soles: on the water.
+    this.rootQuat.setFromEuler(euler.set(-Math.max(0, way) * 0.07 + Math.sin(this.t * 1.3) * 0.012, this.yaw, this.lean, 'YXZ'));
+    this.rootPos.set(this.pos.x, this.pos.y - DATUM.boat, this.pos.z);
+    if (this.phase === 'held') return;
+    this.mesh.position.copy(this.rootPos);
+    this.mesh.quaternion.copy(this.rootQuat);
+    if (this.phase === 'in' || this.phase === 'moored') this.machine.aim(null);
     // Its wake, and spray at the bow when it runs.
     if (Math.abs(way) > 0.12 && Math.random() < Math.min(1, Math.abs(way) * 1.2)) {
       for (const side of [3, -3]) {
@@ -237,19 +266,17 @@ export class Boat implements Craft {
   }
 
   gauges(): Gauges {
-    return { speed: Math.abs(this.speed) * 0.9, pace: Math.abs(this.speed) / TOP_SPEED, alt: null, boost: this.boost, boostDry: this.boostDry, boosting: this.boosting };
+    return { speed: Math.abs(this.speed) * 0.9, pace: Math.abs(this.speed) / TOP_SPEED, alt: null, power: null, boost: this.boost, boostDry: this.boostDry, boosting: this.boosting };
   }
 
   wreck(stage: Stage): void {
     this.phase = 'down';
     this.mesh.visible = false;
-    this.turret.visible = false;
     stage.fx.explosion(this.pos, 3);
     stage.fx.splash(this.pos, 3);
   }
 
-  dispose(stage: Stage): void {
-    stage.scene.remove(this.mesh, this.turret);
-    for (const o of this.owned) o.dispose();
+  dispose(stage: Stage, keep = false): void {
+    if (!keep) stage.scene.remove(this.mesh);
   }
 }

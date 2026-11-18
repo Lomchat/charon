@@ -1,6 +1,7 @@
 // The player's hands in the 3D phase: the keyboard and the mouse, turned into
-// what each way of playing reads — a stick for the seaplane, a helm for the
-// boat, a look for the pilot on foot, a trigger and a few buttons for all.
+// what each way of playing reads — a stick, a throttle and a rudder for the
+// plane, a helm for what sails or drives, a look for the pilot on foot, a
+// trigger and a few buttons for all.
 //
 // Keys are read by POSITION (`event.code`): the same fingers on any layout;
 // what is printed on them is asked once, for the on-screen hints.
@@ -8,12 +9,17 @@
 // The mouse: captured (pointer lock), it gives MOVEMENT — the look on foot and
 // on the boat, and a cursor of our own for the seaplane, whose nose follows
 // it. Not captured, its position does both jobs as well as it can.
-const PULL = ['KeyS', 'ArrowDown'];
-const PUSH = ['KeyW', 'ArrowUp'];
-const LEFT = ['KeyA', 'ArrowLeft'];
-const RIGHT = ['KeyD', 'ArrowRight'];
+import { keyLabel } from '../forms';
+
+// The plane's stick, for hands that leave the mouse: the arrows. (W / S are
+// its throttle, A / D its rudder: `ahead`, `side`.)
+const PULL = ['ArrowDown'];
+const PUSH = ['ArrowUp'];
+const LEFT = ['ArrowLeft'];
+const RIGHT = ['ArrowRight'];
 const USED = new Set([
-  ...PULL, ...PUSH, ...LEFT, ...RIGHT, 'Space', 'KeyF', 'KeyQ', 'KeyE', 'KeyX', 'KeyC', 'KeyI', 'ShiftLeft', 'ShiftRight', 'Tab',
+  ...PULL, ...PUSH, ...LEFT, ...RIGHT, 'KeyW', 'KeyA', 'KeyS', 'KeyD', 'Space', 'KeyF', 'KeyQ', 'KeyE', 'KeyT', 'KeyI',
+  'ShiftLeft', 'ShiftRight', 'Tab',
 ]);
 
 const INVERT_KEY = 'desk.arcade.invert';
@@ -34,18 +40,15 @@ export class Input {
   private buttons = new Set<number>();
   private missile = false;
   private roll = 0;
+  private morph = false;
   /** The capture just began: its first event is not to be trusted. */
   private fresh = false;
   private lookX = 0;
   private lookY = 0;
   private size = { w: 1, h: 1 };
-  private labels = new Map<string, string>();
 
   constructor() {
     try { this.invert = localStorage.getItem(INVERT_KEY) === '1'; } catch { /* private mode */ }
-    // What is printed on the keys of this keyboard (Chromium only; elsewhere: QWERTY names).
-    const keyboard = (navigator as Navigator & { keyboard?: { getLayoutMap?: () => Promise<Map<string, string>> } }).keyboard;
-    void keyboard?.getLayoutMap?.().then((map) => { this.labels = map; }, () => undefined);
   }
 
   resize(w: number, h: number): void {
@@ -54,7 +57,7 @@ export class Input {
 
   /** A key by its position, as this keyboard names it. */
   label(code: string): string {
-    return (this.labels.get(code) ?? code.replace(/^Key/, '')).toUpperCase();
+    return keyLabel(code);
   }
 
   /** True: the game used the key (the page must not). */
@@ -66,6 +69,7 @@ export class Input {
     this.held.add(code);
     if (this.steering()) this.device = 'keys';
     if (code === 'KeyF') this.missile = true;
+    else if (code === 'KeyT') this.morph = true;
     else if (code === 'KeyQ') this.roll = -1;
     else if (code === 'KeyE') this.roll = 1;
     else if (code === 'KeyI') {
@@ -82,8 +86,10 @@ export class Input {
       // A capture that just began, or a mouse that glitches, reports a leap no hand made: not a look.
       if (this.fresh) { this.fresh = false; return; }
       if (Math.abs(dx) > LEAP || Math.abs(dy) > LEAP) return;
-      this.lookX += dx;
-      this.lookY += dy;
+      // Looking closer, the hand is finer.
+      const fine = this.buttons.has(2) ? 0.6 : 1;
+      this.lookX += dx * fine;
+      this.lookY += dy * fine;
       // Our own cursor, kept on the stage.
       const p = this.pointer ?? (this.pointer = { x: this.size.w / 2, y: this.size.h / 2 });
       p.x = Math.max(0, Math.min(this.size.w, p.x + dx));
@@ -108,7 +114,6 @@ export class Input {
 
   pointerDown(button: number): void {
     this.buttons.add(button);
-    if (button === 2) this.missile = true;
   }
 
   pointerUp(button: number): void {
@@ -119,6 +124,7 @@ export class Input {
   release(): void {
     this.held.clear();
     this.buttons.clear();
+    this.morph = false;
     this.lookX = 0;
     this.lookY = 0;
   }
@@ -154,23 +160,38 @@ export class Input {
     out.y = p ? (p.y / this.size.h) * 2 - 1 : 0;
   }
 
-  /** The helm: W / S and A / D alone, raw. */
+  /** W / S and A / D alone, raw: a helm, or the plane's throttle and rudder. */
   get ahead(): number { return (this.held.has('KeyW') ? 1 : 0) - (this.held.has('KeyS') ? 1 : 0); }
   get side(): number { return (this.held.has('KeyD') ? 1 : 0) - (this.held.has('KeyA') ? 1 : 0); }
   /** The arrows alone, raw: they turn the view where the mouse does not. */
   get arrowX(): number { return (this.held.has('ArrowRight') ? 1 : 0) - (this.held.has('ArrowLeft') ? 1 : 0); }
   get arrowY(): number { return (this.held.has('ArrowUp') ? 1 : 0) - (this.held.has('ArrowDown') ? 1 : 0); }
 
-  get firing(): boolean { return this.held.has('Space') || this.buttons.has(0); }
-  /** The left button alone (on foot, Space is the ground fight's own key). */
+  /** The left button: every gun there is. */
+  get firing(): boolean { return this.buttons.has(0); }
   get trigger(): boolean { return this.buttons.has(0); }
+  /** The right button: the view comes closer. */
+  get zoom(): boolean { return this.buttons.has(2); }
   get boost(): boolean { return this.held.has('ShiftLeft') || this.held.has('ShiftRight'); }
-  get brake(): boolean { return this.held.has('KeyX') || this.held.has('KeyC'); }
+
+  /** What was asked for and not yet taken is forgotten (a key hit on foot must not fire once aboard). */
+  flush(): void {
+    this.missile = false;
+    this.morph = false;
+    this.roll = 0;
+  }
 
   /** A missile was asked for since the last call. */
   takeMissile(): boolean {
     const asked = this.missile;
     this.missile = false;
+    return asked;
+  }
+
+  /** The machine was asked to change shape (T) since the last call. */
+  takeMorph(): boolean {
+    const asked = this.morph;
+    this.morph = false;
     return asked;
   }
 

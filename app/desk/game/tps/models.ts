@@ -7,6 +7,7 @@
 // foot, pods, pickups, the helicopter) is modelled one unit per PIXEL and
 // drawn at `SCALE` (world.ts); the vehicles and what fights them are modelled
 // in world units.
+import type { Form } from '../forms';
 import { chutePixels, heliPixels, heroPixels, pickupPixels, robotPixels, type PickupKind, type RobotKind } from '../art';
 import { buildModel, extrude, place, turn, type Box, type Model } from './voxels';
 
@@ -18,50 +19,6 @@ const GOLD = '#ffe066';
 const EYE = '!#ff4d4d';
 const FLAME = '!#ffb86b';
 const FLAME_HOT = '!#fff3c9';
-
-/* ───────────────────────────────────────────────────── the seaplane ─── */
-
-function seaplane(): Box[] {
-  const hull = '#dfe6f2';
-  const belly = '#9aa8c0';
-  const b: Box[] = [
-    // Fuselage: cowl, body, tail boom.
-    [-1.2, -1.0, 6, 2.4, 2.2, 1.6, '#2a3650'],
-    [-0.4, -0.3, 7.6, 0.8, 0.8, 0.5, INK],
-    [-1.5, -0.2, -3, 3, 1.6, 9, hull],
-    [-1.5, -1.2, -3, 3, 1.0, 9, belly],
-    [-1.0, -0.1, -7, 2, 1.3, 4, hull],
-    [-1.0, -0.7, -7, 2, 0.6, 4, belly],
-    [-0.6, -0.3, -8.6, 1.2, 1.2, 1.6, hull],
-    // A gold band behind the cowl, as on the board's HUD.
-    [-1.55, -1.25, 5.2, 3.1, 2.7, 0.8, GOLD],
-    // Canopy.
-    [-1.0, 1.4, 0.2, 2, 1.1, 3.2, '!#7cc4ff'],
-    [-1.05, 1.4, 1.7, 2.1, 1.15, 0.25, '#2a3650'],
-    // Wings, gold at the tips; a navigation light on each.
-    [-7.5, 0.6, 0.6, 15, 0.5, 3.4, hull],
-    [7.5, 0.6, 0.6, 2, 0.5, 3.4, GOLD],
-    [-9.5, 0.6, 0.6, 2, 0.5, 3.4, GOLD],
-    [9.3, 0.65, 2, 0.5, 0.4, 0.7, '!#ff5d5d'],
-    [-9.8, 0.65, 2, 0.5, 0.4, 0.7, '!#4ade80'],
-    // Tail.
-    [-3.6, 0.4, -8.4, 7.2, 0.35, 2.2, hull],
-    [-0.25, 0.8, -8.6, 0.5, 2.6, 2.6, hull],
-    [-0.25, 3.4, -8.6, 0.5, 0.8, 2.0, GOLD],
-    // Guns under the wings.
-    [4.8, 0.15, 3.4, 0.45, 0.45, 2.4, INK],
-    [-5.25, 0.15, 3.4, 0.45, 0.45, 2.4, INK],
-  ];
-  // Floats and their struts.
-  for (const side of [3.4, -3.4]) {
-    b.push([side - 0.7, -4.0, -3.5, 1.4, 1.1, 9.5, hull]);
-    b.push([side - 0.7, -4.25, -3.2, 1.4, 0.3, 8.6, '#55607a']);
-    b.push([side - 0.5, -3.8, 6, 1.0, 0.8, 1.2, hull]);
-    b.push([side - 0.15, -2.9, 0.2, 0.3, 2.1, 0.3, STEEL_DARK]);
-    b.push([side - 0.15, -2.9, 3.2, 0.3, 2.1, 0.3, STEEL_DARK]);
-  }
-  return b;
-}
 
 /* ─────────────────────────────────────────────────────── the robots ─── */
 
@@ -289,32 +246,6 @@ function chute(): Box[] {
 
 /* ───────────────────────────────────────────────── on the water ─── */
 
-/** The gunboat: a hull, a wheelhouse, a deck forward for its turret (a model of its own: it turns). */
-function gunboat(): Box[] {
-  const hull = '#3d4d70';
-  const light = '#dfe6f2';
-  return [
-    [-4, -1.2, -11, 8, 2.6, 19, hull], [-3, -1.2, 8, 6, 2.6, 2.5, hull], [-1.9, -1.2, 10.5, 3.8, 2.4, 2, hull], [-0.9, -1, 12.5, 1.8, 2, 1.3, hull],
-    [-4.05, 0.3, -11, 8.1, 0.5, 19, GOLD], [-3.05, 0.3, 8, 6.1, 0.5, 2.5, GOLD],
-    [-3.6, 1.4, -10.6, 7.2, 0.3, 18.6, '#5d4a3b'], [-2.7, 1.4, 8, 5.4, 0.3, 2.4, '#5d4a3b'],
-    // Wheelhouse, its windows lit.
-    [-2.4, 1.7, -7.4, 4.8, 3, 5.6, light], [-2.46, 3.1, -6.8, 4.92, 1.1, 4.4, '!#7cc4ff'], [-1.8, 3.1, -1.86, 3.6, 1.1, 0.1, '!#7cc4ff'],
-    [-2.7, 4.7, -7.7, 5.4, 0.4, 6.2, STEEL_DARK], [-0.15, 5.1, -5.4, 0.3, 3.2, 0.3, STEEL_DARK], [-0.3, 8.3, -5.55, 0.6, 0.5, 0.6, '!#fff3c9'],
-    [3.7, 2.2, -4, 0.4, 0.4, 0.7, '!#ff5d5d'], [-4.1, 2.2, -4, 0.4, 0.4, 0.7, '!#4ade80'],
-    // Rails, engines.
-    [-3.7, 1.7, -10.6, 0.2, 0.9, 5, STEEL_LIGHT], [3.5, 1.7, -10.6, 0.2, 0.9, 5, STEEL_LIGHT],
-    [-2.6, -0.4, -12, 1.8, 1.6, 1.2, STEEL_DARK], [0.8, -0.4, -12, 1.8, 1.6, 1.2, STEEL_DARK],
-  ];
-}
-
-/** Its turret: a base, a housing, two barrels along +Z. */
-function turret(): Box[] {
-  return [
-    [-1.7, 0, -1.7, 3.4, 1, 3.4, STEEL_DARK], [-1.2, 1, -1.4, 2.4, 1.5, 2.9, STEEL], [-1.3, 2.5, -1.5, 2.6, 0.3, 3.1, STEEL_LIGHT],
-    [-0.85, 1.5, 1.4, 0.45, 0.45, 4.4, INK], [0.4, 1.5, 1.4, 0.45, 0.45, 4.4, INK],
-  ];
-}
-
 /** A robot on a jet-ski. */
 function skimmer(): Box[] {
   const red = '#8a3038';
@@ -391,10 +322,9 @@ function consoleDesk(): Box[] {
 type Frames = Record<'stand' | 'walkA' | 'walkB', Model>;
 
 export type SkyModels = {
-  plane: Model;
   drone: Model; gunner: Model; ace: Model; bomber: Model; boss: Model;
   missile: Model; foeMissile: Model; supply: Model;
-  boat: Model; turret: Model; skimmer: Model; mine: Model; warship: Model;
+  skimmer: Model; mine: Model; warship: Model;
   lighthouse: Model; lantern: Model; bush: Model; console: Model;
   /** On foot, in pixel units: the pilot, each robot (and the reddened one), in their walk's frames. */
   hero: Frames;
@@ -411,7 +341,6 @@ let cache: SkyModels | null = null;
 
 export function skyModels(): SkyModels {
   cache ??= {
-    plane: buildModel(seaplane()),
     drone: buildModel(drone()),
     gunner: buildModel(gunner()),
     ace: buildModel(ace()),
@@ -420,8 +349,6 @@ export function skyModels(): SkyModels {
     missile: buildModel(missile('!#ffe066'), 1.3),
     foeMissile: buildModel(missile(EYE), 1.6),
     supply: buildModel(supply()),
-    boat: buildModel(gunboat()),
-    turret: buildModel(turret()),
     skimmer: buildModel(skimmer()),
     mine: buildModel(mine()),
     warship: buildModel(warship()),

@@ -5,6 +5,7 @@
 // draws its own instruments (game/tps/hud.ts): in a vehicle, only the score,
 // the hull and what is left to shoot are here.
 import { useArcade } from '../arcadeStore';
+import { FORM_GLYPH, type Form, type KeyHint } from '../game/forms';
 
 const HEART = ['.##.##.', '#######', '#######', '.#####.', '..###..', '...#...'];
 
@@ -16,7 +17,41 @@ function Heart({ full }: { full: boolean }) {
   );
 }
 
-const KEYS = 'MOVE WASD   FIRE ARROWS / SPACE   DASH SHIFT   BOMB E   PAUSE P   SOUND M   LEAVE ESC';
+/** A shape of the machine, in its few pixels. */
+function Glyph({ form, on }: { form: Form; on?: boolean }) {
+  const rows = FORM_GLYPH[form];
+  return (
+    <svg className="dk-glyph" viewBox={`0 0 11 ${rows.length}`} width={22} height={rows.length * 2} shapeRendering="crispEdges" data-on={on || undefined} aria-label={form}>
+      {rows.flatMap((row, y) => [...row].map((ch, x) => (ch === '#' ? <rect key={`${x}.${y}`} x={x} y={y} width={1} height={1} /> : null)))}
+    </svg>
+  );
+}
+
+/** The keys of the game, always there, on the right: keys as keys, one word each. */
+function Keys({ keys, form }: { keys: KeyHint[]; form: Form | null }) {
+  if (!keys.length) return null;
+  return (
+    <div className="dk-keys" aria-label="keys">
+      {form && (
+        <div className="dk-keys-forms">
+          {(['plane', 'boat', 'tank'] as const).map((f) => <Glyph key={f} form={f} on={f === form} />)}
+        </div>
+      )}
+      {keys.map((row, i) => (
+        <div key={i} className="dk-keys-row" data-meta={row.meta || undefined}>
+          <span className="dk-keys-caps">
+            {row.caps.map((cap, j) => <kbd key={j}>{cap}</kbd>)}
+            {row.mouse && <i className="dk-mouse" data-part={row.mouse} />}
+          </span>
+          <span className="dk-keys-word">
+            {row.word}
+            {row.gives?.map((f) => <Glyph key={f} form={f} on />)}
+          </span>
+        </div>
+      ))}
+    </div>
+  );
+}
 const AUDIO = { all: 'ON', sfx: 'FX ONLY', off: 'OFF' } as const;
 
 export default function ArcadeHud() {
@@ -36,7 +71,7 @@ export default function ArcadeHud() {
 
       {/* What was just announced; `key` restarts its animation each time. */}
       {a.banner && !over && <div key={a.bannerAt} className="dk-game-banner">{a.banner}</div>}
-      {a.phase === 'intro' && a.mode === 'ground' && <div className="dk-game-keys">{KEYS}</div>}
+      {!over && <Keys keys={a.keys} form={a.form} />}
       {a.paused && !over && <div className="dk-game-banner dk-game-still">PAUSED<small>any key to go on</small></div>}
 
       {over && (

@@ -1141,19 +1141,58 @@
   75% { opacity: 1; }
   100% { opacity: 0; transform: translateY(-14px); }
 }
-.dk-game-keys {
+/* The keys of the game, always there on the right: keys as keys (the 3D
+   instruments' face: dark cap, a lip under it), one word each. */
+.dk-keys {
   position: absolute;
-  left: 0;
-  right: 0;
-  bottom: 84px;
-  text-align: center;
-  font-size: 8px;
-  line-height: 1.8;
-  letter-spacing: 0.08em;
-  word-spacing: 0.3em;
-  color: var(--dk-ink);
-  text-shadow: 2px 2px 0 var(--dk-edge);
+  right: 14px;
+  top: 50%;
+  transform: translateY(-50%);
+  display: grid;
+  gap: 7px;
+  padding: 10px 11px;
+  background: rgba(13, 20, 34, 0.78);
+  border: 2px solid var(--dk-line);
+  box-shadow: 0 0 0 2px var(--dk-edge);
 }
+.dk-keys-forms { display: flex; justify-content: space-between; gap: 8px; padding: 0 2px 8px; margin-bottom: 2px; border-bottom: 2px solid var(--dk-line); }
+.dk-glyph { display: block; fill: var(--dk-faint); }
+.dk-glyph[data-on] { fill: var(--dk-gold); }
+.dk-keys-row { display: flex; align-items: center; justify-content: space-between; gap: 14px; }
+.dk-keys-caps { display: flex; align-items: center; gap: 3px; min-height: 18px; }
+.dk-keys kbd {
+  min-width: 18px;
+  height: 18px;
+  padding: 2px 4px 0;
+  box-sizing: border-box;
+  font: 400 8px/11px var(--dk-pixel);
+  text-align: center;
+  color: var(--dk-ink);
+  background: #131c2e;
+  border: 1px solid var(--dk-line);
+  border-bottom-width: 4px;
+  box-shadow: 0 0 0 1px var(--dk-edge);
+}
+.dk-keys-word { display: flex; align-items: center; gap: 6px; font-size: 7px; letter-spacing: 0.06em; color: var(--dk-dim); }
+.dk-keys-word .dk-glyph { transform: scale(0.8); transform-origin: right center; }
+.dk-keys-row[data-meta] kbd { color: var(--dk-dim); }
+.dk-keys-row[data-meta] .dk-keys-word { color: var(--dk-faint); }
+.dk-keys-row[data-meta]:first-of-type, .dk-keys-row:not([data-meta]) + .dk-keys-row[data-meta] { margin-top: 3px; padding-top: 9px; border-top: 2px solid var(--dk-line); }
+/* A mouse: its body lit (it is moved), or one of its buttons. */
+.dk-mouse {
+  position: relative;
+  width: 12px;
+  height: 18px;
+  box-sizing: border-box;
+  background: #131c2e;
+  border: 1px solid var(--dk-line);
+  box-shadow: 0 0 0 1px var(--dk-edge);
+}
+.dk-mouse::before { content: ''; position: absolute; left: 0; right: 0; top: 6px; height: 1px; background: var(--dk-line); }
+.dk-mouse::after { content: ''; position: absolute; top: 0; width: 5px; height: 6px; }
+.dk-mouse[data-part='move'] { border-color: var(--dk-ink); }
+.dk-mouse[data-part='left']::after { left: 0; background: var(--dk-gold); }
+.dk-mouse[data-part='right']::after { right: 0; background: var(--dk-gold); }
 
 .dk-game-foot {
   position: absolute;

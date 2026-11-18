@@ -2,15 +2,21 @@
 // input device, nothing drawn here.
 //
 // An arcade model that still flies like a plane: the stick banks it into a
-// turn and pitches its nose, speed is traded for height and won back in a
-// dive, too slow and it stalls, too high and the air gets thin.
+// turn and pitches its nose, the throttle sets what the engine gives, the
+// rudder swings the nose flat; speed is traded for height and won back in a
+// dive, too slow and the wings let go — it falls —, too high and the air
+// gets thin.
 //
 // Axes: +Y is up. At yaw 0 the nose points to +Z and the RIGHT wing to −X, so
 // a right turn makes the yaw decrease. `roll` > 0 is the right wing down.
 import { Matrix4, Quaternion, Vector3 } from 'three';
 
-/** What the pilot asks for. `x` > 0 turns right, `y` > 0 pulls the nose up. */
-export type Stick = { x: number; y: number; boost: boolean; brake: boolean };
+/**
+ * What the pilot asks for. `x` > 0 banks and turns right, `y` > 0 pulls the
+ * nose up; `power` moves the throttle (1 opens it, -1 closes it); `rudder` > 0
+ * swings the nose right, wings level.
+ */
+export type Stick = { x: number; y: number; boost: boolean; power: number; rudder: number };
 
 export type Flight = {
   pos: Vector3;
@@ -19,6 +25,8 @@ export type Flight = {
   /** The bank of the turn (the barrel roll comes on top: `spin`). */
   roll: number;
   speed: number;
+  /** The throttle, 0..1: it stays where it was left. */
+  throttle: number;
   /** A barrel roll: its side (±1, 0 = none), how far it is (0..1), and the wait before the next. */
   spinDir: number;
   spinT: number;
@@ -39,11 +47,19 @@ export type Flight = {
 
 export const TUNE = {
   cruise: 96,
+  /** What the engine gives with the throttle closed, and wide open. */
+  idle: 30,
+  full: 152,
+  /** Seconds for the throttle to go from one end to the other. */
+  throttleTime: 1.7,
   /** The afterburner: near three times the cruise. */
   boost: 2.9,
-  brake: 0.58,
   /** Under this the wings let go. */
   stall: 50,
+  /** How fast it falls once they have, at no speed at all. */
+  sink: 46,
+  /** Radians per second of the rudder alone. */
+  rudderRate: 0.8,
   /** Radians per second at full stick, at cruise speed. */
   yawRate: 1.05,
   pitchRate: 1.0,
@@ -60,13 +76,16 @@ export const TUNE = {
   spinSlide: 30,
 };
 
+/** The throttle that holds the cruise. */
+export const CRUISE_THROTTLE = (TUNE.cruise - TUNE.idle) / (TUNE.full - TUNE.idle);
+
 const m4 = new Matrix4();
 const left = new Vector3();
 const flat = new Vector3();
 
 export function createFlight(x: number, y: number, z: number, yaw: number, speed: number): Flight {
   const f: Flight = {
-    pos: new Vector3(x, y, z), yaw, pitch: 0, roll: 0, speed,
+    pos: new Vector3(x, y, z), yaw, pitch: 0, roll: 0, speed, throttle: CRUISE_THROTTLE,
     spinDir: 0, spinT: 0, spinCool: 0, spin: 0,
     boost: 1, boosting: false, boostDry: false, stalled: false,
     fwd: new Vector3(), right: new Vector3(), up: new Vector3(), quat: new Quaternion(),
@@ -118,10 +137,13 @@ export function stepFlight(f: Flight, stick: Stick, dt: number): void {
     if (f.boost <= 0) f.boostDry = true;
   } else f.boost = Math.min(1, f.boost + dt / t.boostFill);
 
+  // The throttle stays where the hand leaves it.
+  f.throttle = Math.max(0, Math.min(1, f.throttle + (Math.max(-1, Math.min(1, stick.power)) * dt) / t.throttleTime));
+
   // Speed: what the engine gives, less what the climb takes (a dive gives it back).
   const climb = Math.sin(f.pitch);
   const thin = Math.max(0, (f.pos.y - t.ceiling) / 80);
-  const engine = t.cruise * (f.boosting ? t.boost : stick.brake ? t.brake : 1) * (1 - 0.45 * Math.min(1, thin));
+  const engine = (f.boosting ? t.cruise * t.boost : t.idle + (t.full - t.idle) * f.throttle) * (1 - 0.45 * Math.min(1, thin));
   const target = engine - climb * (climb > 0 ? 40 : 52);
   f.speed = toward(f.speed, target, f.boosting ? 2.6 : f.speed > t.cruise * 1.2 ? 1.6 : 1.0, dt);
 
@@ -130,14 +152,15 @@ export function stepFlight(f: Flight, stick: Stick, dt: number): void {
   else if (f.stalled && f.speed > t.stall + 14) f.stalled = false;
 
   // Slower turns tighter; the afterburner and thin air blunt the controls.
-  const grip = Math.min(1.3, Math.max(0.5, t.cruise / Math.max(1, f.speed)))
-    * (stick.brake && !f.boosting ? 1.18 : 1) * (f.stalled ? 0.3 : 1);
+  const grip = Math.min(1.3, Math.max(0.5, t.cruise / Math.max(1, f.speed))) * (f.stalled ? 0.3 : 1);
   const sx = Math.max(-1, Math.min(1, stick.x));
   let sy = Math.max(-1, Math.min(1, stick.y));
   if (f.stalled) sy = Math.min(sy, 0) - 0.9;
   if (thin > 0) sy = Math.min(sy, 1 - thin) - thin * 0.8;
 
   f.yaw -= sx * t.yawRate * grip * dt;
+  // The rudder: the nose swings, the wings stay level.
+  f.yaw -= Math.max(-1, Math.min(1, stick.rudder)) * t.rudderRate * (f.stalled ? 0.4 : 1) * dt;
   // The nose stops short of the vertical, softly: the last degrees take longer.
   const room = sy > 0 ? (t.maxPitch - f.pitch) / 0.35 : (f.pitch + t.maxPitch) / 0.35;
   f.pitch += sy * t.pitchRate * grip * Math.max(0, Math.min(1, room)) * dt;
@@ -161,6 +184,8 @@ export function stepFlight(f: Flight, stick: Stick, dt: number): void {
 
   orient(f);
   f.pos.addScaledVector(f.fwd, f.speed * dt);
+  // Under the stall the wings carry less and less: it sinks, nose level or not.
+  if (f.speed < t.stall) f.pos.y -= t.sink * (1 - f.speed / t.stall) * dt;
   if (slide) f.pos.addScaledVector(flat.set(-Math.cos(f.yaw), 0, Math.sin(f.yaw)), slide * dt);
 }
 

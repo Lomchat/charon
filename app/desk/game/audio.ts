@@ -34,6 +34,9 @@ export function nextAudioMode(mode: AudioMode): AudioMode {
   return mode === 'all' ? 'sfx' : mode === 'sfx' ? 'off' : 'all';
 }
 
+/** Seconds after a turn begins that its last plate seats (tps/morph.ts § MORPH_TIME, a hair early). */
+const MORPH_LOCK = 1.08;
+
 /** What the game looks like right now: where the ears are, and how tense it is. */
 export type AudioScene = {
   x: number; y: number;
@@ -47,7 +50,7 @@ export type AudioScene = {
   heli: { x: number; y: number } | null;
   walking: boolean;
   /** In a vehicle: which, its pace (1 = cruise) and its afterburner; null on foot. */
-  engine?: { kind: 'plane' | 'boat'; pace: number; boost: boolean } | null;
+  engine?: { kind: 'plane' | 'boat' | 'tank'; pace: number; boost: boolean } | null;
   /** Seen from behind the pilot: which way it faces (its forward on the board is (sin, cos)) — left and right are its own. */
   yaw?: number;
 };
@@ -347,7 +350,7 @@ export class ArcadeAudio {
     let from = node;
     if (pan) {
       const panner = ctx.createStereoPanner();
-      panner.pan.value = pan;
+      panner.pan.value = Math.max(-1, Math.min(1, pan));
       node.connect(panner);
       from = panner;
     }
@@ -467,10 +470,12 @@ export class ArcadeAudio {
     if (e && this.live) {
       const engine = this.engine ?? (this.engine = this.startEngine(ctx));
       const pace = Math.max(0.1, Math.min(3, e.pace));
-      const boat = e.kind === 'boat';
+      // What sails or drives: lower and rounder; a tank lower still.
+      const boat = e.kind !== 'plane';
+      const low = e.kind === 'tank' ? 0.78 : 1;
       const quiet = scene.paused || scene.phase === 'over';
       engine.gain.gain.setTargetAtTime(quiet ? 0 : 1, t, 0.15);
-      engine.drone.frequency.setTargetAtTime(boat ? 34 + 22 * pace : 52 + 30 * Math.min(2, pace) + (e.boost ? 14 : 0), t, 0.12);
+      engine.drone.frequency.setTargetAtTime(boat ? (34 + 22 * pace) * low : 52 + 30 * Math.min(2, pace) + (e.boost ? 14 : 0), t, 0.12);
       engine.tone.frequency.setTargetAtTime(boat ? 180 + 120 * pace : 300 + 260 * Math.min(2, pace), t, 0.15);
       engine.wind.gain.setTargetAtTime(boat ? 0.02 + 0.04 * pace : 0.03 + 0.1 * Math.max(0, Math.min(2.2, pace) - 0.4) ** 1.5, t, 0.2);
       engine.roar.gain.setTargetAtTime(e.boost ? 0.22 : 0, t, e.boost ? 0.06 : 0.25);
@@ -939,6 +944,45 @@ export class ArcadeAudio {
     this.noise({ dur: 0.07, gain: 0.3, type: 'bandpass', f: 2100 * v, to: 700, q: 0.8, wet: 0.1 });
     this.tone({ wave: 'triangle', f: 210 * v, to: 64, dur: 0.075, gain: 0.42 });
     this.noise({ dur: 0.01, gain: 0.22, type: 'highpass', f: 5000 });
+  }
+
+  /** The tank's gun: one heavy round. */
+  shell(): void {
+    if (!this.live || !this.gate('shell', 120)) return;
+    const v = rnd(0.95, 1.05);
+    this.noise({ dur: 0.34, gain: 0.5, f: 2400 * v, to: 160, wet: 0.2 });
+    this.tone({ wave: 'sine', f: 150 * v, to: 38, dur: 0.3, gain: 0.6 });
+    this.tone({ wave: 'sawtooth', f: 320 * v, to: 70, dur: 0.12, gain: 0.22, dest: this.crunch });
+    this.noise({ dur: 0.012, gain: 0.3, type: 'highpass', f: 4500 });
+    this.duck(0.25, 0.08);
+  }
+
+  /**
+   * The machine turns into another shape: servos wind up, plates clack home
+   * one after the other, and it settles on a chord that is the new shape's.
+   */
+  morph(to: 'plane' | 'boat' | 'tank'): void {
+    if (!this.live) return;
+    // The servos: two whines a fifth apart, rising.
+    this.tone({ wave: 'sawtooth', f: 140, to: 620, dur: 0.95, gain: 0.09, wet: 0.2 });
+    this.tone({ wave: this.pulse25, f: 210, to: 930, dur: 0.95, gain: 0.05, wet: 0.2 });
+    this.noise({ dur: 1.0, gain: 0.16, type: 'bandpass', f: 500, to: 3600, q: 2.2, wet: 0.15 });
+    // The plates, seating: nose to tail.
+    for (let i = 0; i < 7; i += 1) {
+      const at = 0.16 + i * 0.125 + rnd(-0.02, 0.02);
+      const pan = rnd(-0.5, 0.5);
+      this.noise({ at, dur: 0.05, gain: 0.26, type: 'bandpass', f: rnd(1700, 3200), q: 3.5, pan, dest: this.crunch });
+      this.tone({ at, wave: 'square', f: rnd(260, 420), to: 120, dur: 0.05, gain: 0.12, pan });
+    }
+    // Locked: a thump, and the shape's own chord (the air is brighter than the ground).
+    const root = to === 'plane' ? 392 : to === 'boat' ? 294 : 220;
+    const at = MORPH_LOCK;
+    this.tone({ at, wave: 'sine', f: 130, to: 44, dur: 0.3, gain: 0.5 });
+    this.noise({ at, dur: 0.16, gain: 0.28, f: 2800, to: 400, dest: this.crunch });
+    for (const [k, gain] of [[1, 0.12], [1.5, 0.09], [2, 0.07]] as const) {
+      this.tone({ at: at + 0.01, wave: this.pulse25, f: root * k, dur: 0.5, gain, wet: 0.3, vibrato: 6 });
+    }
+    this.duck(0.3, 0.3);
   }
 
   /** The guns are too hot to fire. */

@@ -3,6 +3,8 @@
 // and a vehicle's dials. One 2D canvas, in the board's face (pixel font, flat
 // colours, hard edges). It draws what it is given: it knows nothing of the
 // game's rules.
+import { FORM_GLYPH, type Form } from '../forms';
+
 const INK = '#e8eef9';
 const DIM = '#9aa8c0';
 const EDGE = '#05080f';
@@ -13,11 +15,7 @@ const RED = '#ff5d5d';
 const TEAL = '#35d0c7';
 const FONT = "'Press Start 2P', 'JetBrains Mono', monospace";
 
-/** A vehicle, in a few pixels. */
-const GLYPHS: Record<'plane' | 'boat', string[]> = {
-  plane: ['.....#.....', '.....#.....', '....###....', '###########', '.#########.', '.....#.....', '....###....', '...#####...'],
-  boat: ['.....#.....', '.....##....', '.....###...', '.....#.....', '###########', '.#########.', '..#######..'],
-};
+const GLYPHS = FORM_GLYPH;
 
 /** A thing to point at: a robot, a supply drop, a vehicle to board. */
 export type Mark = {
@@ -26,7 +24,8 @@ export type Mark = {
   /** Half its size on the stage. */
   r: number;
   dist: number;
-  kind: 'foe' | 'big' | 'supply' | 'plane' | 'boat';
+  /** `plane`, `boat`: a vehicle to board; `tank`: the mainland, where the machine becomes one. */
+  kind: 'foe' | 'big' | 'supply' | Form;
   /** 0..1, for the ones that wear their health. */
   hp: number | null;
 };
@@ -50,7 +49,7 @@ export type HudFrame = {
   warn: string | null;
   /** A vehicle's dials; null on foot. `alt`: null for what does not fly. */
   dials: {
-    speed: number; alt: number | null; fast: boolean; boost: number; boostDry: boolean;
+    speed: number; alt: number | null; power: number | null; fast: boolean; boost: number; boostDry: boolean;
     heat: number; jammed: boolean; missiles: number; maxMissiles: number;
   } | null;
   /** 0..1: how fresh the last hit is, and where it came from on the stage (an angle), if known. */
@@ -67,8 +66,6 @@ export type HudFrame = {
   };
   /** Words rising from where something happened. */
   floats: Array<{ x: number; y: number; text: string; colour: string; k: number }>;
-  /** The first seconds: the keys, as keys. `mouse`: what the mouse does for the same. */
-  hints: Array<{ keys: string[]; mouse?: 'move' | 'left' | 'right'; word: string }> | null;
   /** The two keys of the barrel roll, as this keyboard names them. */
   rollKeys: [string, string];
 };
@@ -143,18 +140,11 @@ export class Hud {
     g.fillRect(x + 1, y + 12, Math.round((w - 2) * Math.max(0, Math.min(1, k))), h - 2);
   }
 
-  /** An arrow on the rim of the stage, toward something out of the frame. */
-  private arrow(x: number, y: number, colour: string, size: number): void {
+  /** A filled arrowhead at (x, y), pointing along `a`. */
+  private head(x: number, y: number, a: number, colour: string, size: number): void {
     const g = this.g;
-    const cx = this.w / 2;
-    const cy = this.h / 2;
-    const a = Math.atan2(y - cy, x - cx);
-    const rx = cx - 34;
-    const ry = cy - 78;
-    // On an ellipse inside the frame.
-    const k = 1 / Math.hypot(Math.cos(a) / rx, Math.sin(a) / ry);
     g.save();
-    g.translate(cx + Math.cos(a) * k, cy + Math.sin(a) * k);
+    g.translate(Math.round(x), Math.round(y));
     g.rotate(a);
     for (const [c, grow] of [[EDGE, 2], [colour, 0]] as const) {
       g.fillStyle = c;
@@ -166,6 +156,36 @@ export class Hud {
       g.fill();
     }
     g.restore();
+  }
+
+  /**
+   * An arrow on the rim of the stage, toward something out of the frame.
+   * Returns where it is and which way it points.
+   */
+  private arrow(x: number, y: number, colour: string, size: number, inset = 0): { x: number; y: number; a: number } {
+    const cx = this.w / 2;
+    const cy = this.h / 2;
+    const a = Math.atan2(y - cy, x - cx);
+    const rx = cx - 34 - inset;
+    const ry = cy - 78 - inset;
+    // On an ellipse inside the frame.
+    const k = 1 / Math.hypot(Math.cos(a) / rx, Math.sin(a) / ry);
+    const at = { x: cx + Math.cos(a) * k, y: cy + Math.sin(a) * k, a };
+    this.head(at.x, at.y, a, colour, size);
+    return at;
+  }
+
+  /** A vehicle's badge: a gold diamond wearing its shape. */
+  private badge(kind: Form, x: number, y: number, d = 11): void {
+    const g = this.g;
+    g.save();
+    g.translate(Math.round(x), Math.round(y));
+    g.rotate(Math.PI / 4);
+    g.strokeStyle = EDGE; g.lineWidth = 4; g.strokeRect(-d, -d, d * 2, d * 2);
+    g.fillStyle = PANEL; g.fillRect(-d, -d, d * 2, d * 2);
+    g.strokeStyle = GOLD; g.lineWidth = 2; g.strokeRect(-d, -d, d * 2, d * 2);
+    g.restore();
+    this.glyph(GLYPHS[kind], x, y, GOLD);
   }
 
   draw(f: HudFrame): void {
@@ -207,24 +227,39 @@ export class Hud {
       const enemy = m.kind === 'foe' || m.kind === 'big';
       const x = at(m.x);
       const y = at(m.y);
+      const ride = m.kind === 'plane' || m.kind === 'boat' || m.kind === 'tank' ? m.kind : null;
       if (!m.shown) {
-        this.arrow(x, y, enemy ? RED : GOLD, m.kind === 'big' ? 12 : 8);
+        if (ride) {
+          // A vehicle out of the frame: a big arrow that beats, its badge behind it.
+          const beat = Math.abs(Math.sin(f.time * 5));
+          const p = this.arrow(x, y, GOLD, 17 + beat * 3, 4 - beat * 6);
+          const bx = p.x - Math.cos(p.a) * 36;
+          const by = p.y - Math.sin(p.a) * 36;
+          this.badge(ride, bx, by);
+          // How far, beside the badge (never under the arrow).
+          this.text(String(Math.round(m.dist / 10) * 10), bx - Math.sin(p.a) * 26, by + Math.cos(p.a) * 22 - 4, GOLD, 7, 'center');
+        } else this.arrow(x, y, enemy ? RED : GOLD, m.kind === 'big' ? 12 : 8);
+        continue;
+      }
+      if (ride) {
+        // In the frame: an arrow that bounces down onto where to board, its badge over it.
+        const bob = Math.abs(Math.sin(f.time * 5)) * 7;
+        this.head(x, y - 16 - bob, Math.PI / 2, GOLD, 11);
+        this.badge(ride, x, y - 48 - bob);
+        this.text(String(Math.round(m.dist / 10) * 10), x + 21, y - 52 - bob, GOLD, 7, 'left');
         continue;
       }
       const r = Math.max(m.kind === 'big' ? 16 : 7, at(m.r) + 3);
       if (!enemy) {
-        // Something to go to: a gold diamond over it — a vehicle's wears its shape — and how far.
-        const d = m.kind === 'supply' ? r * 0.75 : 11;
-        const cy = m.kind === 'supply' ? y : y - r - 22;
+        // Supplies to fly through: a gold diamond round them, and how far.
+        const d = r * 0.75;
         g.save();
-        g.translate(Math.round(x), Math.round(cy));
+        g.translate(Math.round(x), Math.round(y));
         g.rotate(Math.PI / 4);
         g.strokeStyle = EDGE; g.lineWidth = 4; g.strokeRect(-d, -d, d * 2, d * 2);
-        g.fillStyle = m.kind === 'supply' ? 'rgba(0, 0, 0, 0)' : PANEL; g.fillRect(-d, -d, d * 2, d * 2);
         g.strokeStyle = GOLD; g.lineWidth = 2; g.strokeRect(-d, -d, d * 2, d * 2);
         g.restore();
-        if (m.kind === 'plane' || m.kind === 'boat') this.glyph(GLYPHS[m.kind], x, cy, GOLD);
-        this.text(String(Math.round(m.dist / 10) * 10), x, cy + d * 1.4 + 6, GOLD, 7, 'center');
+        this.text(String(Math.round(m.dist / 10) * 10), x, y + d * 1.4 + 6, GOLD, 7, 'center');
         continue;
       }
       if (!f.brackets && m.kind !== 'big') continue;
@@ -311,13 +346,18 @@ export class Hud {
           this.text(String(Math.max(0, Math.round(d.alt))).padStart(4, '0'), W / 2 + 176, cy, d.alt < 120 ? RED : INK, 10);
         }
       }
-      // Bottom left: the afterburner, the guns' heat, the missiles.
+      // Bottom left: the throttle (what has one), the afterburner, the guns' heat, the missiles.
       const px = 14;
-      const py = H - 96;
+      const tall = d.power != null ? 108 : 84;
+      const py = H - 12 - tall;
       g.fillStyle = PANEL;
-      g.fillRect(px, py, 150, 84);
+      g.fillRect(px, py, 150, tall);
       g.strokeStyle = LINE; g.lineWidth = 2;
-      g.strokeRect(px + 1, py + 1, 148, 82);
+      g.strokeRect(px + 1, py + 1, 148, tall - 2);
+      if (d.power != null) {
+        this.bar(px + 10, py + 9, 130, 8, d.power, INK, 'POWER');
+        g.translate(0, 24);
+      }
       this.bar(px + 10, py + 9, 130, 8, d.boost, d.boostDry ? DIM : TEAL, 'BOOST', d.boostDry ? 'REFILL' : '');
       this.bar(px + 10, py + 33, 130, 8, d.heat, d.jammed ? RED : d.heat > 0.7 ? GOLD : INK, 'GUNS', d.jammed ? 'HOT' : '');
       this.text('MISSILES', px + 10, py + 59, DIM, 7);
@@ -327,6 +367,7 @@ export class Hud {
         g.fillStyle = i < d.missiles ? GOLD : LINE;
         g.fillRect(px + 11 + i * 12, py + 71, 7, 5);
       }
+      if (d.power != null) g.translate(0, -24);
     }
 
     // Top left: the radar, the plane's nose up.
@@ -391,23 +432,6 @@ export class Hud {
       g.fillStyle = TEAL;
       g.fillRect(Math.round(cx + Math.cos(a) * e) - 2, Math.round(cy2 + Math.sin(a) * e) - 2, 5, 5);
     }
-
-    // How it is flown, the first seconds: one row of keys, a word under each.
-    if (f.hints) {
-      const gap = 22;
-      const caps = f.hints.map((h) => Math.max(0, h.keys.reduce((sum, key) => sum + this.capWidth(key) + 3, -3)) + (h.mouse ? (h.keys.length ? 16 : 10) : 0));
-      // A group is as wide as its keys, or as its word.
-      const widths = f.hints.map((h, i) => Math.max(caps[i], h.word.length * 6));
-      let x = Math.round(W / 2 - (widths.reduce((sum, w) => sum + w, 0) + gap * (f.hints.length - 1)) / 2);
-      const y = H - 104;
-      f.hints.forEach((h, i) => {
-        let kx = Math.round(x + (widths[i] - caps[i]) / 2);
-        for (const key of h.keys) kx += this.keycap(kx, y, key) + 3;
-        if (h.mouse) this.mouse(h.keys.length ? kx + 3 : kx, y, h.mouse);
-        this.text(h.word, x + widths[i] / 2, y + 19, DIM, 6, 'center');
-        x += widths[i] + gap;
-      });
-    }
   }
 
   /** A small shape, its middle on a point. */
@@ -437,23 +461,5 @@ export class Hud {
     g.fillRect(x + 1, y + 1, w - 2, 11);
     this.text(label, x + w / 2, y + 3, INK, 7, 'center');
     return w;
-  }
-
-  /** A mouse, one of its buttons lit — or its whole body: it is moved. */
-  private mouse(x: number, y: number, part: 'move' | 'left' | 'right'): void {
-    const g = this.g;
-    g.fillStyle = EDGE;
-    g.fillRect(x - 1, y - 1, 12, 17);
-    g.fillStyle = part === 'move' ? INK : LINE;
-    g.fillRect(x, y, 10, 15);
-    g.fillStyle = '#131c2e';
-    g.fillRect(x + 1, y + 1, 8, 13);
-    g.fillStyle = LINE;
-    g.fillRect(x + 1, y + 6, 8, 1);
-    g.fillRect(x + 4, y + 1, 1, 5);
-    if (part !== 'move') {
-      g.fillStyle = GOLD;
-      g.fillRect(part === 'left' ? x + 1 : x + 5, y + 1, part === 'left' ? 3 : 4, 5);
-    }
   }
 }

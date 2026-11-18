@@ -5,6 +5,7 @@
 // sprites, never on the sessions behind them.
 import { useSyncExternalStore } from 'react';
 import type { AudioMode } from './game/audio';
+import type { Form, KeyHint } from './game/forms';
 
 export type ArcadePhase = 'intro' | 'wave' | 'clear' | 'over';
 
@@ -41,6 +42,10 @@ export type ArcadeHud = {
   missiles: number;
   /** The vehicles have been reached once: a run may start from there. */
   checkpoint: boolean;
+  /** The machine's shape, in a vehicle; null on foot. */
+  form: Form | null;
+  /** The keys of the way it is played right now (the same array until that changes). */
+  keys: KeyHint[];
 };
 
 const BEST_KEY = 'desk.arcade.best';
@@ -56,7 +61,7 @@ export function writeBest(score: number): void {
 const OFF: ArcadeHud = {
   on: false, mode: 'ground', phase: 'intro', paused: false, score: 0, best: 0, record: false, wave: 0, hp: 0, maxHp: 0, shield: 0,
   weapon: '', ammo: null, bombs: 0, mult: 1, foes: 0, boss: null, banner: '', bannerAt: 0, audio: 'all',
-  hull: 0, missiles: 0, checkpoint: false,
+  hull: 0, missiles: 0, checkpoint: false, form: null, keys: [],
 };
 
 let snapshot: ArcadeHud = OFF;

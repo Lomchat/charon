@@ -65,16 +65,20 @@ app/desk/
     game.ts         canvas, scene, camera, input, robots, effects, labels, miniatures
     arcade.ts       the mini-game: pilot, weapons, waves of robots, pickups, score
     audio.ts        the mini-game's music and effects (Web Audio, synthesised)
+    forms.ts        the machine's three shapes (glyphs), and the keys of each way of playing
     tps/            the mini-game's 3D phase (three.js, loaded on demand)
       index.ts      the phase: on foot → boarding → a vehicle, one camera throughout
       stage.ts      renderer, world, camera (`Rig`, `blendRig`)
       foot.ts       the board's fight seen from behind the pilot (ground.ts: what it reads)
-      combat.ts     the fight around a vehicle: weapons, robots, waves
+      combat.ts     the fight around the machine: weapons, robots, waves, its turns
       plane.ts      the seaplane (flight.ts: how it flies, pure)     boat.ts  the gunboat
-      craft.ts      what a vehicle is                run.ts   what the phase asks of the run
+      tank.ts       the tank                         morph.ts the turn from one shape into another
+      machine.ts    the machine itself: one set of parts, three poses, a folded state between
+      craft.ts      what a shape is                  run.ts   what the phase asks of the run
       input.ts      keys (by position) and mouse → stick, look, trigger, buttons
       foes.ts       the robots a vehicle fights, and how each does
       world.ts      the board's layout raised into islands, sea, sky
+      mainland.ts   the immense island north of them: ground with a relief
       models.ts     every model, as boxes; voxels.ts builds them
       fx.ts         bursts, bullets, flashes      hud.ts  the instruments
   ui/               TopBar, IslandBar, QuestLog, LimitsPanel, UnitPanel,
@@ -230,19 +234,35 @@ Keys are listed in the help overlay (`?`).
 ## The mini-game
 
 `PLAY` (or `G`) starts an arena shooter on the island on stage
-(`game/arcade.ts`): a helicopter drops a pilot, the island's robots turn on
-them, then more land by pod, wave after wave — a boss every fifth. Weapons and
+(`game/arcade.ts`): a helicopter brings a pilot, who slides down its rope. The
+island's robots are at their work and go on with it — they harm no one —
+until the pilot attacks one (`Arcade.stir`): then they turn on the pilot, the
+nearest first, and more land by pod, wave after wave — a boss every fifth. Weapons and
 bonuses are picked up; a combo multiplies the score; the best one is kept
 (`localStorage desk.arcade.best`) and always shown in the top bar.
 
 - **It is a toy.** It plays with copies of the board's sprites: it never reads
   or writes a session, sends nothing, and the fleet's counters stay on screen
   — a real robot may need you mid-run.
-- **On the board, keyboard only**: the run owns the keys (`Arcade.key`), the
+- **The keys are always on screen**, in a panel on the right
+  (`ui/ArcadeHud.tsx § Keys`, `forms.ts § keyHints`): keys as keys, the mouse
+  as a mouse, one word each, the shapes as their glyphs — for the way the run
+  is played right now (board, on foot, each shape), named as THIS keyboard
+  names them.
+- **The mouse does the shooting, everywhere**: the left button fires, the
+  right one brings the view closer for as long as it is held, F is the
+  special weapon (the bomb on foot, a missile in the machine). No key fires.
+  On the board the cursor is the sight (`ArcadeHost.at`): the pilot aims at
+  what is under it, and the closer view is a whole zoom step (pixels stay
+  whole) leaning toward it.
+- The run owns the keys (`Arcade.key`), the
   board's own text and panels step aside (`.is-arcade`). It also owns the
   camera: `frame`/`zoomBy`/`reveal` are no-ops until `stopArcade`. On the 3D
-  stage the mouse joins in: a click captures it (Esc frees it), it then turns
-  the view; free, the side it is on does.
+  stage the mouse is the game's: captured as the stage comes up (a browser
+  wants a gesture: every key and click asks again until it is given), it
+  turns the view. Esc — or another window — frees it and the fight waits
+  (`PAUSED`); a key or a click takes it back. Where it cannot be captured,
+  the side it is on turns the view.
 - The engine swaps its step and its drawing for the run's (`stepArcade`,
   `drawArcade`); the island stays as scenery. The board is held as it was
   for the whole run: a model that comes in meanwhile is applied at its end
@@ -250,7 +270,7 @@ bonuses are picked up; a combo multiplies the score; the best one is kept
 - The overlay (`ui/ArcadeHud.tsx`) only reads `arcadeStore`, published about
   ten times a second; on the 3D stage the instruments are the phase's own
   canvas (`tps/hud.ts`), drawn every frame.
-- **After the third wave the fight is seen from behind the pilot**
+- **After the first wave the fight is seen from behind the pilot**
   (`game/tps`): the SAME fight, still run by `arcade.ts` — the 3D stage only
   shows it (`foot.ts` reads it through `GroundPort`) and turns the keys round
   the pilot's heading. The eye starts right over the board's own view, lens
@@ -259,20 +279,58 @@ bonuses are picked up; a combo multiplies the score; the best one is kept
   round what it looks at, the framing changing at a steady rate). No cut.
 - **A wave later the vehicles come** (`Tps.deliver`, `VEHICLES READY`): a
   seaplane moored off the south shore, a gunboat off the east, each with a
-  ring to walk into. In the ring the pilot hops aboard and the fight goes on
-  in the air or on the water (`combat.ts`) on the same stage, in the same
-  world — the wave under way goes with it: what stood on the island follows
-  (`FOLLOW`), what it had not sent yet comes as robots a vehicle fights. One
-  way for now: no getting out.
-  - The seaplane flies like a plane (`flight.ts`): the stick banks and
-    pitches, a climb costs speed, too slow stalls; the mouse flies it (the
-    nose follows it) or the keys do. Cannon, locked missiles, a barrel roll
-    that dodges, an afterburner.
+  ring to walk into, shown by arrows — one bouncing over the ring in the
+  world, one in the instruments (on the rim of the frame when the vehicle is
+  out of it, with its badge and how far). In the ring the pilot hops aboard
+  and the fight goes on in the air or on the water (`combat.ts`) on the same
+  stage, in the same world — the wave under way goes with it: what stood on
+  the island follows (`FOLLOW`), what it had not sent yet comes as robots a
+  vehicle fights, the whole within what that wave is worth to a vehicle. One
+  way: the pilot does not get out — the machine changes shape instead.
+  - The seaplane flies like a plane (`flight.ts`): the mouse flies it (the
+    nose follows the cursor; the arrows are a stick), W / S move the
+    throttle, A / D the rudder (the nose swings, wings level, and the cursor
+    stops banking it while they are held). A climb costs speed; under the
+    stall the wings let go and it FALLS. Cannon, locked missiles, a barrel
+    roll that dodges, an afterburner.
   - The gunboat: engine and rudder on the keys, the mouse turns the view and
     the turret with it; flares throw missiles off.
+  - The tank: W / S drive, A / D turn the hull (on the spot too), the mouse
+    turns the view and the guns whatever the hull does; heavy guns whose
+    shells burst (`craft.ts § CANNON`).
   - Their robots (`foes.ts`): drones, robots on jetpacks and on wings,
-    gunships, skimmers, mines, a warship, a dreadnought on boss waves. None
-    passes through the land, the sea or a tower (`settle`).
+    gunships; skimmers, mines, a warship; robots on foot and a walking gun on
+    the mainland; a dreadnought on boss waves. None passes through the land,
+    the sea or a tower (`settle`).
+- **The machine is ONE machine in three shapes** (`forms.ts § Form`) and
+  turns from one into the other without a cut (`Combat.shift`, `morph.ts`):
+  - by where it goes: a plane that touches the sea becomes the boat, one
+    that lands on the mainland the tank (too hard a landing costs hull; an
+    island of the archipelago is still a crash); a boat that runs onto the
+    mainland's beach becomes the tank; a tank that wades out, the boat;
+  - on T, from the boat or the tank: into the air.
+  The machine is ONE body (`machine.ts`): the same parts — fuselage, wings,
+  floats and their soles, tail, canopy, guns… — put together three ways.
+  The boat is the fuselage down on the water between its floats, the wings
+  swept back and stood up as its sides, the canopy raised into a wheelhouse,
+  the guns on a turret forward; the tank is the floats let down as tracks
+  (soles on the ground, wheels showing between), the wings laid over them as
+  skirts, the guns run out long. A turn (`morph.ts`, `Machine.blend`) is
+  those parts folding into a state common to all three, then unfolding into
+  the next shape, each in its own time — nothing appears, vanishes or
+  changes colour — while the machine goes on its way. The next shape (a
+  `Craft`) exists from the first frame, held where the turning machine is
+  (`Craft.hold`), and is what the eye and the robots follow; it is the
+  pilot's when the last part seats (`release`).
+- **The mainland** (`mainland.ts`): an immense island north of the
+  archipelago, straight ahead of the pilot who lands — beaches all round,
+  forests, a mountain spine. Ground with a relief (a grid of heights; the
+  tank rides the very triangles that are drawn). A badge on the rim of the
+  frame points to it while the machine is not on it.
+- **The fight follows the shape** (`combat.ts`): a wave is drawn up from the
+  pool of the shape the machine has then (`POOLS`); a robot whose element the
+  machine has left far behind takes to the air after it (`AIRBORNE`); what
+  circles, circles where the fight is, not the home island.
 - The world is the board's own layout raised in 3D (`tps/world.ts`: the same
   islands, decks and beacons, `SCALE` world units per board pixel), drawn at a
   low resolution scaled in whole pixels, every model made of boxes — the

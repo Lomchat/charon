@@ -139,6 +139,8 @@ export class Game {
   /** The mini-game (game/arcade.ts), while a run lasts: it takes the stage. */
   private arcade: Arcade | null = null;
   private arcadeQuit = false;
+  /** The board's zoom for a run (the right button brings it a step closer for as long as it is held). */
+  private arcadeZoom = 3;
   /** The newest model that came in during a run (`setModel`). */
   private heldModel: DeskModel | null = null;
   private arcadeHudAt = 0;
@@ -791,6 +793,7 @@ export class Game {
     this.drag = null;
     this.goal = null;
     this.cam.zoom = this.snapZoom(Math.min(4, Math.max(3, this.cam.zoom)), 'near');
+    this.arcadeZoom = this.cam.zoom;
     this.afterZoom();
     this.labels.classList.add('is-arcade');
     this.host.classList.add('is-arcade');
@@ -798,6 +801,12 @@ export class Game {
     this.arcade = new Arcade({
       island, robots, best: readBest(), world, stage: this.host, from,
       view: () => ({ x: this.cam.x, y: this.cam.y, zoom: this.cam.zoom }),
+      at: (x, y) => ({ x: this.cam.x + (x - this.size.w / 2) / this.cam.zoom, y: this.cam.y + (y - this.size.h / 2) / this.cam.zoom }),
+      zoom: (on) => {
+        // A whole step closer: the board's pixels stay whole.
+        this.cam.zoom = this.snapZoom(this.arcadeZoom * (on ? 1.3 : 1), on ? 'up' : 'near');
+        this.afterZoom();
+      },
       capture: (on) => this.capture(on),
       float: (x, y, text, colour, size) => this.float(x, y, text, colour, size),
       shake: (ms, px) => { this.shakeUntil = this.time + ms; this.shakeBy = px; },
@@ -832,11 +841,18 @@ export class Game {
     this.frame();
   }
 
-  /** Capture the mouse for a run (it turns the view), or let it go. Asked on a click: a browser wants the gesture. */
+  /**
+   * Capture the mouse for a run (it turns the view and stays on the stage),
+   * or let it go. A browser grants it on a gesture only, and refuses for a
+   * moment after an Esc: a refusal is nothing, the run asks again.
+   */
   private capture(on: boolean): void {
     try {
-      if (on) { if (document.pointerLockElement !== this.host) void this.host.requestPointerLock?.(); }
-      else if (document.pointerLockElement === this.host) document.exitPointerLock?.();
+      if (on) {
+        if (document.pointerLockElement === this.host) return;
+        const asked = this.host.requestPointerLock?.() as Promise<void> | undefined;
+        asked?.catch?.(() => { /* not this time */ });
+      } else if (document.pointerLockElement === this.host) document.exitPointerLock?.();
     } catch { /* no capture here: the mouse points instead */ }
   }
 

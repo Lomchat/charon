@@ -1,4 +1,4 @@
-// The 3D phase of the mini-game. After the third wave the board's fight is
+// The 3D phase of the mini-game. After the first wave the board's fight is
 // seen from behind the pilot — the SAME fight, still run by game/arcade.ts
 // (ground.ts) — then, a wave later, two vehicles come to the island: a
 // seaplane and a gunboat. Walk to one and the pilot boards it: the fight goes
@@ -13,7 +13,8 @@
 //
 // Still a TOY: nothing here reads or writes a session. This module is loaded
 // on demand (it brings three.js with it).
-import { AdditiveBlending, BoxGeometry, DoubleSide, Mesh, MeshBasicMaterial, RingGeometry, Vector3 } from 'three';
+import { AdditiveBlending, BoxGeometry, ConeGeometry, DoubleSide, Group, Mesh, MeshBasicMaterial, RingGeometry, Vector3 } from 'three';
+import type { Form } from '../forms';
 import type { World } from '../layout';
 import { Boat } from './boat';
 import { Combat } from './combat';
@@ -23,6 +24,7 @@ import { Foot } from './foot';
 import type { GroundPort } from './ground';
 import type { Mark } from './hud';
 import { Input } from './input';
+import { Machine } from './machine';
 import { Plane } from './plane';
 import type { TpsRun } from './run';
 import { blendRig, copyRig, makeRig, Stage } from './stage';
@@ -44,7 +46,8 @@ export type TpsOpen = {
 
 export type TpsState = {
   /** On foot, or in a vehicle (and which). */
-  craft: 'plane' | 'boat' | null;
+  /** On foot (null), or the machine's shape. */
+  craft: Form | null;
   hull: number;
   missiles: number;
   foes: number;
@@ -72,6 +75,8 @@ export class Tps {
   private combat: Combat | null = null;
   private rides: Craft[] = [];
   private rings: Mesh[] = [];
+  /** Over each ring, an arrow that bounces: where to go. */
+  private arrows: Group[] = [];
   private ringMaterial: MeshBasicMaterial | null = null;
   private owned: Array<{ dispose: () => void }> = [];
   /** Climbing aboard: how far along, from where, into what. */
@@ -82,6 +87,8 @@ export class Tps {
   private blend = 1;
   private blendIn = 1;
   private time = 0;
+  /** 0..1: how far the view has come closer (the right button). */
+  private zoom = 0;
 
   constructor(mount: HTMLElement, layout: World, homeId: string, private run: TpsRun, private port: GroundPort, open: TpsOpen) {
     this.stage = new Stage(mount, layout, homeId);
@@ -108,6 +115,7 @@ export class Tps {
     this.combat?.dispose();
     for (const ride of this.rides) ride.dispose(this.stage);
     for (const ring of this.rings) this.stage.scene.remove(ring);
+    for (const arrow of this.arrows) this.stage.scene.remove(arrow);
     for (const o of this.owned) o.dispose();
     this.stage.dispose();
   }
@@ -167,10 +175,10 @@ export class Tps {
     };
     const px = home.x - home.hw * 0.2;
     const south = shore(px, home.z, 0, 1);
-    const plane = new Plane(this.stage, { x: px, z: home.z + south + 14, yaw: Math.PI / 2 }, new Vector3(px, LAND_Y, home.z + south - 5));
+    const plane = new Plane(this.stage, new Machine('plane'), { x: px, z: home.z + south + 14, yaw: Math.PI / 2 }, new Vector3(px, LAND_Y, home.z + south - 5));
     const bz = home.z + home.hd * 0.15;
     const east = shore(home.x, bz, 1, 0);
-    const boat = new Boat(this.stage, { x: home.x + east + 7.5, z: bz, yaw: 0 }, new Vector3(home.x + east - 5, LAND_Y, bz));
+    const boat = new Boat(this.stage, new Machine('boat'), { x: home.x + east + 7.5, z: bz, yaw: 0 }, new Vector3(home.x + east - 5, LAND_Y, bz));
     this.rides = [plane, boat];
     if (there) for (const ride of this.rides) ride.moor();
 
@@ -179,8 +187,22 @@ export class Tps {
     const columnGeometry = new BoxGeometry(0.5, 46, 0.5);
     this.ringMaterial = new MeshBasicMaterial({ color: '#ffe066', transparent: true, opacity: 0.8, blending: AdditiveBlending, depthWrite: false, side: DoubleSide, fog: false });
     const columnMaterial = new MeshBasicMaterial({ color: '#ffe066', transparent: true, opacity: 0.16, blending: AdditiveBlending, depthWrite: false, fog: false });
-    this.owned.push(ringGeometry, columnGeometry, this.ringMaterial, columnMaterial);
+    // And an arrow over it, pointing down: four-sided, like everything here.
+    const shaftGeometry = new BoxGeometry(1.5, 4.5, 1.5);
+    const headGeometry = new ConeGeometry(3.4, 4.6, 4);
+    const arrowMaterial = new MeshBasicMaterial({ color: '#ffe066', fog: false });
+    const arrowShade = new MeshBasicMaterial({ color: '#c9962f', fog: false });
+    this.owned.push(ringGeometry, columnGeometry, this.ringMaterial, columnMaterial, shaftGeometry, headGeometry, arrowMaterial, arrowShade);
     for (const ride of this.rides) {
+      const arrow = new Group();
+      const shaft = new Mesh(shaftGeometry, arrowShade);
+      shaft.position.y = 4.4;
+      const head = new Mesh(headGeometry, arrowMaterial);
+      head.rotation.x = Math.PI;
+      arrow.add(shaft, head);
+      arrow.position.copy(ride.gate);
+      this.stage.scene.add(arrow);
+      this.arrows.push(arrow);
       const ring = new Mesh(ringGeometry, this.ringMaterial);
       ring.rotation.x = -Math.PI / 2;
       ring.position.copy(ride.gate).setY(LAND_Y + 0.6);
@@ -197,7 +219,7 @@ export class Tps {
     if (!foot) return;
     const left = this.port.leave();
     const world = this.stage.world;
-    const follow = FOLLOW[craft.kind];
+    const follow = FOLLOW[craft.kind === 'boat' ? 'boat' : 'plane'];
     const adopt = left.foes.map((f) => {
       const kind = follow[f.type] ?? 'drone';
       const at = world.toWorld(f.x, f.y, new Vector3());
@@ -207,6 +229,8 @@ export class Tps {
     this.hop = { t: 0, from: foot.at.clone(), craft, wave: left.fighting ? { share: left.share, boss: left.boss } : null, adopt };
     for (const ring of this.rings) this.stage.scene.remove(ring);
     this.rings = [];
+    for (const arrow of this.arrows) this.stage.scene.remove(arrow);
+    this.arrows = [];
     foot.body.visible = true;
     this.stage.fx.streaks([]);
     this.swing(1.9);
@@ -256,7 +280,9 @@ export class Tps {
         this.foot = null;
         this.hop = null;
         hop.craft.cast();
-        this.combat = new Combat(stage, this.run, hop.craft, this.input, hop.wave, hop.adopt);
+        // The machine is the fight's from here on (it will turn into other shapes): no longer one of the moored ones.
+        this.rides = this.rides.filter((r) => r !== hop.craft);
+        this.combat = new Combat(stage, this.run, hop.craft, this.input, hop.wave, hop.adopt, (seconds) => this.swing(seconds));
       }
     } else if (this.foot) {
       this.foot.step(dt);
@@ -269,10 +295,14 @@ export class Tps {
       }
     }
     // What is not being driven waits (or is still coming in).
-    for (const ride of this.rides) if (ride !== this.combat?.craft) ride.idle(dt, stage);
+    for (const ride of this.rides) ride.idle(dt, stage);
     this.combat?.step(dt);
     if (this.ringMaterial) this.ringMaterial.opacity = 0.55 + 0.3 * Math.sin(this.time * 5);
     for (let i = 0; i < this.rings.length; i += 2) this.rings[i].scale.setScalar(1 + 0.12 * Math.sin(this.time * 5));
+    for (const arrow of this.arrows) {
+      arrow.position.y = LAND_Y + 12 + Math.abs(Math.sin(this.time * 5)) * 3.2;
+      arrow.rotation.y = this.time * 2.2;
+    }
 
     stage.update(dt);
 
@@ -284,6 +314,9 @@ export class Tps {
       this.blend = Math.min(1, this.blend + dt / this.blendIn);
       blendRig(this.rigFrom, this.rigTo, ease(Math.max(0, this.blend)), this.rig);
     } else copyRig(this.rigTo, this.rig);
+    // The right button: the view comes closer, whatever is being played.
+    this.zoom += ((this.input.zoom ? 1 : 0) - this.zoom) * (1 - Math.exp(-12 * dt));
+    this.rig.fov *= 1 - 0.34 * this.zoom;
     stage.apply(this.rig);
   }
 
@@ -292,7 +325,8 @@ export class Tps {
     stage.render();
     if (this.combat) { stage.hud.draw(this.combat.frame()); return; }
     if (!this.foot) return;
-    const rides = this.hop ? [] : this.rides.filter((r) => r.moored).map((r) => ({ kind: r.kind, at: r.gate }));
+    // Every vehicle sent is shown the way to, moored or still coming in: its ring is where to wait for it.
+    const rides = this.hop ? [] : this.rides.map((r) => ({ kind: r.kind, at: r.gate }));
     stage.hud.draw(this.foot.frame(rides));
   }
 
@@ -306,7 +340,7 @@ export class Tps {
   }
 
   /** What a test needs to play: where things are on the stage, and how it fares. */
-  probe(): { mode: 'foot' | 'boarding' | 'plane' | 'boat'; live: boolean; hull: number; missiles: number; marks: Mark[]; alt: number; rides: number; size: { w: number; h: number } } {
+  probe(): { mode: 'foot' | 'boarding' | Form; live: boolean; hull: number; missiles: number; marks: Mark[]; alt: number; rides: number; size: { w: number; h: number } } {
     const c = this.combat;
     const state = c?.state();
     return {

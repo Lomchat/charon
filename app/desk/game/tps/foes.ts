@@ -15,33 +15,54 @@
 // the missiles and the newcomers belong to the fight (combat.ts). None of them
 // may enter the land, the sea or a tower: `settle` holds them out.
 import { Vector3, type Group } from 'three';
+import type { Form } from '../forms';
 import type { Tower } from './world';
 
-export type FoeKind = 'drone' | 'gunner' | 'ace' | 'bomber' | 'boss' | 'skimmer' | 'mine' | 'warship';
+export type FoeKind = 'drone' | 'gunner' | 'ace' | 'bomber' | 'boss' | 'skimmer' | 'mine' | 'warship' | 'walker' | 'trooper' | 'mech';
+
+/**
+ * The first wave a vehicle can meet: the vehicles come when the wave before
+ * it is cleared (arcade.ts § TPS_AFTER + 1). What follows counts from it.
+ */
+export const FIRST_RIDE_WAVE = 3;
 
 /** `from`: the first wave it shows up in; `cost`: what it takes from a wave's budget. */
 export const FOES: Record<FoeKind, {
   hp: number; speed: number; turn: number; radius: number; score: number; cost: number; from: number;
-  weight: number; blast: number; ram: number; sea?: boolean; heavy?: boolean;
+  weight: number; blast: number; ram: number; sea?: boolean; land?: boolean; heavy?: boolean;
 }> = {
-  drone: { hp: 2, speed: 116, turn: 1.9, radius: 6, score: 15, cost: 1, from: 5, weight: 6, blast: 1, ram: 14 },
-  gunner: { hp: 6, speed: 104, turn: 0, radius: 9, score: 40, cost: 2, from: 5, weight: 4, blast: 1.5, ram: 18 },
-  ace: { hp: 8, speed: 126, turn: 1.45, radius: 9, score: 60, cost: 3, from: 6, weight: 3, blast: 1.7, ram: 20 },
-  bomber: { hp: 46, speed: 46, turn: 0.5, radius: 24, score: 250, cost: 7, from: 7, weight: 1, blast: 3.4, ram: 40, heavy: true },
-  boss: { hp: 300, speed: 40, turn: 0.4, radius: 46, score: 2500, cost: 0, from: 7, weight: 0, blast: 7, ram: 60, heavy: true },
-  skimmer: { hp: 4, speed: 62, turn: 1.7, radius: 5, score: 30, cost: 1.5, from: 5, weight: 6, blast: 1.2, ram: 14, sea: true },
-  mine: { hp: 3, speed: 15, turn: 1.2, radius: 4, score: 10, cost: 0.5, from: 5, weight: 5, blast: 2.2, ram: 30, sea: true },
-  warship: { hp: 60, speed: 24, turn: 0.45, radius: 15, score: 300, cost: 7, from: 7, weight: 1, blast: 3.6, ram: 40, sea: true, heavy: true },
+  drone: { hp: 2, speed: 116, turn: 1.9, radius: 6, score: 15, cost: 1, from: FIRST_RIDE_WAVE, weight: 6, blast: 1, ram: 14 },
+  gunner: { hp: 5, speed: 104, turn: 0, radius: 9, score: 40, cost: 2, from: FIRST_RIDE_WAVE, weight: 4, blast: 1.5, ram: 18 },
+  ace: { hp: 7, speed: 126, turn: 1.45, radius: 9, score: 60, cost: 3, from: FIRST_RIDE_WAVE + 1, weight: 3, blast: 1.7, ram: 20 },
+  bomber: { hp: 38, speed: 46, turn: 0.5, radius: 24, score: 250, cost: 7, from: FIRST_RIDE_WAVE + 2, weight: 1, blast: 3.4, ram: 40, heavy: true },
+  boss: { hp: 220, speed: 40, turn: 0.4, radius: 46, score: 2500, cost: 0, from: FIRST_RIDE_WAVE + 2, weight: 0, blast: 7, ram: 60, heavy: true },
+  skimmer: { hp: 4, speed: 62, turn: 1.7, radius: 5, score: 30, cost: 1.5, from: FIRST_RIDE_WAVE, weight: 6, blast: 1.2, ram: 14, sea: true },
+  mine: { hp: 3, speed: 15, turn: 1.2, radius: 4, score: 10, cost: 0.5, from: FIRST_RIDE_WAVE, weight: 5, blast: 2.2, ram: 30, sea: true },
+  warship: { hp: 48, speed: 24, turn: 0.45, radius: 15, score: 300, cost: 7, from: FIRST_RIDE_WAVE + 2, weight: 1, blast: 3.6, ram: 40, sea: true, heavy: true },
+  // On the mainland, for the tank: robots on foot, and one that is a walking gun.
+  walker: { hp: 4, speed: 31, turn: 2.6, radius: 5, score: 20, cost: 1, from: FIRST_RIDE_WAVE, weight: 6, blast: 1.1, ram: 10, land: true },
+  trooper: { hp: 7, speed: 25, turn: 2.4, radius: 5, score: 40, cost: 2, from: FIRST_RIDE_WAVE, weight: 4, blast: 1.4, ram: 12, land: true },
+  mech: { hp: 50, speed: 14, turn: 1, radius: 12, score: 300, cost: 7, from: FIRST_RIDE_WAVE + 2, weight: 1, blast: 3.4, ram: 30, land: true, heavy: true },
+};
+
+/**
+ * What a robot becomes when the machine has left its element behind (a tank
+ * gone inland, a boat out at sea, a plane far away): it takes to the air.
+ */
+export const AIRBORNE: Record<FoeKind, FoeKind> = {
+  drone: 'drone', gunner: 'gunner', ace: 'ace', bomber: 'bomber', boss: 'boss',
+  skimmer: 'drone', mine: 'drone', warship: 'bomber', walker: 'drone', trooper: 'gunner', mech: 'bomber',
 };
 
 /** Who a wave may bring, by what the player drives. */
-export const POOLS: Record<'plane' | 'boat', FoeKind[]> = {
+export const POOLS: Record<Form, FoeKind[]> = {
   plane: ['drone', 'gunner', 'ace', 'bomber'],
   boat: ['skimmer', 'mine', 'drone', 'gunner', 'warship'],
+  tank: ['walker', 'trooper', 'drone', 'gunner', 'mech'],
 };
 
 /** How many of a kind come together. */
-export const FLIGHT_OF: Record<FoeKind, number> = { drone: 4, gunner: 2, ace: 2, bomber: 1, boss: 1, skimmer: 3, mine: 4, warship: 1 };
+export const FLIGHT_OF: Record<FoeKind, number> = { drone: 4, gunner: 2, ace: 2, bomber: 1, boss: 1, skimmer: 3, mine: 4, warship: 1, walker: 4, trooper: 2, mech: 1 };
 
 export type Foe = {
   kind: FoeKind;
@@ -72,8 +93,12 @@ export type FoeCtx = {
   target: { pos: Vector3; fwd: Vector3 };
   /** Its velocity, to lead it. */
   velocity: Vector3;
-  /** It is on the water: what flies comes down to it. */
+  /** It is on the water or on the ground: what flies comes down to it. */
   afloat: boolean;
+  /** Where the fight is (it follows the machine, slowly): what circles, circles this. */
+  centre: Vector3;
+  /** The mainland's ground at a point (under 0: its seabed; −Infinity: not there). */
+  landAt: (x: number, z: number) => number;
   wave: number;
   /** The foe the player's missile is locking on, if any. */
   locked: Foe | null;
@@ -87,18 +112,21 @@ export type FoeCtx = {
   spawn: (kind: FoeKind, at: Vector3) => void;
 };
 
+/** How fast the robots' own clocks run (shots, missiles, broods): under 1, they fire less often. */
+const PACE = 0.78;
 /** How high above the water a surface craft rides. */
 const RIDE = 1.2;
 
 export function makeFoe(kind: FoeKind, mesh: Group, at: Vector3, heading: Vector3, wave: number): Foe {
   const def = FOES[kind];
-  const later = Math.max(0, wave - 5);
-  const hp = Math.ceil(def.hp * (1 + 0.1 * later) * (kind === 'boss' ? 1 + (Math.max(0, wave - 7) / 5) * 0.6 : 1));
+  const later = Math.max(0, wave - FIRST_RIDE_WAVE);
+  const hp = Math.ceil(def.hp * (1 + 0.07 * later) * (kind === 'boss' ? 1 + (Math.max(0, wave - FIRST_RIDE_WAVE - 2) / 5) * 0.6 : 1));
   const dir = heading.clone();
   if (def.sea) dir.y = 0;
   dir.normalize();
   const pos = at.clone();
   if (def.sea) pos.y = RIDE;
+  if (def.land) dir.y = 0;
   return {
     kind, mesh, pos, dir, vel: dir.clone().multiplyScalar(def.speed), speed: def.speed * (1 + Math.min(0.3, 0.02 * later)),
     hp, maxHp: hp, flash: 0, t: 0, state: 0, shotIn: 1 + Math.random(), burst: 0, nextIn: 2 + Math.random() * 2,
@@ -164,9 +192,26 @@ function sail(f: Foe, ctx: FoeCtx, rate: number, dt: number): void {
   f.vel.copy(f.dir).multiplyScalar(f.speed);
 }
 
+/** On the mainland: head where it wants; `go` false, it stands and turns. */
+function march(f: Foe, ctx: FoeCtx, rate: number, dt: number, go: boolean): void {
+  want.y = 0;
+  if (want.lengthSq() < 1e-6) want.copy(f.dir);
+  want.normalize();
+  steer(f, want, rate, dt);
+  f.dir.y = 0;
+  f.dir.normalize();
+  f.vel.copy(f.dir).multiplyScalar(go ? f.speed : 0);
+}
+
 /** Nothing passes through the land, the sea or a tower: after its move, a foe is put back outside. */
 function settle(f: Foe, ctx: FoeCtx, before: Vector3): void {
   const def = FOES[f.kind];
+  if (def.land) {
+    // It keeps its feet dry: the beach is as far as it goes.
+    if (ctx.landAt(f.pos.x, f.pos.z) < 0.5) { f.pos.x = before.x; f.pos.z = before.z; }
+    f.pos.y = Math.max(0, ctx.landAt(f.pos.x, f.pos.z));
+    return;
+  }
   if (def.sea) {
     // The shore stops it.
     if (ctx.groundAt(f.pos.x, f.pos.z) > 0) { f.pos.copy(before); f.dir.negate(); }
@@ -198,7 +243,7 @@ export function stepFoe(f: Foe, ctx: FoeCtx, dt: number): void {
   const dist = to.length() || 1;
   to.multiplyScalar(1 / dist);
   // Later waves shoot a little faster and straighter.
-  const keen = Math.min(1, Math.max(0, ctx.wave - 5) / 10);
+  const keen = Math.min(1, Math.max(0, ctx.wave - FIRST_RIDE_WAVE) / 14);
   const before = prev.copy(f.pos);
 
   if (f.kind === 'drone') {
@@ -207,7 +252,7 @@ export function stepFoe(f: Foe, ctx: FoeCtx, dt: number): void {
       lead(f.pos, ctx, f.speed, 0, want);
       keepAloft(f, ctx, 14);
       steer(f, want, def.turn, dt);
-      f.shotIn -= dt;
+      f.shotIn -= dt * PACE;
       if (dist < 280 && f.dir.dot(to) > 0.975 && f.shotIn <= 0) {
         ctx.fire(f.pos, lead(f.pos, ctx, 200, 0.05 - keen * 0.02, aim), 200, 5);
         f.burst += 1;
@@ -236,7 +281,7 @@ export function stepFoe(f: Foe, ctx: FoeCtx, dt: number): void {
     want.multiplyScalar(gap > 1 ? Math.min(f.speed, gap * 1.5) / gap : 0);
     f.vel.lerp(want, 1 - Math.exp(-2.2 * dt));
     f.dir.copy(to);
-    f.shotIn -= dt;
+    f.shotIn -= dt * PACE;
     if (f.shotIn <= 0 && dist < 520) {
       ctx.fire(tmp.copy(f.pos).addScaledVector(to, 6), lead(f.pos, ctx, 205, 0.06 - keen * 0.025, aim), 205, 7);
       f.burst += 1;
@@ -257,7 +302,7 @@ export function stepFoe(f: Foe, ctx: FoeCtx, dt: number): void {
       keepAloft(f, ctx, 18);
       steer(f, want, def.turn, dt);
       if (dist < 340 && f.dir.dot(to) > 0.985) {
-        f.shotIn -= dt;
+        f.shotIn -= dt * PACE;
         if (f.shotIn <= 0) {
           ctx.fire(tmp.copy(f.pos).addScaledVector(f.dir, 8), lead(f.pos, ctx, 215, 0.045 - keen * 0.02, aim), 215, 6);
           f.shotIn = 0.17;
@@ -266,8 +311,8 @@ export function stepFoe(f: Foe, ctx: FoeCtx, dt: number): void {
         }
       }
       if (dist < 40) { f.state = 1; f.nextIn = 1.2; }
-      f.missileIn -= dt;
-      if (ctx.wave >= 8 && f.missileIn <= 0 && dist > 170 && dist < 540 && f.dir.dot(to) > 0.8) {
+      f.missileIn -= dt * PACE;
+      if (ctx.wave >= FIRST_RIDE_WAVE + 3 && f.missileIn <= 0 && dist > 170 && dist < 540 && f.dir.dot(to) > 0.8) {
         ctx.launch(tmp.copy(f.pos).addScaledVector(f.dir, 8), f.dir);
         f.missileIn = 11 - keen * 4;
       }
@@ -295,7 +340,7 @@ export function stepFoe(f: Foe, ctx: FoeCtx, dt: number): void {
       if (f.nextIn <= 0 || dist < 16) { f.state = 0; f.nextIn = 5 + Math.random() * 4; }
     }
     sail(f, ctx, def.turn, dt);
-    f.shotIn -= dt;
+    f.shotIn -= dt * PACE;
     if (f.shotIn <= 0 && dist < 260) {
       ctx.fire(tmp.copy(f.pos).addScaledVector(UP, 3), lead(f.pos, ctx, 190, 0.07 - keen * 0.03, aim), 190, 5);
       f.burst += 1;
@@ -311,46 +356,83 @@ export function stepFoe(f: Foe, ctx: FoeCtx, dt: number): void {
     const turn = f.seed > 50 ? 1 : -1;
     want.set(-to.z * turn + to.x * ((dist - 210) / 90), 0, to.x * turn + to.z * ((dist - 210) / 90));
     sail(f, ctx, def.turn, dt);
-    f.shotIn -= dt;
+    f.shotIn -= dt * PACE;
     if (f.shotIn <= 0 && dist < 440) {
       ctx.fire(tmp.copy(f.pos).addScaledVector(UP, 5), lead(f.pos, ctx, 200, 0.06 - keen * 0.025, aim), 200, 8);
       f.shotIn = 1.1 - keen * 0.35;
     }
-    f.missileIn -= dt;
+    f.missileIn -= dt * PACE;
     if (f.missileIn <= 0 && dist < 700) {
       ctx.launch(tmp.copy(f.pos).addScaledVector(UP, 8), aim.copy(to).setY(0.5).normalize());
       f.missileIn = 8.5 - keen * 2.5;
     }
-    f.spawnIn -= dt;
+    f.spawnIn -= dt * PACE;
     if (f.spawnIn <= 0 && ctx.foes < 22) {
       side.crossVectors(f.dir, UP).normalize();
       for (const off of [-22, 22]) ctx.spawn('mine', tmp.copy(f.pos).addScaledVector(side, off));
       f.spawnIn = 11;
     }
+  } else if (f.kind === 'walker') {
+    // Runs at the machine, shooting from the hip.
+    want.set(to.x, 0, to.z);
+    march(f, ctx, def.turn, dt, dist > 22);
+    f.shotIn -= dt * PACE;
+    if (f.shotIn <= 0 && dist < 240) {
+      ctx.fire(tmp.copy(f.pos).addScaledVector(UP, 6), lead(f.pos, ctx, 160, 0.08 - keen * 0.03, aim), 160, 5);
+      f.shotIn = 2.2 - keen * 0.6;
+    }
+  } else if (f.kind === 'trooper') {
+    // Keeps its distance, moving round the machine, and fires in bursts.
+    const turn = f.seed > 50 ? 1 : -1;
+    want.set(-to.z * turn + to.x * ((dist - 150) / 60), 0, to.x * turn + to.z * ((dist - 150) / 60));
+    march(f, ctx, def.turn, dt, true);
+    f.shotIn -= dt * PACE;
+    if (f.shotIn <= 0 && dist < 420) {
+      ctx.fire(tmp.copy(f.pos).addScaledVector(UP, 6), lead(f.pos, ctx, 195, 0.06 - keen * 0.025, aim), 195, 6);
+      f.burst += 1;
+      f.shotIn = f.burst >= 3 ? 2.6 - keen * 0.8 : 0.16;
+      if (f.burst >= 3) f.burst = 0;
+    }
+  } else if (f.kind === 'mech') {
+    // A walking gun: it comes on slowly, shelling, a missile now and then.
+    want.set(to.x, 0, to.z);
+    march(f, ctx, def.turn, dt, dist > 130);
+    f.shotIn -= dt * PACE;
+    if (f.shotIn <= 0 && dist < 520) {
+      ctx.fire(tmp.copy(f.pos).addScaledVector(UP, 16), lead(f.pos, ctx, 175, 0.05 - keen * 0.02, aim), 175, 10);
+      f.shotIn = 1.6 - keen * 0.5;
+    }
+    f.missileIn -= dt * PACE;
+    if (f.missileIn <= 0 && dist < 700) {
+      ctx.launch(tmp.copy(f.pos).addScaledVector(UP, 22), aim.copy(to).setY(0.6).normalize());
+      f.missileIn = 9 - keen * 2.5;
+    }
   } else {
-    // The heavy ones of the air circle the home island, and bring their weapons to bear.
+    // The heavy ones of the air circle the fight, and bring their weapons to bear.
     const boss = f.kind === 'boss';
     const ring = boss ? 330 : 420;
-    const height = ctx.afloat ? (boss ? 150 : 120) : boss ? 250 : 215;
-    const r = Math.hypot(f.pos.x, f.pos.z) || 1;
+    const height = Math.max(ctx.groundAt(f.pos.x, f.pos.z) + 90, ctx.afloat ? (boss ? 150 : 120) : boss ? 250 : 215);
+    const rx = f.pos.x - ctx.centre.x;
+    const rz = f.pos.z - ctx.centre.z;
+    const r = Math.hypot(rx, rz) || 1;
     const turn = f.seed > 50 ? 1 : -1;
     // Along the circle, pulled back onto it.
-    want.set((-f.pos.z / r) * turn + (-f.pos.x / r) * ((r - ring) / 220), (height - f.pos.y) / 120, (f.pos.x / r) * turn + (-f.pos.z / r) * ((r - ring) / 220)).normalize();
+    want.set((-rz / r) * turn + (-rx / r) * ((r - ring) / 220), (height - f.pos.y) / 120, (rx / r) * turn + (-rz / r) * ((r - ring) / 220)).normalize();
     steer(f, want, def.turn, dt);
     f.vel.copy(f.dir).multiplyScalar(f.speed);
 
     if (!boss) {
-      f.shotIn -= dt;
+      f.shotIn -= dt * PACE;
       if (f.shotIn <= 0 && dist < 360) {
         ctx.fire(f.pos, lead(f.pos, ctx, 200, 0.07 - keen * 0.03, aim), 200, 7);
         f.shotIn = 1.3 - keen * 0.4;
       }
-      f.missileIn -= dt;
+      f.missileIn -= dt * PACE;
       if (f.missileIn <= 0 && dist < 820) {
         ctx.launch(tmp.copy(f.pos).addScaledVector(UP, -8), to);
         f.missileIn = 7.5 - keen * 2.5;
       }
-      f.spawnIn -= dt;
+      f.spawnIn -= dt * PACE;
       if (f.spawnIn <= 0 && ctx.foes < 22) {
         side.crossVectors(f.dir, UP).normalize();
         for (const off of [-16, 16]) ctx.spawn('drone', tmp.copy(f.pos).addScaledVector(UP, -10).addScaledVector(side, off));
@@ -360,14 +442,14 @@ export function stepFoe(f: Foe, ctx: FoeCtx, dt: number): void {
       // The dreadnought runs through its weapons, one after the other.
       if (f.burst > 0) {
         // A stream under way.
-        f.shotIn -= dt;
+        f.shotIn -= dt * PACE;
         if (f.shotIn <= 0) {
           ctx.fire(tmp.copy(f.pos).addScaledVector(UP, -12).addScaledVector(to, 30), lead(f.pos, ctx, 215, 0.035, aim), 215, 7);
           f.shotIn = 0.11;
           f.burst -= 1;
         }
       }
-      f.nextIn -= dt;
+      f.nextIn -= dt * PACE;
       if (f.nextIn <= 0 && dist < 1100) {
         f.nextIn = 3.3 - keen * 0.8;
         f.state = (f.state + 1) % 4;
@@ -375,17 +457,17 @@ export function stepFoe(f: Foe, ctx: FoeCtx, dt: number): void {
         if (f.state === 0) {
           // A ring that opens as it comes.
           aim.crossVectors(side, to).normalize();
-          for (let i = 0; i < 14; i += 1) {
-            const a = (i / 14) * Math.PI * 2 + f.t;
+          for (let i = 0; i < 10; i += 1) {
+            const a = (i / 10) * Math.PI * 2 + f.t;
             want.copy(to).addScaledVector(side, Math.cos(a) * 0.3).addScaledVector(aim, Math.sin(a) * 0.3).normalize();
             ctx.fire(tmp.copy(f.pos).addScaledVector(to, 34), want, 150, 9);
           }
-        } else if (f.state === 1) f.burst = 13;
+        } else if (f.state === 1) f.burst = 9;
         else if (f.state === 2) {
-          for (const off of [-40, 0, 40]) ctx.launch(tmp.copy(f.pos).addScaledVector(side, off).addScaledVector(UP, -14), to);
+          for (const off of [-30, 30]) ctx.launch(tmp.copy(f.pos).addScaledVector(side, off).addScaledVector(UP, -14), to);
         } else if (ctx.foes < 20) {
           side.crossVectors(f.dir, UP).normalize();
-          for (const off of [-50, 0, 50]) ctx.spawn('drone', tmp.copy(f.pos).addScaledVector(side, off).addScaledVector(UP, -24));
+          for (const off of [-40, 40]) ctx.spawn('drone', tmp.copy(f.pos).addScaledVector(side, off).addScaledVector(UP, -24));
         }
       }
     }
@@ -400,6 +482,15 @@ export function stepFoe(f: Foe, ctx: FoeCtx, dt: number): void {
     f.mesh.lookAt(tmp.copy(f.pos).add(aim.copy(to).setY(to.y * 0.3)));
   } else if (f.kind === 'mine') {
     f.mesh.rotation.y = f.t * 0.6 + f.seed;
+  } else if (def.land) {
+    // On its feet, facing the machine, in its walk's two frames.
+    f.mesh.rotation.set(0, Math.atan2(to.x, to.z), 0);
+    const frames = f.mesh.children[0]?.children;
+    if (frames && frames.length > 1) {
+      const second = f.vel.lengthSq() > 1 && Math.floor((f.t + f.seed) * (def.heavy ? 3 : 7)) % 2 === 1;
+      frames[0].visible = !second;
+      frames[1].visible = second;
+    }
   } else {
     f.mesh.lookAt(tmp.copy(f.pos).add(f.dir));
     // What banks, banks into its turn.

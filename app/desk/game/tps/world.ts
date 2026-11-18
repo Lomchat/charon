@@ -15,6 +15,7 @@ import {
 import { LAND, T, WATER } from '../art';
 import type { Island, World } from '../layout';
 import { hashStr, seeded } from '../model';
+import { buildMainland, MAINLAND_RZ, type Mainland } from './mainland';
 import { skyModels } from './models';
 import { materials, type Model } from './voxels';
 
@@ -39,8 +40,10 @@ export type SkyWorld = {
   toWorld: (px: number, py: number, out: Vector3) => Vector3;
   boardX: (x: number) => number;
   boardY: (z: number) => number;
-  /** The height of what lies under a point: the sea (0) or an island's top. */
+  /** The height of what lies under a point: the sea (0), an island's top, the mainland's relief. */
   groundAt: (x: number, z: number) => number;
+  /** The immense island north of the archipelago: ground with a relief (its `heightAt` goes under 0 off its beaches). */
+  mainland: Mainland;
   towers: Tower[];
   /** The island the run started on: its centre and half-sizes. */
   home: { x: number; z: number; hw: number; hd: number };
@@ -461,7 +464,16 @@ export function buildSkyWorld(world: World, homeId: string): SkyWorld {
 
   /* ── the clouds ── */
 
-  const radius = Math.max(1700, reach + 750);
+  /* ── the mainland ── */
+
+  // North of every island, clear of them all: straight ahead of the pilot who has just landed.
+  let north = 0;
+  for (const isle of isles) north = Math.min(north, isle.z - isle.hd);
+  const mainland = buildMainland(hashStr(homeId) ^ 0x3a1d, 0, north - 380 - MAINLAND_RZ);
+  group.add(mainland.group);
+  keep(mainland);
+
+  const radius = Math.max(1700, reach + 750, Math.abs(mainland.z) + MAINLAND_RZ + 320);
   const cloudRand = seeded(hashStr(homeId) ^ 0xc10d);
   const puffs: Matrix4[] = [];
   const q = new Quaternion();
@@ -495,14 +507,14 @@ export function buildSkyWorld(world: World, homeId: string): SkyWorld {
   const groundAt = (x: number, z: number): number => {
     const tx = Math.floor((x / SCALE + ox) / T);
     const tz = Math.floor((z / SCALE + oz) / T);
-    return land.has(key(tx, tz)) ? LAND_Y : 0;
+    return land.has(key(tx, tz)) ? LAND_Y : Math.max(0, mainland.heightAt(x, z));
   };
 
   const homeW = homeIsle ? (homeIsle.tw * TILE) / 2 : 40;
   const homeD = homeIsle ? (homeIsle.th * TILE) / 2 : 30;
 
   return {
-    group, groundAt, towers, isles, radius,
+    group, groundAt, towers, isles, radius, mainland,
     toWorld: (px, py, out) => out.set(wx(px), LAND_Y, wz(py)),
     boardX: (x) => x / SCALE + ox,
     boardY: (z) => z / SCALE + oz,

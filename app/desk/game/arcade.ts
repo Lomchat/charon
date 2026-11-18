@@ -6,17 +6,18 @@
 // session — nothing here can reach Charon. The engine (game.ts) swaps its own
 // drawing for this one while a run lasts and gives the board back after.
 //
-// After the third wave the SAME fight is seen from behind the pilot, in 3D
+// After the first wave the SAME fight is seen from behind the pilot, in 3D
 // (game/tps, loaded on demand): this file still runs it, on the board's
 // plane, in board pixels — only the eye moved, and the keys follow it (the
-// mouse turns the pilot). A wave later two vehicles come to the island; the
+// mouse, captured, turns the pilot). A wave later two vehicles come; the
 // pilot who boards one leaves this fight for good, for the one tps/combat.ts
 // runs. The run — score, combo, waves, record, sound — stays here throughout.
 // Where the 3D phase cannot load, or without WebGL, everything stays in 2D.
 //
 //   move   WASD / ZQSD            dash  Shift
-//   fire   arrows (8 ways), or Space to shoot at the nearest robot
-//   bomb   E          pause  P          sound  M          leave  Esc
+//   aim    the mouse (the cursor is the sight)     fire  left button
+//   zoom   right button           bomb  F
+//   pause  P          sound  M          leave  Esc
 import {
   T, arcadeArt, art, drawRobot, makeCanvas,
   type PickupKind, type RobotArt, type RobotKind, type RobotPose,
@@ -25,6 +26,7 @@ import type { Island, World } from './layout';
 import { glow } from './scenery';
 import type { ArcadeHud, ArcadePhase } from '../arcadeStore';
 import { ArcadeAudio, type AudioScene } from './audio';
+import { keyHints, keyLabelsVersion, type Form, type KeyHint } from './forms';
 import type { GroundPort, GroundScene, Tps, TpsRun } from './tps';
 
 export type ArcadeHost = {
@@ -36,6 +38,10 @@ export type ArcadeHost = {
   view: () => { x: number; y: number; zoom: number };
   /** Capture the mouse (it turns the view), or let it go. */
   capture: (on: boolean) => void;
+  /** The board point under a point of the stage (CSS pixels): where the cursor aims. */
+  at: (x: number, y: number) => { x: number; y: number };
+  /** The board's view a step closer (the right button), or back. */
+  zoom: (on: boolean) => void;
   /** Where the run starts: on the island in 2D, or in 3D with the vehicles there (a checkpoint, a test). */
   from?: 'ground' | 'tps';
   /** The island's own robots: they open the first wave from where they stand. */
@@ -72,8 +78,8 @@ const FOES: Record<FoeType, {
   gunner: { art: 'codex', hp: 3, speed: 25, r: 6, score: 25, cost: 2, from: 2, scale: 1, weight: 3 },
   dasher: { art: 'cursor', hp: 2, speed: 28, r: 6, score: 30, cost: 2, from: 2, scale: 1, weight: 3 },
   bomber: { art: 'claude', hp: 2, speed: 54, r: 6, score: 20, cost: 2, from: 3, scale: 1, weight: 2, tint: '#ff3b3b' },
-  tank: { art: 'codex', hp: 26, speed: 15, r: 12, score: 150, cost: 7, from: 5, scale: 2, weight: 1 },
-  boss: { art: 'cursor', hp: 200, speed: 19, r: 18, score: 1500, cost: 0, from: 5, scale: 3, weight: 0 },
+  tank: { art: 'codex', hp: 21, speed: 15, r: 12, score: 150, cost: 7, from: 5, scale: 2, weight: 1 },
+  boss: { art: 'cursor', hp: 150, speed: 19, r: 18, score: 1500, cost: 0, from: 5, scale: 3, weight: 0 },
 };
 
 /** What each of the island's own robots fights as, by the sprite it wears. */
@@ -99,8 +105,11 @@ type Pod = { x: number; y: number; t: number; max: number; type: FoeType };
 type Pickup = { x: number; y: number; kind: PickupKind; age: number; fall: number };
 type Queued = { at: number; type: FoeType };
 
-/** The wave after which the fight is seen in 3D; the vehicles come one wave later. */
-const TPS_AFTER = 3;
+/**
+ * The wave after which the fight is seen in 3D; the vehicles come one wave
+ * later (tps/foes.ts § FIRST_RIDE_WAVE is the wave after that one).
+ */
+const TPS_AFTER = 1;
 const CHECKPOINT_KEY = 'desk.arcade.tps';
 
 /** The vehicles have been reached once in this browser: a run may start from there again. */
@@ -108,12 +117,14 @@ export function readCheckpoint(): boolean {
   try { return localStorage.getItem(CHECKPOINT_KEY) === '1'; } catch { return false; }
 }
 
-/** A boss comes every fifth wave, the first one at wave 7 — a few waves into the vehicles. */
-const bossWave = (n: number): boolean => n >= 7 && (n - 2) % 5 === 0;
+/** A boss comes every fifth wave: the first one a few waves into the vehicles. */
+const bossWave = (n: number): boolean => n % 5 === 0;
 
 const PLAYER_SPEED = 64;
 const PLAYER_R = 5;
 const MAX_FOES = 70;
+/** How many of the island's own robots the first wave is made of, at most. */
+const FIRST_CROWD = 12;
 const PICKUP_LIFE = 14;
 
 export class Arcade {
@@ -126,6 +137,16 @@ export class Arcade {
   private phase: ArcadePhase = 'intro';
   private phaseT = 0;
   private paused = false;
+  /** On the board: where the cursor is on the stage (null until it moves), its left button, the closer view. */
+  private mouse: { x: number; y: number } | null = null;
+  private trigger = false;
+  private zoomed = false;
+  /** The island's robots have not been attacked yet: they work, and harm no one. */
+  private calm = false;
+  private keysStamp = '';
+  private keys3: KeyHint[] = [];
+  /** The mouse is captured (3D stage): losing it then pauses the fight. */
+  private hadMouse = false;
   private clock = 0;
   private wave = 0;
   private score = 0;
@@ -137,7 +158,7 @@ export class Arcade {
   private px: number; private py: number;
   private landX: number; private landY: number;
   private landed = false;
-  private hp = 5; private maxHp = 5;
+  private hp = 6; private maxHp = 6;
   private shield = 0;
   private invul = 0;
   private aimX = 0; private aimY = 1;
@@ -201,6 +222,7 @@ export class Arcade {
     this.tps = null;
     this.aboard = false;
     this.tpsWanted = false;
+    this.hadMouse = false;
     this.host.capture(false);
   }
 
@@ -225,21 +247,59 @@ export class Arcade {
 
   /** The mouse: where it is on the stage, how far it went, whether it is captured. */
   pointer(type: 'move' | 'down' | 'up', x: number, y: number, button: number, dx = 0, dy = 0, locked = false): void {
-    if (!this.tps || this.paused || this.phase === 'over') return;
-    // A click on the stage captures the mouse: it then turns the view.
-    if (type === 'down' && !locked) this.host.capture(true);
+    if (this.phase === 'over') return;
+    if (this.paused) {
+      // A click goes on, like a key.
+      if (type === 'down') { this.paused = false; this.grab(); }
+      return;
+    }
+    if (!this.tps) {
+      // On the board the cursor is the sight: left fires, right brings the view closer.
+      this.mouse = { x, y };
+      if (type === 'down' && button === 0) this.trigger = true;
+      else if (type === 'up' && button === 0) this.trigger = false;
+      else if (type !== 'move' && button === 2) this.setZoom(type === 'down');
+      return;
+    }
+    if (type === 'down' && !locked) this.grab();
     this.tps.pointer(type, x, y, button, dx, dy, locked);
   }
 
-  /** The mouse was captured, or let go (Esc). */
+  /**
+   * On the 3D stage the mouse belongs to the game: captured, it turns the
+   * view and cannot wander off the stage. A browser grants that on a gesture
+   * only: asked when the stage comes up, and again by every key and click
+   * until it is given.
+   */
+  private grab(): void {
+    if (this.tps && !this.paused && this.phase !== 'over') this.host.capture(true);
+  }
+
+  /** The mouse was captured, or let go (Esc, another window). */
   locked(on: boolean): void {
     this.tps?.setLocked(on);
+    if (on) { this.hadMouse = true; return; }
+    // Let go in the middle of a fight: the fight waits for it (a key or a click takes it back).
+    if (this.hadMouse && this.tps && !this.paused && this.phase !== 'over') {
+      this.paused = true;
+      this.keys.clear();
+      this.tps.release();
+    }
+    this.hadMouse = false;
   }
 
   /** The window lost the keyboard: nothing is held any more. */
   release(): void {
     this.keys.clear();
+    this.trigger = false;
+    this.setZoom(false);
     this.tps?.release();
+  }
+
+  private setZoom(on: boolean): void {
+    if (on === this.zoomed) return;
+    this.zoomed = on;
+    this.host.zoom(on);
   }
 
   /** How loud the game is right now — for a test, never for the game. */
@@ -257,20 +317,24 @@ export class Arcade {
     this.combo = 0; this.comboT = 0; this.doubleT = 0; this.cool = 0; this.landed = false;
     this.foes = []; this.shots = []; this.sparks = []; this.blasts = []; this.pods = []; this.pickups = []; this.queue = [];
     this.px = this.landX; this.py = this.landY; this.aimX = 0; this.aimY = 1;
+    this.trigger = false; this.setZoom(false); this.calm = false;
     if (from === 'tps') {
       // Straight to where the vehicles wait: the first waves are behind.
       this.wave = TPS_AFTER + 1;
       this.heli = null;
       this.landed = true;
-      // With what four waves would have left in its hands.
+      // With what the first waves would have left in its hands.
       this.weapon = 'smg'; this.ammo = WEAPONS.smg.ammo; this.bombs = 2;
       this.aimY = -1;
       this.phase = 'clear';
       this.tpsWanted = true;
       return;
     }
-    // The island's robots stand where they were, unaware, until the pilot lands.
-    for (const r of this.host.robots.slice(0, 26)) {
+    // The island's robots are at their work, and go on with it: they harm no one until one of them is attacked.
+    this.calm = true;
+    // Not the whole island: the dozen nearest to where the pilot lands.
+    const near = [...this.host.robots].sort((a, b) => Math.hypot(a.x - this.landX, a.y - this.landY) - Math.hypot(b.x - this.landX, b.y - this.landY));
+    for (const r of near.slice(0, FIRST_CROWD)) {
       const type = FOE_OF_ROBOT[r.kind];
       const at = this.nearestLand(r.x, r.y);
       this.foes.push(this.makeFoe(type, at.x, at.y, 1, 99));
@@ -298,6 +362,8 @@ export class Arcade {
     }
     this.tpsAt = this.clock;
     this.aimX = 0; this.aimY = -1;
+    this.trigger = false;
+    this.grab();
     return true;
   }
 
@@ -423,14 +489,15 @@ export class Arcade {
     this.audio.waveStart(boss);
     this.queue = [];
     if (n === 1) {
-      // The island's own robots wake one after the other; a small island gets company.
-      this.foes.forEach((f, i) => { f.sleep = 0.2 + i * 0.14; });
-      for (let i = this.foes.length; i < 8; i += 1) this.queue.push({ at: 1 + i * 0.4, type: 'grunt' });
+      // The island's own robots go on working until the pilot attacks (`stir`); a small island gets company then.
+      if (!this.calm) this.foes.forEach((f, i) => { f.sleep = 0.2 + i * 0.14; });
+      for (let i = this.foes.length; i < 6; i += 1) this.queue.push({ at: 1 + i * 0.4, type: 'grunt' });
       this.waveSize = this.foes.length + this.queue.length;
       return;
     }
     // Seen from behind the pilot a crowd hides more than it shows: fewer come at once.
-    let budget = (6 + n * 3.4) * (boss ? 0.55 : 1) * (this.tps ? 0.55 : 1);
+    // A boss comes with few around it: it is the fight.
+    let budget = (4.5 + n * 2.6) * (boss ? 0.32 : 1) * (this.tps ? 0.55 : 1);
     const pool = (Object.keys(FOES) as FoeType[]).filter((t) => FOES[t].weight > 0 && FOES[t].from <= n);
     const picked: FoeType[] = [];
     while (budget > 0.4 && picked.length < 60) {
@@ -450,9 +517,9 @@ export class Arcade {
 
   private makeFoe(type: FoeType, x: number, y: number, wave: number, sleep = 0): Foe {
     const def = FOES[type];
-    const hp = Math.ceil(def.hp * (1 + 0.13 * (wave - 1)) * (type === 'boss' ? 1 + (wave / 5 - 1) * 0.7 : 1));
+    const hp = Math.ceil(def.hp * (1 + 0.09 * (wave - 1)) * (type === 'boss' ? 1 + (wave / 5 - 1) * 0.5 : 1));
     return {
-      type, x, y, hp, maxHp: hp, speed: def.speed * (1 + Math.min(0.6, 0.035 * (wave - 1))), sleep,
+      type, x, y, hp, maxHp: hp, speed: def.speed * (1 + Math.min(0.45, 0.025 * (wave - 1))), sleep,
       flash: 0, seed: Math.random() * 1000, t: 0, state: 0, dx: 0, dy: 0, shotAt: 0.6 + Math.random(),
     };
   }
@@ -472,7 +539,7 @@ export class Arcade {
     if (k === 'Escape') { this.host.quit(); return true; }
     if (k === 'm') { this.audio.cycleMode(); return true; }
     if (this.phase === 'over') {
-      if (k === 'Enter' || k === ' ') this.startRun();
+      if (k === 'Enter') this.startRun();
       // Once the vehicles have been reached, a run may start from there.
       else if (k === 'c' && this.checkpoint) this.startRun('tps');
       return true;
@@ -481,14 +548,16 @@ export class Arcade {
       this.paused = !this.paused;
       this.tps?.release();
       if (this.paused) this.host.capture(false);
+      else this.grab();
       return true;
     }
-    if (this.paused) { this.paused = false; return true; }
+    if (this.paused) { this.paused = false; this.grab(); return true; }
+    this.grab();
     // In a vehicle the fight on foot hears nothing.
     if (this.aboard) return staged;
     this.keys.add(k);
     if (k === 'Shift') this.dash();
-    else if (k === 'e' || k === 'Enter') this.bomb();
+    else if (k === 'f') this.bomb();
     return staged || GAME_KEYS.has(k);
   }
 
@@ -548,7 +617,8 @@ export class Arcade {
     this.stepPickups(dt);
 
     if (this.phase === 'wave') {
-      this.waveT += dt;
+      // Nothing lands while the island is at peace.
+      if (!this.calm) this.waveT += dt;
       // Reinforcements land by pod, a few at a time.
       while (this.queue.length && this.queue[0].at <= this.waveT && this.foes.length + this.pods.length < MAX_FOES) {
         const next = this.queue.shift()!;
@@ -567,7 +637,7 @@ export class Arcade {
         const kinds: PickupKind[] = ['smg', 'shotgun', 'laser', 'rocket', 'flame'];
         const drop = this.hp <= 2 && Math.random() < 0.6 ? 'med' : kinds[Math.floor(Math.random() * kinds.length)];
         this.flyHeli(this.px - 280, this.py - 150, this.px + 280, this.py - 150, 2.6, drop);
-        // The third wave down, the eye comes down behind the pilot; a wave later, the vehicles come.
+        // The first wave down, the eye comes down behind the pilot; a wave later, the vehicles come.
         if (this.wave === TPS_AFTER) this.enterTps(true);
         else if (this.wave === TPS_AFTER + 1) this.deliver(false);
       }
@@ -624,34 +694,22 @@ export class Arcade {
       if (this.dashT <= 0) { this.dashX = mx; this.dashY = my; }
     } else this.stride = 0;
 
-    // Aim: the arrows say where; Space picks the nearest robot. From behind the
-    // pilot the mouse aims (it turns the pilot) and its button fires; the arrows turn the view.
-    const ax = yaw != null ? 0 : (this.held('ArrowRight') ? 1 : 0) - (this.held('ArrowLeft') ? 1 : 0);
-    const ay = yaw != null ? 0 : (this.held('ArrowDown') ? 1 : 0) - (this.held('ArrowUp') ? 1 : 0);
+    // Aim: on the board the cursor is the sight; from behind the pilot the mouse turns the pilot.
+    // Either way the left button fires.
     let firing = false;
-    if (yaw != null && !this.held(' ')) {
+    if (yaw != null) {
       this.aimX = Math.sin(yaw); this.aimY = Math.cos(yaw);
       firing = this.tps!.trigger;
-    } else if (ax || ay) {
-      const l = Math.hypot(ax, ay);
-      this.aimX = ax / l; this.aimY = ay / l;
-      firing = true;
-    } else if (this.held(' ')) {
-      let near: Foe | null = null;
-      let best = Infinity;
-      for (const f of this.foes) {
-        if (f.sleep > 0) continue;
-        const d = (f.x - this.px) ** 2 + (f.y - this.py) ** 2;
-        if (d < best) { best = d; near = f; }
-      }
-      if (near) {
-        const dx = near.x - this.px;
-        const dy = (near.y - 8 * FOES[near.type].scale) - (this.py - 8);
-        const l = Math.hypot(dx, dy) || 1;
-        this.aimX = dx / l; this.aimY = dy / l;
-      }
-      firing = true;
-    } else if ((mx || my) && yaw == null) { this.aimX = mx; this.aimY = my; }
+    } else {
+      if (this.mouse) {
+        const at = this.host.at(this.mouse.x, this.mouse.y);
+        const dx = at.x - this.px;
+        const dy = at.y - (this.py - 8);
+        const l = Math.hypot(dx, dy);
+        if (l > 4) { this.aimX = dx / l; this.aimY = dy / l; }
+      } else if (mx || my) { this.aimX = mx; this.aimY = my; }
+      firing = this.trigger;
+    }
     if (firing && this.cool <= 0) this.fire();
   }
 
@@ -677,7 +735,8 @@ export class Arcade {
     this.blasts.push({ x: this.px, y: this.py - 8, t: 0, max: 520, r: 190, colour: '#fff3c9' });
     this.tps?.blast(this.px, this.py - 8, 90, '#fff3c9', true);
     this.shots = this.shots.filter((s) => s.kind !== 'foe');
-    for (const f of [...this.foes]) if (f.sleep <= 0) this.hurtFoe(f, f.type === 'boss' ? 25 : 12);
+    this.stir(this.px, this.py);
+    for (const f of [...this.foes]) this.hurtFoe(f, f.type === 'boss' ? 25 : 12);
   }
 
   private fire(): void {
@@ -716,7 +775,7 @@ export class Arcade {
       if (f.hp <= 0) continue;
       f.flash = Math.max(0, f.flash - dt);
       if (f.sleep > 0) {
-        if (this.phase !== 'wave') continue;
+        if (this.phase !== 'wave' || this.calm) continue;
         f.sleep -= dt;
         if (f.sleep <= 0) { this.floatAt(f.x, f.y - 26, '!', '#ff5d5d', 'small'); this.audio.alert(f.x, f.y); }
         continue;
@@ -735,15 +794,15 @@ export class Arcade {
         else if (dist < 105) { const s = f.seed % 2 < 1 ? 1 : -1; [vx, vy] = [-vy * 0.6 * s, vx * 0.6 * s]; }
         f.shotAt -= dt;
         if (f.shotAt <= 0 && dist < 190) {
-          f.shotAt = Math.max(0.7, 1.5 - this.wave * 0.05);
-          this.foeShot(f.x, f.y - 9, dx / dist, (dy + 4) / dist, 90);
+          f.shotAt = Math.max(1.05, 1.95 - this.wave * 0.04);
+          this.foeShot(f.x, f.y - 9, dx / dist, (dy + 4) / dist, 80);
           this.audio.foeShot(f.x, f.y);
         }
       } else if (f.type === 'dasher') {
         // Winds up (it flashes), then charges in a straight line.
         if (f.state === 0 && dist < 120 && f.t > 0.9) { f.state = 1; f.t = 0; f.dx = dx / dist; f.dy = dy / dist; this.audio.charge(f.x, f.y); }
-        if (f.state === 1) { vx = 0; vy = 0; if (f.t > 0.36) { f.state = 2; f.t = 0; this.audio.rush(f.x, f.y); } }
-        else if (f.state === 2) { vx = f.dx * 178; vy = f.dy * 178; if (f.t > 0.55) { f.state = 0; f.t = 0; } }
+        if (f.state === 1) { vx = 0; vy = 0; if (f.t > 0.48) { f.state = 2; f.t = 0; this.audio.rush(f.x, f.y); } }
+        else if (f.state === 2) { vx = f.dx * 160; vy = f.dy * 160; if (f.t > 0.55) { f.state = 0; f.t = 0; } }
       } else if (f.type === 'drone') {
         const wob = Math.sin(this.clock * 5 + f.seed) * 34;
         vx += (-dy / dist) * wob;
@@ -752,10 +811,10 @@ export class Arcade {
         f.shotAt -= dt;
         if (f.shotAt <= 0) {
           f.state = (f.state + 1) % 3;
-          f.shotAt = Math.max(1.0, 1.9 - this.wave * 0.03);
-          if (f.state === 0) for (let i = 0; i < 20; i += 1) { const a = (i / 20) * Math.PI * 2 + this.clock; this.foeShot(f.x, f.y - 26, Math.cos(a), Math.sin(a), 72); }
-          else if (f.state === 1) for (let i = -2; i <= 2; i += 1) { const a = Math.atan2(dy, dx) + i * 0.2; this.foeShot(f.x, f.y - 26, Math.cos(a), Math.sin(a), 108); }
-          else for (let i = 0; i < 4; i += 1) this.pods.push({ x: f.x + (Math.random() - 0.5) * 70, y: f.y + (Math.random() - 0.5) * 50, t: 0, max: 0.6, type: 'drone' });
+          f.shotAt = Math.max(1.4, 2.4 - this.wave * 0.03);
+          if (f.state === 0) for (let i = 0; i < 14; i += 1) { const a = (i / 14) * Math.PI * 2 + this.clock; this.foeShot(f.x, f.y - 26, Math.cos(a), Math.sin(a), 66); }
+          else if (f.state === 1) for (let i = -1; i <= 1; i += 1) { const a = Math.atan2(dy, dx) + i * 0.24; this.foeShot(f.x, f.y - 26, Math.cos(a), Math.sin(a), 96); }
+          else for (let i = 0; i < 2; i += 1) this.pods.push({ x: f.x + (Math.random() - 0.5) * 70, y: f.y + (Math.random() - 0.5) * 50, t: 0, max: 0.6, type: 'drone' });
           if (f.state === 2) this.audio.podFall(f.x, f.y, 0.6, false);
           else this.audio.volley(f.x, f.y);
         }
@@ -783,7 +842,7 @@ export class Arcade {
       const reach = def.r + PLAYER_R;
       if (Math.abs(f.x - px) < reach && Math.abs((f.y - 8 * def.scale) - (py - 8)) < reach + 3) {
         if (f.type === 'bomber') this.hurtFoe(f, 99);
-        else this.hurtPlayer(f.type === 'tank' || f.type === 'boss' ? 2 : 1);
+        else this.hurtPlayer(f.type === 'boss' ? 2 : 1);
       }
     }
   }
@@ -807,7 +866,7 @@ export class Arcade {
         }
       } else if (!gone) {
         for (const f of this.foes) {
-          if (f.sleep > 0 || f.hp <= 0 || s.hit?.has(f)) continue;
+          if (f.hp <= 0 || s.hit?.has(f)) continue;
           const def = FOES[f.type];
           const cy = f.y - 8 * def.scale;
           if (Math.abs(s.x - f.x) > def.r + s.r + 2 || Math.abs(s.y - cy) > def.r * 1.4 + s.r + 2) continue;
@@ -870,8 +929,23 @@ export class Arcade {
 
   /* ─────────────────────────────────────────────────────── hits, score ─── */
 
+  /**
+   * The pilot has attacked: the robots drop their work and turn on it — the
+   * one that was hit at once, the others as the alarm reaches them.
+   */
+  private stir(x: number, y: number): void {
+    if (!this.calm) return;
+    this.calm = false;
+    for (const f of this.foes) {
+      if (f.sleep <= 0) continue;
+      const far = Math.hypot(f.x - x, f.y - y);
+      f.sleep = far < 6 ? 0.25 : 0.55 + far / 150 + Math.random() * 0.3;
+    }
+  }
+
   private hurtFoe(f: Foe, dmg: number, kx = 0, ky = 0): void {
     if (f.hp <= 0) return;
+    this.stir(f.x, f.y);
     f.hp -= dmg;
     f.flash = 0.08;
     const k = Math.hypot(kx, ky);
@@ -940,7 +1014,7 @@ export class Arcade {
 
   private hurtPlayer(dmg: number): void {
     if (this.invul > 0 || this.phase === 'over' || this.phase === 'intro') return;
-    this.invul = 0.85;
+    this.invul = 1.15;
     this.shakeBy(220, 4);
     if (this.shield > 0) {
       this.shield -= 1;
@@ -1016,6 +1090,11 @@ export class Arcade {
 
   /** What the camera follows. */
   focus(): { x: number; y: number } {
+    // Looking closer: the eye goes part of the way to the sight.
+    if (this.zoomed && this.mouse && !this.tps) {
+      const at = this.host.at(this.mouse.x, this.mouse.y);
+      return { x: this.px + (at.x - this.px) * 0.3, y: this.py - 10 + (at.y - this.py) * 0.3 };
+    }
     return { x: this.px, y: this.py - 10 };
   }
 
@@ -1034,7 +1113,7 @@ export class Arcade {
     return {
       x: this.px, y: this.py, phase: this.phase, paused: this.paused, wave: this.wave,
       boss: this.foes.some(isBoss) || this.pods.some(isBoss) || this.queue.some(isBoss),
-      foes: this.foes.length, hp: this.hp, heli: this.heli ? { x: this.heli.x, y: this.heli.y + (this.tps ? 150 : 0) } : null,
+      foes: this.calm ? 0 : this.foes.length, hp: this.hp, heli: this.heli ? { x: this.heli.x, y: this.heli.y + (this.tps ? 150 : 0) } : null,
       walking: this.landed && this.stride > 0 && this.dashT <= 0,
       // Seen from behind the pilot, left and right are its own.
       yaw: this.tps ? this.tps.heading() : undefined,
@@ -1051,15 +1130,23 @@ export class Arcade {
       const t = this.tps.state();
       return {
         ...base, mode: 'craft', hp: 0, shield: 0, weapon: '', ammo: null, foes: t.foes, boss: t.boss,
-        hull: t.hull, missiles: t.missiles,
+        hull: t.hull, missiles: t.missiles, form: t.craft, keys: this.keysFor(t.craft ?? 'plane'),
       };
     }
     const boss = this.foes.find((f) => f.type === 'boss');
     return {
-      ...base, mode: 'ground', hull: 0, missiles: 0, hp: this.hp, shield: this.shield, weapon: WEAPONS[this.weapon].name,
+      ...base, mode: 'ground', form: null, keys: this.keysFor(this.tps ? 'foot' : 'board'),
+      hull: 0, missiles: 0, hp: this.hp, shield: this.shield, weapon: WEAPONS[this.weapon].name,
       ammo: this.ammo === Infinity ? null : this.ammo, foes: this.foes.length + this.pods.length + this.queue.length,
       boss: boss ? Math.max(0, boss.hp / boss.maxHp) : null,
     };
+  }
+
+  /** The keys of the way the run is played right now: the same array until that changes. */
+  private keysFor(mode: 'board' | 'foot' | Form): KeyHint[] {
+    const stamp = `${mode}.${keyLabelsVersion()}`;
+    if (stamp !== this.keysStamp) { this.keysStamp = stamp; this.keys3 = keyHints(mode); }
+    return this.keys3;
   }
 
   /** Flat on the ground, under everything that stands. */
@@ -1122,11 +1209,13 @@ export class Arcade {
     const walking = awake && !(f.type === 'dasher' && f.state === 1);
     const step = Math.floor(t * (f.type === 'tank' || f.type === 'boss' ? 4 : 8)) % 2;
     const windup = f.type === 'dasher' && f.state === 1;
+    // At its work: its hands go, one then the other.
+    const busy = awake ? 0 : Math.floor(t * 5 + f.seed) % 2;
     const pose: RobotPose = {
       bob: walking ? step : 0,
       legs: walking ? (step ? 'walkA' : 'walkB') : 'stand',
       armL: f.type === 'bomber' || windup ? 'up' : 'down', armR: f.type === 'bomber' || f.type === 'boss' ? 'up' : 'down',
-      armLdy: 0, armRdy: 0,
+      armLdy: awake ? 0 : -busy, armRdy: awake ? 0 : busy - 1,
       eye: awake ? (windup && Math.floor(t * 16) % 2 ? '#ffffff' : '#ff4d4d') : '#cfe0fb',
       lamp: awake ? (Math.floor(t * 6) % 2 ? '#ff4d4d' : '#3a1010') : '#55607a',
       chest: awake ? '#ff4d4d' : '#ffd98a', scan: 0.5 + 0.5 * Math.sin(t * 8), alpha: 1,
@@ -1188,6 +1277,21 @@ export class Arcade {
   /** Above everything: shots, blasts, what falls from the sky, the helicopter. */
   drawOver(g: CanvasRenderingContext2D): void {
     const t = this.clock;
+    // The sight: where the cursor is.
+    if (this.mouse && !this.tps && this.landed && this.phase !== 'over') {
+      const at = this.host.at(this.mouse.x, this.mouse.y);
+      const x = Math.round(at.x);
+      const y = Math.round(at.y);
+      for (const [colour, o] of [['#05080f', 1], ['#ffe066', 0]] as const) {
+        g.fillStyle = colour;
+        g.fillRect(x - 5 - o, y - o, 3 + o * 2, 1 + o * 2);
+        g.fillRect(x + 3 - o, y - o, 3 + o * 2, 1 + o * 2);
+        g.fillRect(x - o, y - 5 - o, 1 + o * 2, 3 + o * 2);
+        g.fillRect(x - o, y + 3 - o, 1 + o * 2, 3 + o * 2);
+      }
+      g.fillStyle = this.trigger ? '#ffffff' : '#ffe066';
+      g.fillRect(x, y, 1, 1);
+    }
     for (const s of this.shots) {
       const x = Math.round(s.x);
       const y = Math.round(s.y);
@@ -1258,13 +1362,14 @@ export class Arcade {
       // Twice the sprite: a machine that dwarfs the robots.
       const x = Math.round(h.x) - 30;
       const y = Math.round(h.y) - 10;
-      // The pilot rides the rope down during the drop.
+      // The pilot comes IN the helicopter (drawn under it: at its door), then rides the rope down from it.
       if (this.phase === 'intro' && !this.landed) {
         const k = Math.max(0, Math.min(1, (h.t - h.max) / 0.55));
+        const rx = Math.round(h.x);
         const ry = y + 26 + (this.landY - (y + 26)) * k;
         g.fillStyle = '#cfd6e6';
-        g.fillRect(Math.round(this.landX), y + 20, 1, Math.max(0, Math.round(ry - 14 - (y + 20))));
-        this.drawPilot(g, this.landX, ry);
+        g.fillRect(rx, y + 20, 1, Math.max(0, Math.round(ry - 14 - (y + 20))));
+        this.drawPilot(g, rx, ry);
       }
       g.drawImage(sprites.heli, x, y, sprites.heli.width * 2, sprites.heli.height * 2);
       // The blades: one long, one short, in turn.

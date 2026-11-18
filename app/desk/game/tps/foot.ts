@@ -2,6 +2,7 @@
 // (ground.ts), every piece of it given a body on the 3D stage, and a camera
 // that the mouse turns. It decides nothing — it shows, and it says which way
 // the pilot faces.
+import type { Form } from '../forms';
 import { Color, Group, Mesh, MeshBasicMaterial, BoxGeometry, SphereGeometry, Vector3 } from 'three';
 import type { RobotKind } from '../art';
 import type { Streak } from './fx';
@@ -297,22 +298,23 @@ export class Foot {
   rig(dt: number, out: Rig): void {
     // The eye follows the pilot a hair late: it glides, the pilot does not drag it.
     this.centre.lerp(this.at, dt > 0 ? 1 - Math.exp(-14 * dt) : 1);
-    // Robots right on the pilot would stand between it and the eye: the eye goes up and looks down on them.
-    const pitch = this.pitch + 0.34 * this.press;
+    // Robots right on the pilot would stand between it and the eye: the eye backs off and rises over them.
+    // (Hardly more tilt: a wide lens looking down lays everything near the edges on its side.)
+    const pitch = this.pitch + 0.14 * this.press;
     const cp = Math.cos(pitch);
     v1.set(Math.sin(this.yaw) * cp, -Math.sin(pitch), Math.cos(this.yaw) * cp);
     v2.set(-Math.cos(this.yaw), 0, Math.sin(this.yaw));
-    out.eye.copy(this.centre).addScaledVector(v1, -22 - 7 * this.press).addScaledVector(v2, 3);
-    out.eye.y += 8.5 + 2 * this.press;
+    out.eye.copy(this.centre).addScaledVector(v1, -22 - 10 * this.press).addScaledVector(v2, 3);
+    out.eye.y += 8.5 + 4.5 * this.press;
     out.look.copy(this.centre).addScaledVector(v1, 34).addScaledVector(v2, 3);
     out.look.y += 6.2;
     out.up.set(0, 1, 0);
     out.roll = 0;
-    out.fov = 62;
+    out.fov = 58;
   }
 
   /** What the instruments show this frame. `rides`: the vehicles waiting, to go to. */
-  frame(rides: Array<{ kind: 'plane' | 'boat'; at: Vector3 }>): HudFrame {
+  frame(rides: Array<{ kind: Form; at: Vector3 }>): HudFrame {
     const stage = this.stage;
     const s = this.port.scene();
     const focal = stage.focal();
@@ -345,14 +347,6 @@ export class Foot {
     const sight = s.pilot.shown && p.depth > 1 ? { x: p.x, y: p.y } : null;
     const input = this.input;
     const key = (code: string) => input.label(code);
-    const hints: HudFrame['hints'] = this.time < 9 ? [
-      { keys: [key('KeyW'), key('KeyA'), key('KeyS'), key('KeyD')], word: 'MOVE' },
-      { keys: [], mouse: 'move', word: 'LOOK' },
-      { keys: [], mouse: 'left', word: 'FIRE' },
-      { keys: ['SPACE'], word: 'AUTO' },
-      { keys: ['SHIFT'], word: 'DASH' },
-      { keys: [key('KeyE')], word: 'BOMB' },
-    ] : null;
     return {
       time: this.time, live: s.pilot.shown, brackets: false, sight, hot: false, ring: null, marks, lock: null, threat: null, warn: null,
       dials: null, hurt: this.hurt, hurtFrom: null,
@@ -361,7 +355,7 @@ export class Foot {
         isles: stage.world.isles.map((i) => ({ x: i.x - this.at.x, z: i.z - this.at.z, hw: i.hw, hd: i.hd })),
         homeX: -this.at.x, homeZ: -this.at.z,
       },
-      floats: stage.floatsOnStage(), hints, rollKeys: [key('KeyQ'), key('KeyE')],
+      floats: stage.floatsOnStage(), rollKeys: [key('KeyQ'), key('KeyE')],
     };
   }
 }

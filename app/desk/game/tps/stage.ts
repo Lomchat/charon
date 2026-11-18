@@ -5,7 +5,8 @@
 //
 // Drawn at a low resolution and scaled up in whole pixels, like the board.
 import {
-  Color, DirectionalLight, FogExp2, HemisphereLight, PerspectiveCamera, Scene, Vector3, WebGLRenderer, type CanvasTexture,
+  BoxGeometry, Color, DirectionalLight, FogExp2, HemisphereLight, InstancedMesh, Matrix4, MeshLambertMaterial, PerspectiveCamera, Scene,
+  Vector3, WebGLRenderer, type CanvasTexture,
 } from 'three';
 import type { World } from '../layout';
 import { Fx } from './fx';
@@ -71,6 +72,7 @@ export class Stage {
   trauma = 0;
   time = 0;
   private floats: Float[] = [];
+  private warm: InstancedMesh;
   private fill: DirectionalLight;
   private observer: ResizeObserver;
   private onResize: Array<(w: number, h: number) => void> = [];
@@ -100,6 +102,14 @@ export class Stage {
     this.fx = new Fx(this.glow);
     this.scene.add(this.fx.group);
 
+    // What a turn of the machine is drawn with (morph.ts: plates, each its own colour): one speck of it, out of
+    // sight under the sea, so that its shader is built with the first frame and not at the first turn.
+    this.warm = new InstancedMesh(new BoxGeometry(0.01, 0.01, 0.01), new MeshLambertMaterial(), 1);
+    this.warm.setMatrixAt(0, new Matrix4().makeTranslation(0, -60, 0));
+    this.warm.setColorAt(0, new Color('#000000'));
+    this.warm.frustumCulled = false;
+    this.scene.add(this.warm);
+
     this.observer = new ResizeObserver(() => this.resize());
     this.observer.observe(this.root);
     this.resize();
@@ -108,6 +118,9 @@ export class Stage {
   }
 
   dispose(): void {
+    this.warm.geometry.dispose();
+    (this.warm.material as MeshLambertMaterial).dispose();
+    this.warm.dispose();
     this.observer.disconnect();
     this.world.dispose();
     this.fx.dispose();
