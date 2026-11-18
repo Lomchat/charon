@@ -55,7 +55,7 @@ app/desk/
   islands.ts        the selector's list (one entry per machine), the opening island
   quests.ts         what waits on the user, in order
   arcadeStore.ts    the mini-game's HUD readings and best score
-  sound.ts          four synthesised cues, off by default
+  sound.ts          the board's four synthesised cues, off by default
   desk.css          everything `dk-`; the session modal keeps Charon's theme
   game/             the board — no React
     model.ts        mood, name, level (= context): derived from a summary, never invented
@@ -64,6 +64,19 @@ app/desk/
     scenery.ts      islands painted once per shape; the water; glows
     game.ts         canvas, scene, camera, input, robots, effects, labels, miniatures
     arcade.ts       the mini-game: pilot, weapons, waves of robots, pickups, score
+    audio.ts        the mini-game's music and effects (Web Audio, synthesised)
+    tps/            the mini-game's 3D phase (three.js, loaded on demand)
+      index.ts      the phase: on foot → boarding → a vehicle, one camera throughout
+      stage.ts      renderer, world, camera (`Rig`, `blendRig`)
+      foot.ts       the board's fight seen from behind the pilot (ground.ts: what it reads)
+      combat.ts     the fight around a vehicle: weapons, robots, waves
+      plane.ts      the seaplane (flight.ts: how it flies, pure)     boat.ts  the gunboat
+      craft.ts      what a vehicle is                run.ts   what the phase asks of the run
+      input.ts      keys (by position) and mouse → stick, look, trigger, buttons
+      foes.ts       the robots a vehicle fights, and how each does
+      world.ts      the board's layout raised into islands, sea, sky
+      models.ts     every model, as boxes; voxels.ts builds them
+      fx.ts         bursts, bullets, flashes      hud.ts  the instruments
   ui/               TopBar, IslandBar, QuestLog, LimitsPanel, UnitPanel,
                     AccountSwitch, HeatIcon, Portrait, SessionModal, ArcadeHud, Help
 ```
@@ -191,15 +204,61 @@ bonuses are picked up; a combo multiplies the score; the best one is kept
 - **It is a toy.** It plays with copies of the board's sprites: it never reads
   or writes a session, sends nothing, and the fleet's counters stay on screen
   — a real robot may need you mid-run.
-- **Keyboard only**: the run owns the keys (`Arcade.key`), the pointer does
-  nothing on the stage, the board's own text and panels step aside
-  (`.is-arcade`). It also owns the camera: `frame`/`zoomBy`/`reveal` are no-ops
-  until `stopArcade`.
+- **On the board, keyboard only**: the run owns the keys (`Arcade.key`), the
+  board's own text and panels step aside (`.is-arcade`). It also owns the
+  camera: `frame`/`zoomBy`/`reveal` are no-ops until `stopArcade`. On the 3D
+  stage the mouse joins in: a click captures it (Esc frees it), it then turns
+  the view; free, the side it is on does.
 - The engine swaps its step and its drawing for the run's (`stepArcade`,
-  `drawArcade`); the island stays as scenery. A scene change, or the island
-  changing shape, ends the run.
+  `drawArcade`); the island stays as scenery. The board is held as it was
+  for the whole run: a model that comes in meanwhile is applied at its end
+  (`Game.setModel`). A scene change ends the run.
 - The overlay (`ui/ArcadeHud.tsx`) only reads `arcadeStore`, published about
-  ten times a second.
+  ten times a second; on the 3D stage the instruments are the phase's own
+  canvas (`tps/hud.ts`), drawn every frame.
+- **After the third wave the fight is seen from behind the pilot**
+  (`game/tps`): the SAME fight, still run by `arcade.ts` — the 3D stage only
+  shows it (`foot.ts` reads it through `GroundPort`) and turns the keys round
+  the pilot's heading. The eye starts right over the board's own view, lens
+  long, north up, so the first 3D picture IS the 2D one; it holds while the
+  stage fades in, then comes down behind the pilot (`blendRig`: it swings
+  round what it looks at, the framing changing at a steady rate). No cut.
+- **A wave later the vehicles come** (`Tps.deliver`, `VEHICLES READY`): a
+  seaplane moored off the south shore, a gunboat off the east, each with a
+  ring to walk into. In the ring the pilot hops aboard and the fight goes on
+  in the air or on the water (`combat.ts`) on the same stage, in the same
+  world — the wave under way goes with it: what stood on the island follows
+  (`FOLLOW`), what it had not sent yet comes as robots a vehicle fights. One
+  way for now: no getting out.
+  - The seaplane flies like a plane (`flight.ts`): the stick banks and
+    pitches, a climb costs speed, too slow stalls; the mouse flies it (the
+    nose follows it) or the keys do. Cannon, locked missiles, a barrel roll
+    that dodges, an afterburner.
+  - The gunboat: engine and rudder on the keys, the mouse turns the view and
+    the turret with it; flares throw missiles off.
+  - Their robots (`foes.ts`): drones, robots on jetpacks and on wings,
+    gunships, skimmers, mines, a warship, a dreadnought on boss waves. None
+    passes through the land, the sea or a tower (`settle`).
+- The world is the board's own layout raised in 3D (`tps/world.ts`: the same
+  islands, decks and beacons, `SCALE` world units per board pixel), drawn at a
+  low resolution scaled in whole pixels, every model made of boxes — the
+  robots are the board's sprites given a depth (`art.ts § robotPixels`).
+  Vehicle keys are read by POSITION so any layout works. The run itself —
+  score, combo, waves, record, sound — stays in `arcade.ts` (`TpsRun`). The
+  phase is a lazy chunk: where it cannot load, or without WebGL, the waves
+  stay on the board. Once the vehicles were reached, a run may start there
+  (`C` on the end screen).
+- **Its sound** (`game/audio.ts`) is synthesised — no file, nothing fetched,
+  and the tune is the module's own. Effects are layered (a crack, a body, a
+  tail), vary a little each time and sit left or right of the pilot by where
+  they happen: a sound per weapon, metal hits, robots powering down, blasts,
+  pods whistling down, the helicopter's rotor, a heartbeat on the last heart.
+  The music is a step sequencer whose layers follow the fight (the drop, a
+  wave, a crowded one, a boss, the lull, the end) and steps aside under a
+  blast. `M` goes music + effects → effects → off (`localStorage
+  desk.arcade.audio`, on by default: PLAY is a deliberate act); the board's
+  own cues keep their separate switch. It lives for the run: built by the key
+  or click that starts one, closed when it ends, suspended in a hidden tab.
 
 ## Verifying
 

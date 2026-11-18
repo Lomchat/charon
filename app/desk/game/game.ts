@@ -42,7 +42,6 @@ export type GameHooks = {
   onPick: (pick: Pick | null, how: 'click' | 'double' | 'menu', clientX: number, clientY: number) => void;
   onZoom?: (zoom: number) => void;
   /** The mini-game asks for the sound switch, or has ended. */
-  onArcade?: (what: 'sound' | 'end') => void;
 };
 
 export const FAMILY_COLOR: Record<ToolFamily | 'think' | 'say', string> = {
@@ -133,6 +132,8 @@ export class Game {
   /** The mini-game (game/arcade.ts), while a run lasts: it takes the stage. */
   private arcade: Arcade | null = null;
   private arcadeQuit = false;
+  /** The newest model that came in during a run (`setModel`). */
+  private heldModel: DeskModel | null = null;
   private arcadeHudAt = 0;
   private shakeUntil = 0;
   private shakeBy = 0;
@@ -230,6 +231,9 @@ export class Game {
   /* ──────────────────────────────────────────────────────────── model ─── */
 
   setModel(model: DeskModel): void {
+    // A run of the mini-game plays on the board as it was when it started: what
+    // the fleet does meanwhile (a session comes, another goes) waits for its end.
+    if (this.arcade) { this.heldModel = model; return; }
     this.model = model;
     const before = this.sceneBox();
     const world = buildWorld(model);
@@ -313,8 +317,6 @@ export class Game {
     this.syncTags();
     this.labelsDirty = true;
     this.thumbAt = 0;
-    // The mini-game plays on the island as it was: a new shape ends the run.
-    if (this.arcade && reshaped) this.stopArcade();
     if (!this.placed) this.firstFrame();
     else if (reshaped && !this.userMoved) this.frame(0, true);
   }
@@ -764,7 +766,7 @@ export class Game {
    * pointer are set aside until it ends; the sessions are never touched.
    * False when there is no island with robots to play on.
    */
-  startArcade(): boolean {
+  startArcade(from: 'ground' | 'tps' = 'ground'): boolean {
     const world = this.world;
     const scene = this.scene;
     if (this.arcade || !world || scene?.kind !== 'island') return false;
@@ -786,11 +788,12 @@ export class Game {
     this.host.classList.add('is-arcade');
     this.arcadeQuit = false;
     this.arcade = new Arcade({
-      island, robots, best: readBest(),
+      island, robots, best: readBest(), world, stage: this.host, from,
+      view: () => ({ x: this.cam.x, y: this.cam.y, zoom: this.cam.zoom }),
+      capture: (on) => this.capture(on),
       float: (x, y, text, colour, size) => this.float(x, y, text, colour, size),
       shake: (ms, px) => { this.shakeUntil = this.time + ms; this.shakeBy = px; },
       saveBest: writeBest,
-      toggleSound: () => this.hooks.onArcade?.('sound'),
       quit: () => { this.arcadeQuit = true; },
     });
     const at = this.arcade.focus();
@@ -803,7 +806,9 @@ export class Game {
   /** End the run: the board is itself again, framed as before. */
   stopArcade(): void {
     if (!this.arcade) return;
+    this.arcade.dispose();
     this.arcade = null;
+    this.capture(false);
     this.arcadeQuit = false;
     this.shakeUntil = 0;
     this.wipeEffects();
@@ -812,8 +817,29 @@ export class Game {
     publishArcade(null);
     this.userMoved = false;
     this.labelsDirty = true;
+    // The fleet as it is now.
+    const held = this.heldModel;
+    this.heldModel = null;
+    if (held) this.setModel(held);
     this.frame();
-    this.hooks.onArcade?.('end');
+  }
+
+  /** Capture the mouse for a run (it turns the view), or let it go. Asked on a click: a browser wants the gesture. */
+  private capture(on: boolean): void {
+    try {
+      if (on) { if (document.pointerLockElement !== this.host) void this.host.requestPointerLock?.(); }
+      else if (document.pointerLockElement === this.host) document.exitPointerLock?.();
+    } catch { /* no capture here: the mouse points instead */ }
+  }
+
+  /** The 3D phase of a run, as a test sees it (null: no run, or still in 2D). */
+  arcadeProbe(): ReturnType<Arcade['probe']> {
+    return this.arcade ? this.arcade.probe() : null;
+  }
+
+  /** How loud the mini-game is right now (null: no run) — for a test. */
+  arcadeLevel(): { peak: number; rms: number } | null {
+    return this.arcade ? this.arcade.audioLevel() : null;
   }
 
   private wipeEffects(): void {
@@ -828,6 +854,12 @@ export class Game {
     const arcade = this.arcade!;
     if (this.arcadeQuit) { this.stopArcade(); return; }
     arcade.step(dt);
+    // On the 3D stage there is nothing of the board to move.
+    if (arcade.staged) {
+      if (this.floats.length) this.wipeEffects();
+      if (this.time - this.arcadeHudAt > 90) { this.arcadeHudAt = this.time; publishArcade(arcade.hud()); }
+      return;
+    }
     // The camera follows the pilot, without leaving the island behind.
     const world = this.world;
     const island = world?.islands.find((i) => this.shown(i.vpsId));
@@ -927,13 +959,33 @@ export class Game {
     };
 
     on(host, 'pointerdown', (e: PointerEvent) => {
-      if (e.button === 2 || this.arcade) return;
+      if (this.arcade) {
+        const p = local(e);
+        this.arcade.pointer('down', p.x, p.y, e.button, 0, 0, document.pointerLockElement === host);
+        return;
+      }
+      if (e.button === 2) return;
       host.setPointerCapture?.(e.pointerId);
       this.pointers.set(e.pointerId, local(e));
       const p = local(e);
       this.drag = { x: p.x, y: p.y, moved: false, pinch: this.pinchSpan() };
       this.goal = null;
     });
+    // A run on the 3D stage is played with the mouse, wherever it is on the page:
+    // captured, it turns the view; free, it points.
+    on(window, 'pointermove', (e: PointerEvent) => {
+      if (!this.arcade) return;
+      const p = local(e);
+      this.arcade.pointer('move', p.x, p.y, e.button, e.movementX, e.movementY, document.pointerLockElement === host);
+    });
+    on(window, 'pointerup', (e: PointerEvent) => {
+      if (!this.arcade) return;
+      const p = local(e);
+      this.arcade.pointer('up', p.x, p.y, e.button, 0, 0, document.pointerLockElement === host);
+    });
+    const onLock = () => this.arcade?.locked(document.pointerLockElement === host);
+    document.addEventListener('pointerlockchange', onLock);
+    this.disposers.push(() => document.removeEventListener('pointerlockchange', onLock));
     on(host, 'pointermove', (e: PointerEvent) => {
       if (this.arcade) return;
       const p = local(e);
@@ -1016,7 +1068,7 @@ export class Game {
       if (this.arcade) { this.arcade.key(e, false); return; }
       this.keys.delete(e.key.length === 1 ? e.key.toLowerCase() : e.key);
     });
-    on(window, 'blur', () => this.keys.clear());
+    on(window, 'blur', () => { this.keys.clear(); this.arcade?.release(); });
   }
 
   private pinchSpan(): number {
@@ -1178,6 +1230,12 @@ export class Game {
   /* ───────────────────────────────────────────────────────────── draw ─── */
 
   private draw(): void {
+    // A run on the 3D stage: it is drawn over a board left as it was — still
+    // drawn for the instant the stage takes to fade in over it.
+    if (this.arcade?.staged) {
+      this.arcade.drawStage();
+      if (!this.arcade.stageFresh) return;
+    }
     const g = this.g;
     const { zoom } = this.cam;
     const view = this.view();

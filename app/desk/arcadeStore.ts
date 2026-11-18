@@ -4,11 +4,14 @@
 // Nothing here touches Charon: the game is a toy played on the board's
 // sprites, never on the sessions behind them.
 import { useSyncExternalStore } from 'react';
+import type { AudioMode } from './game/audio';
 
 export type ArcadePhase = 'intro' | 'wave' | 'clear' | 'over';
 
 export type ArcadeHud = {
   on: boolean;
+  /** On foot (in 2D or seen in 3D), or in a vehicle (game/tps). */
+  mode: 'ground' | 'craft';
   phase: ArcadePhase;
   paused: boolean;
   score: number;
@@ -31,6 +34,13 @@ export type ArcadeHud = {
   /** The last thing announced, and when (ms) — the overlay fades it out. */
   banner: string;
   bannerAt: number;
+  /** What is heard: music and effects, effects only, nothing (the M key). */
+  audio: AudioMode;
+  /** In a vehicle: its hull (0..1) and its missiles. */
+  hull: number;
+  missiles: number;
+  /** The vehicles have been reached once: a run may start from there. */
+  checkpoint: boolean;
 };
 
 const BEST_KEY = 'desk.arcade.best';
@@ -44,8 +54,9 @@ export function writeBest(score: number): void {
 }
 
 const OFF: ArcadeHud = {
-  on: false, phase: 'intro', paused: false, score: 0, best: 0, record: false, wave: 0, hp: 0, maxHp: 0, shield: 0,
-  weapon: '', ammo: null, bombs: 0, mult: 1, foes: 0, boss: null, banner: '', bannerAt: 0,
+  on: false, mode: 'ground', phase: 'intro', paused: false, score: 0, best: 0, record: false, wave: 0, hp: 0, maxHp: 0, shield: 0,
+  weapon: '', ammo: null, bombs: 0, mult: 1, foes: 0, boss: null, banner: '', bannerAt: 0, audio: 'all',
+  hull: 0, missiles: 0, checkpoint: false,
 };
 
 let snapshot: ArcadeHud = OFF;

@@ -216,6 +216,27 @@ export type RobotPose = {
 export const ROBOT_W = 16;
 export const ROBOT_H = 20;
 
+/**
+ * A robot as plain rows of palette keys, with its palette and its eyes: what
+ * the mini-game's 3D models are extruded from (game/tps/models.ts) — the same
+ * pixels, given a depth.
+ */
+export function robotPixels(kind: RobotKind, legs: 'stand' | 'walkA' | 'walkB' = 'stand'): { rows: string[]; pal: Record<string, string>; eyes: Rect[] } {
+  const grid = Array.from({ length: ROBOT_H }, () => Array<string>(ROBOT_W).fill('.'));
+  const put = (rows: string[], left: number, top: number) => rows.forEach((row, y) => {
+    for (let x = 0; x < row.length; x += 1) {
+      if (row[x] !== '.' && top + y < ROBOT_H && left + x < ROBOT_W) grid[top + y][left + x] = row[x];
+    }
+  });
+  // As `drawRobot` stacks them.
+  put(LEGS[legs], 0, 16);
+  put(TORSO, 0, 10);
+  put(ARM_L.down, 1, 11);
+  put(ARM_R.down, 11, 11);
+  put(HEADS[kind], 0, 0);
+  return { rows: grid.map((row) => row.join('')), pal: ROBOT_PAL[kind], eyes: ROBOT_META[kind].eyes };
+}
+
 /** Draw a robot with its FEET at (x, y). */
 export function drawRobot(g: CanvasRenderingContext2D, art: RobotArt, x: number, y: number, pose: RobotPose): void {
   const left = Math.round(x) - 8;
@@ -593,6 +614,24 @@ function pickupBox(kind: PickupKind): Sprite {
   g.fillStyle = ink;
   glyph.forEach((row, y) => { for (let x = 0; x < row.length; x += 1) if (row[x] === '#') g.fillRect(3 + x, 3 + y, 1, 1); });
   return c;
+}
+
+/** The mini-game's own sprites as rows and palettes, for its 3D models (game/tps/models.ts). */
+export function heroPixels(legs: 'stand' | 'walkA' | 'walkB'): { rows: string[]; pal: Record<string, string> } {
+  return { rows: [...HERO_TOP, ...HERO_LEGS[legs]], pal: HERO_PAL };
+}
+
+export function heliPixels(): { rows: string[]; pal: Record<string, string> } {
+  return { rows: HELI_ROWS, pal: HELI_PAL };
+}
+
+export function chutePixels(): { rows: string[]; pal: Record<string, string> } {
+  return { rows: CHUTE_ROWS, pal: { o: INK, W: '#f4f6fb', R: '#e5484d' } };
+}
+
+/** A pickup's box: its frame colour, and its glyph (5×5, `#` = lit in `ink`). */
+export function pickupPixels(kind: PickupKind): { frame: string; ink: string; glyph: string[] } {
+  return PICKUPS[kind];
 }
 
 export type ArcadeArt = {

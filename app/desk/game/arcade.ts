@@ -6,20 +6,38 @@
 // session — nothing here can reach Charon. The engine (game.ts) swaps its own
 // drawing for this one while a run lasts and gives the board back after.
 //
+// After the third wave the SAME fight is seen from behind the pilot, in 3D
+// (game/tps, loaded on demand): this file still runs it, on the board's
+// plane, in board pixels — only the eye moved, and the keys follow it (the
+// mouse turns the pilot). A wave later two vehicles come to the island; the
+// pilot who boards one leaves this fight for good, for the one tps/combat.ts
+// runs. The run — score, combo, waves, record, sound — stays here throughout.
+// Where the 3D phase cannot load, or without WebGL, everything stays in 2D.
+//
 //   move   WASD / ZQSD            dash  Shift
 //   fire   arrows (8 ways), or Space to shoot at the nearest robot
-//   bomb   E          pause  P          leave  Esc
+//   bomb   E          pause  P          sound  M          leave  Esc
 import {
   T, arcadeArt, art, drawRobot, makeCanvas,
   type PickupKind, type RobotArt, type RobotKind, type RobotPose,
 } from './art';
-import type { Island } from './layout';
+import type { Island, World } from './layout';
 import { glow } from './scenery';
 import type { ArcadeHud, ArcadePhase } from '../arcadeStore';
-import { arcadeSfx } from '../sound';
+import { ArcadeAudio, type AudioScene } from './audio';
+import type { GroundPort, GroundScene, Tps, TpsRun } from './tps';
 
 export type ArcadeHost = {
   island: Island;
+  /** The board's whole layout, and the element its stage is drawn in: the flight phase raises one in the other. */
+  world: World;
+  stage: HTMLElement;
+  /** The board's own view, for the 3D phase to start from: its centre (board pixels) and its zoom. */
+  view: () => { x: number; y: number; zoom: number };
+  /** Capture the mouse (it turns the view), or let it go. */
+  capture: (on: boolean) => void;
+  /** Where the run starts: on the island in 2D, or in 3D with the vehicles there (a checkpoint, a test). */
+  from?: 'ground' | 'tps';
   /** The island's own robots: they open the first wave from where they stand. */
   robots: Array<{ kind: RobotKind; x: number; y: number }>;
   best: number;
@@ -28,7 +46,6 @@ export type ArcadeHost = {
   shake: (ms: number, px: number) => void;
   /** A new record, to keep. */
   saveBest: (score: number) => void;
-  toggleSound: () => void;
   quit: () => void;
 };
 
@@ -82,6 +99,18 @@ type Pod = { x: number; y: number; t: number; max: number; type: FoeType };
 type Pickup = { x: number; y: number; kind: PickupKind; age: number; fall: number };
 type Queued = { at: number; type: FoeType };
 
+/** The wave after which the fight is seen in 3D; the vehicles come one wave later. */
+const TPS_AFTER = 3;
+const CHECKPOINT_KEY = 'desk.arcade.tps';
+
+/** The vehicles have been reached once in this browser: a run may start from there again. */
+export function readCheckpoint(): boolean {
+  try { return localStorage.getItem(CHECKPOINT_KEY) === '1'; } catch { return false; }
+}
+
+/** A boss comes every fifth wave, the first one at wave 7 — a few waves into the vehicles. */
+const bossWave = (n: number): boolean => n >= 7 && (n - 2) % 5 === 0;
+
 const PLAYER_SPEED = 64;
 const PLAYER_R = 5;
 const MAX_FOES = 70;
@@ -128,12 +157,29 @@ export class Arcade {
   private pods: Pod[] = [];
   private pickups: Pickup[] = [];
   private queue: Queued[] = [];
+  /** How many robots the wave under way brings in all. */
+  private waveSize = 0;
   private waveT = 0;
   private heli: { x: number; y: number; fromX: number; fromY: number; toX: number; toY: number; t: number; max: number; drop: PickupKind | null; dropped: boolean } | null = null;
   private keys = new Set<string>();
+  // Its music and effects (game/audio.ts). Built here: a run starts on a key
+  // or a click, the gesture a browser wants before any sound.
+  private audio = new ArcadeAudio();
+
+  // The 3D phase: its code once it has arrived, the phase itself once entered.
+  private tpsModule: typeof import('./tps') | null = null;
+  private tpsFailed = false;
+  private tps: Tps | null = null;
+  private tpsAt = 0;
+  /** A run that starts in 3D waits for that code. */
+  private tpsWanted = false;
+  /** The pilot is in a vehicle: the fight on foot is over. */
+  private aboard = false;
+  private checkpoint = readCheckpoint();
 
   constructor(host: ArcadeHost) {
     this.host = host;
+    void import('./tps').then((m) => { this.tpsModule = m; }, () => { this.tpsFailed = true; });
     this.island = host.island;
     this.ox = host.island.tx * T;
     this.oy = host.island.ty * T;
@@ -141,17 +187,88 @@ export class Arcade {
     const land = this.nearestLand(this.ox + (this.island.tw * T) / 2, this.oy + (this.island.th * T) / 2);
     this.landX = land.x; this.landY = land.y;
     this.px = land.x; this.py = land.y;
-    this.startRun();
+    this.startRun(host.from ?? 'ground');
+  }
+
+  /** The run is over for good: the sound goes with it. */
+  dispose(): void {
+    this.leaveTps();
+    this.audio.dispose();
+  }
+
+  private leaveTps(): void {
+    this.tps?.dispose();
+    this.tps = null;
+    this.aboard = false;
+    this.tpsWanted = false;
+    this.host.capture(false);
+  }
+
+  /** The fight is on the 3D stage, not on the board. */
+  get staged(): boolean {
+    return this.tps != null;
+  }
+
+  /** The 3D stage has just come up: the board is still fading under it. */
+  get stageFresh(): boolean {
+    return this.tps != null && this.clock - this.tpsAt < 0.7;
+  }
+
+  drawStage(): void {
+    this.tps?.draw();
+  }
+
+  /** The 3D phase's state, for a test to play by; null in 2D. */
+  probe(): ReturnType<Tps['probe']> | null {
+    return this.tps ? this.tps.probe() : null;
+  }
+
+  /** The mouse: where it is on the stage, how far it went, whether it is captured. */
+  pointer(type: 'move' | 'down' | 'up', x: number, y: number, button: number, dx = 0, dy = 0, locked = false): void {
+    if (!this.tps || this.paused || this.phase === 'over') return;
+    // A click on the stage captures the mouse: it then turns the view.
+    if (type === 'down' && !locked) this.host.capture(true);
+    this.tps.pointer(type, x, y, button, dx, dy, locked);
+  }
+
+  /** The mouse was captured, or let go (Esc). */
+  locked(on: boolean): void {
+    this.tps?.setLocked(on);
+  }
+
+  /** The window lost the keyboard: nothing is held any more. */
+  release(): void {
+    this.keys.clear();
+    this.tps?.release();
+  }
+
+  /** How loud the game is right now — for a test, never for the game. */
+  audioLevel(): { peak: number; rms: number } {
+    return this.audio.loudness();
   }
 
   /* ─────────────────────────────────────────────────────────── a run ─── */
 
-  private startRun(): void {
+  private startRun(from: 'ground' | 'tps' = 'ground'): void {
+    this.leaveTps();
+    this.audio.runStart();
     this.phase = 'intro'; this.phaseT = 0; this.clock = 0; this.wave = 0; this.score = 0; this.record = false;
     this.hp = this.maxHp; this.shield = 0; this.invul = 0; this.weapon = 'pistol'; this.ammo = Infinity; this.bombs = 1;
     this.combo = 0; this.comboT = 0; this.doubleT = 0; this.cool = 0; this.landed = false;
     this.foes = []; this.shots = []; this.sparks = []; this.blasts = []; this.pods = []; this.pickups = []; this.queue = [];
     this.px = this.landX; this.py = this.landY; this.aimX = 0; this.aimY = 1;
+    if (from === 'tps') {
+      // Straight to where the vehicles wait: the first waves are behind.
+      this.wave = TPS_AFTER + 1;
+      this.heli = null;
+      this.landed = true;
+      // With what four waves would have left in its hands.
+      this.weapon = 'smg'; this.ammo = WEAPONS.smg.ammo; this.bombs = 2;
+      this.aimY = -1;
+      this.phase = 'clear';
+      this.tpsWanted = true;
+      return;
+    }
     // The island's robots stand where they were, unaware, until the pilot lands.
     for (const r of this.host.robots.slice(0, 26)) {
       const type = FOE_OF_ROBOT[r.kind];
@@ -160,6 +277,132 @@ export class Arcade {
     }
     this.flyHeli(this.landX - 260, this.landY - 170, this.landX, this.landY - 46, 1.5, null);
     this.say('GET READY');
+  }
+
+  /**
+   * The fight goes to the 3D stage: the eye swings from the board's view to
+   * behind the pilot (`swing`), or starts there. Where it cannot (no code, no
+   * WebGL), nothing changes: the run stays on the board.
+   */
+  private enterTps(swing: boolean): boolean {
+    if (this.tps || this.tpsFailed || !this.tpsModule) return false;
+    try {
+      // Facing up the board, as the 2D view shows it: the keys keep their sense.
+      this.tps = new this.tpsModule.Tps(this.host.stage, this.host.world, this.island.vpsId, this.run(), this.port(), {
+        from: swing ? this.host.view() : null, yaw: Math.PI,
+      });
+    } catch {
+      this.tpsFailed = true;
+      this.tps = null;
+      return false;
+    }
+    this.tpsAt = this.clock;
+    this.aimX = 0; this.aimY = -1;
+    return true;
+  }
+
+  /** The vehicles come to the island. */
+  private deliver(there: boolean): void {
+    if (!this.tps) return;
+    this.tps.deliver(there);
+    if (!there) this.say('VEHICLES READY');
+    if (!this.checkpoint) {
+      this.checkpoint = true;
+      try { localStorage.setItem(CHECKPOINT_KEY, '1'); } catch { /* private mode */ }
+    }
+  }
+
+  /** What the 3D phase sees of the fight on foot, and the one thing it may do to it. */
+  private port(): GroundPort {
+    const pilot: GroundScene['pilot'] = { x: 0, y: 0, aimX: 0, aimY: 1, stride: 0, shown: false, blink: false, shield: 0, hp: 0, gun: '#e8eef9', flash: false };
+    return {
+      scene: () => {
+        pilot.x = this.px; pilot.y = this.py; pilot.aimX = this.aimX; pilot.aimY = this.aimY; pilot.stride = this.stride;
+        pilot.shown = this.landed && this.phase !== 'over' && !this.aboard;
+        pilot.blink = this.invul > 0 && this.dashT <= 0;
+        pilot.shield = this.shield; pilot.hp = this.hp; pilot.gun = WEAPONS[this.weapon].colour; pilot.flash = this.flashT > 0;
+        return { clock: this.clock, pilot, foes: this.foes, shots: this.shots, pods: this.pods, pickups: this.pickups, heli: this.heli };
+      },
+      look: (type) => {
+        const def = FOES[type as FoeType] ?? FOES.grunt;
+        return { art: def.art, scale: def.scale, fly: !!def.fly, red: !!def.tint };
+      },
+      nearestLand: (x, y) => this.nearestLand(x, y),
+      leave: () => {
+        const fighting = this.phase === 'wave';
+        const foes = this.foes.filter((f) => f.sleep <= 0).map((f) => ({ type: f.type as string, x: f.x, y: f.y }));
+        // What the wave had not sent yet is still owed: the vehicle will meet it.
+        const ahead = this.queue.length + this.pods.length;
+        const share = this.waveSize > 0 ? Math.min(1, ahead / this.waveSize) : 0;
+        const boss = this.queue.some((q) => q.type === 'boss') || this.pods.some((q) => q.type === 'boss');
+        this.aboard = true;
+        this.keys.clear();
+        this.foes = []; this.pods = []; this.queue = []; this.shots = []; this.pickups = []; this.heli = null;
+        this.combo = 0; this.comboT = 0;
+        return { fighting, foes, share, boss };
+      },
+    };
+  }
+
+  /** What the 3D phase may ask of the run. */
+  private run(): TpsRun {
+    return {
+      audio: this.audio,
+      score: (base) => {
+        const before = this.mult();
+        this.combo += 1;
+        // Kills are further apart in a vehicle: the combo waits longer.
+        this.comboT = 7;
+        if (this.mult() > before) this.audio.combo(this.mult());
+        const gain = base * this.mult();
+        this.score += gain;
+        if (this.score > this.best) { this.best = this.score; this.record = true; }
+        return gain;
+      },
+      hit: () => { this.combo = 0; },
+      say: (text) => this.say(text),
+      wave: () => this.wave,
+      nextWave: () => {
+        this.wave += 1;
+        this.phase = 'wave'; this.phaseT = 0;
+        const boss = bossWave(this.wave);
+        this.say(boss ? `WAVE ${this.wave} — BOSS` : `WAVE ${this.wave}`);
+        this.audio.waveStart(boss);
+        return { n: this.wave, boss };
+      },
+      cleared: () => {
+        this.phase = 'clear'; this.phaseT = 0;
+        const bonus = 100 * this.wave;
+        this.score += bonus;
+        if (this.score > this.best) { this.best = this.score; this.record = true; }
+        this.say(`WAVE ${this.wave} CLEARED  +${bonus}`);
+        this.audio.waveClear();
+      },
+      over: () => this.end(),
+    };
+  }
+
+  /** The run ends: the record is kept, the last word is said. */
+  private end(): void {
+    this.phase = 'over'; this.phaseT = 0;
+    this.keys.clear();
+    this.tps?.release();
+    this.host.capture(false);
+    this.audio.over(this.record);
+    if (this.record) this.host.saveBest(this.best);
+    this.say(this.record ? 'NEW RECORD' : 'GAME OVER');
+  }
+
+  /** The stage shakes: the board's, or the 3D one. */
+  private shakeBy(ms: number, px: number): void {
+    if (this.tps) this.tps.shake(px / 7);
+    else this.host.shake(ms, px);
+  }
+
+  /** Rising text where something happened. */
+  private floatAt(x: number, y: number, text: string, colour: string, size: 'small' | 'big'): void {
+    if (this.tps) this.tps.float(x, y, text, colour);
+    else this.host.float(x, y, text, colour, size);
   }
 
   private say(text: string): void {
@@ -175,17 +418,19 @@ export class Arcade {
     this.wave += 1;
     this.phase = 'wave'; this.phaseT = 0; this.waveT = 0;
     const n = this.wave;
-    const boss = n % 5 === 0;
+    const boss = bossWave(n);
     this.say(boss ? `WAVE ${n} — BOSS` : `WAVE ${n}`);
-    arcadeSfx.wave();
+    this.audio.waveStart(boss);
     this.queue = [];
     if (n === 1) {
       // The island's own robots wake one after the other; a small island gets company.
       this.foes.forEach((f, i) => { f.sleep = 0.2 + i * 0.14; });
       for (let i = this.foes.length; i < 8; i += 1) this.queue.push({ at: 1 + i * 0.4, type: 'grunt' });
+      this.waveSize = this.foes.length + this.queue.length;
       return;
     }
-    let budget = (6 + n * 3.4) * (boss ? 0.55 : 1);
+    // Seen from behind the pilot a crowd hides more than it shows: fewer come at once.
+    let budget = (6 + n * 3.4) * (boss ? 0.55 : 1) * (this.tps ? 0.55 : 1);
     const pool = (Object.keys(FOES) as FoeType[]).filter((t) => FOES[t].weight > 0 && FOES[t].from <= n);
     const picked: FoeType[] = [];
     while (budget > 0.4 && picked.length < 60) {
@@ -200,6 +445,7 @@ export class Arcade {
     const gap = Math.max(0.5, 1.2 - n * 0.06);
     picked.forEach((type, i) => this.queue.push({ at: 0.6 + Math.floor(i / 4) * gap + (i % 4) * 0.12, type }));
     if (boss) this.queue.push({ at: 1.2, type: 'boss' });
+    this.waveSize = this.queue.length;
   }
 
   private makeFoe(type: FoeType, x: number, y: number, wave: number, sleep = 0): Foe {
@@ -216,20 +462,34 @@ export class Arcade {
   /** A key went down or up. True: the game used it (the page must not). */
   key(e: KeyboardEvent, down: boolean): boolean {
     const k = e.key.length === 1 ? e.key.toLowerCase() : e.key;
-    if (down && e.repeat) return GAME_KEYS.has(k);
-    if (!down) { this.keys.delete(k); return GAME_KEYS.has(k); }
+    // On the 3D stage some keys are read by their place on the keyboard (tps/input.ts): they hear everything.
+    const staged = this.tps ? this.tps.key(e, down) : false;
+    if (down && e.repeat) return staged || GAME_KEYS.has(k);
+    if (!down) {
+      this.keys.delete(k);
+      return staged || GAME_KEYS.has(k);
+    }
     if (k === 'Escape') { this.host.quit(); return true; }
-    if (k === 'm') { this.host.toggleSound(); return true; }
+    if (k === 'm') { this.audio.cycleMode(); return true; }
     if (this.phase === 'over') {
       if (k === 'Enter' || k === ' ') this.startRun();
+      // Once the vehicles have been reached, a run may start from there.
+      else if (k === 'c' && this.checkpoint) this.startRun('tps');
       return true;
     }
-    if (k === 'p') { this.paused = !this.paused; return true; }
+    if (k === 'p') {
+      this.paused = !this.paused;
+      this.tps?.release();
+      if (this.paused) this.host.capture(false);
+      return true;
+    }
     if (this.paused) { this.paused = false; return true; }
+    // In a vehicle the fight on foot hears nothing.
+    if (this.aboard) return staged;
     this.keys.add(k);
     if (k === 'Shift') this.dash();
     else if (k === 'e' || k === 'Enter') this.bomb();
-    return GAME_KEYS.has(k);
+    return staged || GAME_KEYS.has(k);
   }
 
   private held(...keys: string[]): boolean {
@@ -240,9 +500,32 @@ export class Arcade {
   /* ───────────────────────────────────────────────────────────── step ─── */
 
   step(dt: number): void {
+    // The sound follows the scene every frame, a paused one included.
+    this.audio.update(this.paused ? 0 : dt, this.audioScene());
     if (this.paused) return;
     this.clock += dt;
     this.phaseT += dt;
+    if (this.tpsWanted) {
+      // A run that starts in 3D: as soon as that code is there (or cannot be).
+      if (this.tpsFailed) { this.tpsWanted = false; this.wave = 0; this.landed = false; this.startRun(); return; }
+      if (!this.tpsModule) { this.phaseT = 0; return; }
+      this.tpsWanted = false;
+      if (!this.enterTps(false)) { this.startRun(); return; }
+      this.deliver(true);
+      this.phaseT = 0;
+    }
+    if (this.aboard) {
+      // The fight is the vehicle's; the run keeps its combo's clock.
+      if (this.comboT > 0) { this.comboT -= dt; if (this.comboT <= 0) this.combo = 0; }
+      this.tps?.step(dt);
+      return;
+    }
+    this.stepGround(dt);
+    this.tps?.step(dt);
+  }
+
+  /** The fight on foot: the same in 2D and seen in 3D. */
+  private stepGround(dt: number): void {
     this.stepHeli(dt);
     this.stepEffects(dt);
     if (this.phase === 'over') return;
@@ -251,6 +534,7 @@ export class Arcade {
       // The pilot slides down the rope once the helicopter hovers.
       if (!this.landed && this.heli && this.heli.t >= this.heli.max + 0.55) {
         this.landed = true;
+        this.audio.land();
         this.burst(this.landX, this.landY, '#cfd6e6', 10, 30);
         this.flyHeli(this.heli.x, this.heli.y, this.landX + 300, this.landY - 200, 1.3, null);
         this.nextWave();
@@ -269,20 +553,25 @@ export class Arcade {
       while (this.queue.length && this.queue[0].at <= this.waveT && this.foes.length + this.pods.length < MAX_FOES) {
         const next = this.queue.shift()!;
         const at = this.spawnPoint(next.type);
-        this.pods.push({ x: at.x, y: at.y, t: 0, max: next.type === 'boss' ? 1.6 : 0.85, type: next.type });
+        const fall = next.type === 'boss' ? 1.6 : 0.85;
+        this.pods.push({ x: at.x, y: at.y, t: 0, max: fall, type: next.type });
+        this.audio.podFall(at.x, at.y, fall, next.type === 'boss');
       }
       if (!this.queue.length && !this.pods.length && !this.foes.length) {
         this.phase = 'clear'; this.phaseT = 0;
         const bonus = 100 * this.wave;
         this.score += bonus;
         this.say(`WAVE ${this.wave} CLEARED  +${bonus}`);
-        arcadeSfx.clear();
+        this.audio.waveClear();
         // The helicopter comes back with a present.
         const kinds: PickupKind[] = ['smg', 'shotgun', 'laser', 'rocket', 'flame'];
         const drop = this.hp <= 2 && Math.random() < 0.6 ? 'med' : kinds[Math.floor(Math.random() * kinds.length)];
         this.flyHeli(this.px - 280, this.py - 150, this.px + 280, this.py - 150, 2.6, drop);
+        // The third wave down, the eye comes down behind the pilot; a wave later, the vehicles come.
+        if (this.wave === TPS_AFTER) this.enterTps(true);
+        else if (this.wave === TPS_AFTER + 1) this.deliver(false);
       }
-    } else if (this.phase === 'clear' && this.phaseT > 2.4) this.nextWave();
+    } else if (this.phase === 'clear' && this.phaseT > (this.wave === TPS_AFTER && this.tps ? 3.4 : 2.4)) this.nextWave();
   }
 
   private stepHeli(dt: number): void {
@@ -310,15 +599,24 @@ export class Arcade {
     this.doubleT = Math.max(0, this.doubleT - dt);
     if (this.comboT > 0) { this.comboT -= dt; if (this.comboT <= 0) this.combo = 0; }
 
+    // Seen from behind (the 3D stage), the keys follow the eye: forward is where the pilot faces.
+    const yaw = this.tps?.afoot ? this.tps.heading() : null;
     let mx = (this.held('d') ? 1 : 0) - (this.held('a', 'q') ? 1 : 0);
     let my = (this.held('s') ? 1 : 0) - (this.held('w', 'z') ? 1 : 0);
+    if (yaw != null) {
+      const ahead = -my;
+      const side = mx;
+      mx = Math.sin(yaw) * ahead - Math.cos(yaw) * side;
+      my = Math.cos(yaw) * ahead + Math.sin(yaw) * side;
+    }
     const len = Math.hypot(mx, my);
     if (len) { mx /= len; my /= len; }
     let speed = PLAYER_SPEED;
     if (this.dashT > 0) {
       this.dashT -= dt;
       mx = this.dashX; my = this.dashY; speed = 215;
-      if (Math.random() < 0.7) this.sparks.push({ x: this.px, y: this.py - 7, vx: 0, vy: 0, g: 0, life: 0, max: 220, colour: '#9fd4ff', size: 2 });
+      if (this.tps) this.tps.burst(this.px, this.py - 7, '#9fd4ff', 1, 4);
+      else if (Math.random() < 0.7) this.sparks.push({ x: this.px, y: this.py - 7, vx: 0, vy: 0, g: 0, life: 0, max: 220, colour: '#9fd4ff', size: 2 });
     }
     if (mx || my) {
       this.stride += dt;
@@ -326,11 +624,15 @@ export class Arcade {
       if (this.dashT <= 0) { this.dashX = mx; this.dashY = my; }
     } else this.stride = 0;
 
-    // Aim: the arrows say where; Space picks the nearest robot.
-    const ax = (this.held('ArrowRight') ? 1 : 0) - (this.held('ArrowLeft') ? 1 : 0);
-    const ay = (this.held('ArrowDown') ? 1 : 0) - (this.held('ArrowUp') ? 1 : 0);
+    // Aim: the arrows say where; Space picks the nearest robot. From behind the
+    // pilot the mouse aims (it turns the pilot) and its button fires; the arrows turn the view.
+    const ax = yaw != null ? 0 : (this.held('ArrowRight') ? 1 : 0) - (this.held('ArrowLeft') ? 1 : 0);
+    const ay = yaw != null ? 0 : (this.held('ArrowDown') ? 1 : 0) - (this.held('ArrowUp') ? 1 : 0);
     let firing = false;
-    if (ax || ay) {
+    if (yaw != null && !this.held(' ')) {
+      this.aimX = Math.sin(yaw); this.aimY = Math.cos(yaw);
+      firing = this.tps!.trigger;
+    } else if (ax || ay) {
       const l = Math.hypot(ax, ay);
       this.aimX = ax / l; this.aimY = ay / l;
       firing = true;
@@ -349,7 +651,7 @@ export class Arcade {
         this.aimX = dx / l; this.aimY = dy / l;
       }
       firing = true;
-    } else if (mx || my) { this.aimX = mx; this.aimY = my; }
+    } else if ((mx || my) && yaw == null) { this.aimX = mx; this.aimY = my; }
     if (firing && this.cool <= 0) this.fire();
   }
 
@@ -363,16 +665,17 @@ export class Arcade {
     if (!this.dashX && !this.dashY) { this.dashX = this.aimX; this.dashY = this.aimY; }
     this.dashT = 0.17; this.dashCool = 0.85;
     this.invul = Math.max(this.invul, 0.28);
-    arcadeSfx.dash();
+    this.audio.dash();
   }
 
   private bomb(): void {
     if (this.phase !== 'wave' && this.phase !== 'clear') return;
     if (this.bombs <= 0) return;
     this.bombs -= 1;
-    this.host.shake(380, 5);
-    arcadeSfx.boom(true);
+    this.shakeBy(380, 5);
+    this.audio.megaBoom();
     this.blasts.push({ x: this.px, y: this.py - 8, t: 0, max: 520, r: 190, colour: '#fff3c9' });
+    this.tps?.blast(this.px, this.py - 8, 90, '#fff3c9', true);
     this.shots = this.shots.filter((s) => s.kind !== 'foe');
     for (const f of [...this.foes]) if (f.sleep <= 0) this.hurtFoe(f, f.type === 'boss' ? 25 : 12);
   }
@@ -398,11 +701,11 @@ export class Arcade {
       case 'flame': shot((Math.random() - 0.5) * 0.5, 120 + Math.random() * 40, { kind: 'flame', dmg: 0.45, r: 4, pierce: 3, hit: new Set(), life: 0.38 }); break;
       default: shot(0, 240, {}); break;
     }
-    arcadeSfx.shot(this.weapon);
-    if (this.weapon === 'shotgun' || this.weapon === 'rocket') this.host.shake(90, 2);
+    this.audio.shot(this.weapon);
+    if (this.weapon === 'shotgun' || this.weapon === 'rocket') this.shakeBy(90, 2);
     if (this.ammo !== Infinity) {
       this.ammo -= 1;
-      if (this.ammo <= 0) { this.weapon = 'pistol'; this.ammo = Infinity; }
+      if (this.ammo <= 0) { this.weapon = 'pistol'; this.ammo = Infinity; this.audio.empty(); }
     }
   }
 
@@ -415,7 +718,7 @@ export class Arcade {
       if (f.sleep > 0) {
         if (this.phase !== 'wave') continue;
         f.sleep -= dt;
-        if (f.sleep <= 0) this.host.float(f.x, f.y - 26, '!', '#ff5d5d', 'small');
+        if (f.sleep <= 0) { this.floatAt(f.x, f.y - 26, '!', '#ff5d5d', 'small'); this.audio.alert(f.x, f.y); }
         continue;
       }
       f.t += dt;
@@ -434,11 +737,12 @@ export class Arcade {
         if (f.shotAt <= 0 && dist < 190) {
           f.shotAt = Math.max(0.7, 1.5 - this.wave * 0.05);
           this.foeShot(f.x, f.y - 9, dx / dist, (dy + 4) / dist, 90);
+          this.audio.foeShot(f.x, f.y);
         }
       } else if (f.type === 'dasher') {
         // Winds up (it flashes), then charges in a straight line.
-        if (f.state === 0 && dist < 120 && f.t > 0.9) { f.state = 1; f.t = 0; f.dx = dx / dist; f.dy = dy / dist; }
-        if (f.state === 1) { vx = 0; vy = 0; if (f.t > 0.36) { f.state = 2; f.t = 0; } }
+        if (f.state === 0 && dist < 120 && f.t > 0.9) { f.state = 1; f.t = 0; f.dx = dx / dist; f.dy = dy / dist; this.audio.charge(f.x, f.y); }
+        if (f.state === 1) { vx = 0; vy = 0; if (f.t > 0.36) { f.state = 2; f.t = 0; this.audio.rush(f.x, f.y); } }
         else if (f.state === 2) { vx = f.dx * 178; vy = f.dy * 178; if (f.t > 0.55) { f.state = 0; f.t = 0; } }
       } else if (f.type === 'drone') {
         const wob = Math.sin(this.clock * 5 + f.seed) * 34;
@@ -452,6 +756,8 @@ export class Arcade {
           if (f.state === 0) for (let i = 0; i < 20; i += 1) { const a = (i / 20) * Math.PI * 2 + this.clock; this.foeShot(f.x, f.y - 26, Math.cos(a), Math.sin(a), 72); }
           else if (f.state === 1) for (let i = -2; i <= 2; i += 1) { const a = Math.atan2(dy, dx) + i * 0.2; this.foeShot(f.x, f.y - 26, Math.cos(a), Math.sin(a), 108); }
           else for (let i = 0; i < 4; i += 1) this.pods.push({ x: f.x + (Math.random() - 0.5) * 70, y: f.y + (Math.random() - 0.5) * 50, t: 0, max: 0.6, type: 'drone' });
+          if (f.state === 2) this.audio.podFall(f.x, f.y, 0.6, false);
+          else this.audio.volley(f.x, f.y);
         }
       }
 
@@ -520,7 +826,11 @@ export class Arcade {
 
   private stepPickups(dt: number): void {
     this.pickups = this.pickups.filter((p) => {
-      if (p.fall > 0) { p.fall -= dt; return true; }
+      if (p.fall > 0) {
+        p.fall -= dt;
+        if (p.fall <= 0) this.audio.crate(p.x, p.y);
+        return true;
+      }
       p.age += dt;
       if (Math.abs(p.x - this.px) < 10 && Math.abs(p.y - this.py) < 10) { this.take(p.kind); return false; }
       return p.age < PICKUP_LIFE;
@@ -528,14 +838,14 @@ export class Arcade {
   }
 
   private take(kind: PickupKind): void {
-    arcadeSfx.pickup();
+    this.audio.pickup(kind);
     let word: string;
     if (kind === 'med') { this.hp = Math.min(this.maxHp, this.hp + 2); word = '+2 HP'; }
     else if (kind === 'bomb') { this.bombs = Math.min(5, this.bombs + 1); word = '+1 BOMB'; }
     else if (kind === 'shield') { this.shield = 3; word = 'SHIELD'; }
     else if (kind === 'x2') { this.doubleT = 12; word = 'SCORE ×2'; }
     else { this.weapon = kind; this.ammo = WEAPONS[kind].ammo; this.cool = 0; word = WEAPONS[kind].name; }
-    this.host.float(this.px, this.py - 26, word, '#ffe066', 'big');
+    this.floatAt(this.px, this.py - 26, word, '#ffe066', 'big');
   }
 
   private stepEffects(dt: number): void {
@@ -551,7 +861,8 @@ export class Arcade {
       if (this.phase !== 'over') {
         this.foes.push(this.makeFoe(pod.type, pod.x, pod.y, Math.max(1, this.wave)));
         this.burst(pod.x, pod.y - 4, '#cfd6e6', pod.type === 'boss' ? 26 : 8, pod.type === 'boss' ? 60 : 30);
-        if (pod.type === 'boss') { this.host.shake(420, 5); arcadeSfx.boom(true); }
+        if (pod.type === 'boss') this.shakeBy(420, 5);
+        this.audio.podLand(pod.x, pod.y, pod.type === 'boss');
       }
       return false;
     });
@@ -569,16 +880,22 @@ export class Arcade {
       const ny = f.y + (ky / k) * 2.5;
       if (FOES[f.type].fly || this.walkable(nx, ny)) { f.x = nx; f.y = ny; }
     }
-    if (f.hp > 0) { arcadeSfx.hit(); return; }
+    if (f.hp > 0) { this.audio.hit(f.x, f.y, f.type === 'tank' || f.type === 'boss'); return; }
     const def = FOES[f.type];
     this.foes = this.foes.filter((o) => o !== f);
+    const before = this.mult();
     this.combo += 1;
     this.comboT = 2.6;
+    if (this.mult() > before) this.audio.combo(this.mult());
     const gain = def.score * this.mult();
     this.score += gain;
-    this.host.float(f.x, f.y - 14 * def.scale, `+${gain}`, this.mult() > 1 ? '#ffe066' : '#e8eef9', 'small');
+    this.floatAt(f.x, f.y - 14 * def.scale, `+${gain}`, this.mult() > 1 ? '#ffe066' : '#e8eef9', 'small');
+    // A bomber goes off (a real blast, with its own sound); the others fall apart.
     if (f.type === 'bomber') this.explode(f.x, f.y - 8, 26, 4, true);
-    else this.explode(f.x, f.y - 8 * def.scale, 8 * def.scale, 0, def.scale > 1);
+    else {
+      this.audio.kill(f.x, f.y, f.type);
+      this.explode(f.x, f.y - 8 * def.scale, 8 * def.scale, 0, def.scale > 1, false);
+    }
     // Sometimes it leaves something behind.
     const chance = f.type === 'boss' ? 1 : f.type === 'tank' ? 0.5 : f.type === 'drone' ? 0.03 : 0.08;
     const drops = f.type === 'boss' ? 3 : 1;
@@ -604,11 +921,14 @@ export class Arcade {
     return Math.min(8, 1 + Math.floor(this.combo / 5)) * (this.doubleT > 0 ? 2 : 1);
   }
 
-  /** A blast: sparks, a ring, and (with `dmg`) everything in `radius` is hit — the pilot too. */
-  private explode(x: number, y: number, radius: number, dmg: number, loud: boolean): void {
+  /** A blast: sparks, a ring, and (with `dmg`) everything in `radius` is hit — the pilot too.
+   *  `heard`: it makes its own explosion sound (a kill has one already). */
+  private explode(x: number, y: number, radius: number, dmg: number, loud: boolean, heard = true): void {
     this.blasts.push({ x, y, t: 0, max: loud ? 340 : 220, r: radius, colour: dmg ? '#ffb86b' : '#e8eef9' });
+    this.tps?.blast(x, y, radius, dmg ? '#ffb86b' : '#e8eef9', loud);
     this.burst(x, y, dmg ? '#ffb86b' : '#cfd6e6', loud ? 16 : 7, loud ? 70 : 40);
-    if (loud) { arcadeSfx.boom(); this.host.shake(160, 3); } else arcadeSfx.hit();
+    if (loud) this.shakeBy(160, 3);
+    if (heard) this.audio.boom(x, y);
     if (!dmg) return;
     for (const f of [...this.foes]) {
       if (f.sleep > 0) continue;
@@ -621,28 +941,25 @@ export class Arcade {
   private hurtPlayer(dmg: number): void {
     if (this.invul > 0 || this.phase === 'over' || this.phase === 'intro') return;
     this.invul = 0.85;
-    this.host.shake(220, 4);
+    this.shakeBy(220, 4);
     if (this.shield > 0) {
       this.shield -= 1;
       this.burst(this.px, this.py - 8, '#35d0c7', 10, 50);
-      arcadeSfx.hit();
+      this.audio.shieldHit();
       return;
     }
     this.hp -= dmg;
     this.combo = 0;
-    arcadeSfx.hurt();
+    this.audio.hurt();
     this.burst(this.px, this.py - 8, '#ff5d5d', 12, 55);
     if (this.hp > 0) return;
     this.hp = 0;
-    this.phase = 'over'; this.phaseT = 0;
-    this.keys.clear();
     this.explode(this.px, this.py - 8, 22, 0, true);
-    arcadeSfx.over();
-    if (this.record) this.host.saveBest(this.best);
-    this.say(this.record ? 'NEW RECORD' : 'GAME OVER');
+    this.end();
   }
 
   private burst(x: number, y: number, colour: string, count: number, speed: number): void {
+    if (this.tps) { this.tps.burst(x, y, colour, count, speed); return; }
     for (let i = 0; i < count; i += 1) {
       const a = Math.random() * Math.PI * 2;
       const v = speed * (0.35 + Math.random() * 0.65);
@@ -702,14 +1019,46 @@ export class Arcade {
     return { x: this.px, y: this.py - 10 };
   }
 
+  /** What the sound engine follows: where the ears are, how tense it is. */
+  private audioScene(): AudioScene {
+    if (this.aboard && this.tps) {
+      // The ears are at the eye, behind the vehicle: the fight gives positions relative to them.
+      const t = this.tps.state();
+      return {
+        x: 0, y: 0, phase: this.phase, paused: this.paused, wave: this.wave,
+        boss: t.boss != null, foes: t.foes, hp: t.hull < 0.25 ? 1 : 5, heli: null, walking: false,
+        engine: t.down ? null : { kind: t.craft ?? 'plane', pace: t.pace, boost: t.boosting },
+      };
+    }
+    const isBoss = (o: { type: FoeType }) => o.type === 'boss';
+    return {
+      x: this.px, y: this.py, phase: this.phase, paused: this.paused, wave: this.wave,
+      boss: this.foes.some(isBoss) || this.pods.some(isBoss) || this.queue.some(isBoss),
+      foes: this.foes.length, hp: this.hp, heli: this.heli ? { x: this.heli.x, y: this.heli.y + (this.tps ? 150 : 0) } : null,
+      walking: this.landed && this.stride > 0 && this.dashT <= 0,
+      // Seen from behind the pilot, left and right are its own.
+      yaw: this.tps ? this.tps.heading() : undefined,
+    };
+  }
+
   hud(): ArcadeHud {
+    const base = {
+      on: true, phase: this.phase, paused: this.paused, score: this.score, best: this.best, record: this.record,
+      wave: this.wave, mult: this.mult(), banner: this.banner, bannerAt: this.bannerAt, audio: this.audio.getMode(),
+      checkpoint: this.checkpoint, maxHp: this.maxHp, bombs: this.bombs,
+    } as const;
+    if (this.aboard && this.tps) {
+      const t = this.tps.state();
+      return {
+        ...base, mode: 'craft', hp: 0, shield: 0, weapon: '', ammo: null, foes: t.foes, boss: t.boss,
+        hull: t.hull, missiles: t.missiles,
+      };
+    }
     const boss = this.foes.find((f) => f.type === 'boss');
     return {
-      on: true, phase: this.phase, paused: this.paused, score: this.score, best: this.best, record: this.record,
-      wave: this.wave, hp: this.hp, maxHp: this.maxHp, shield: this.shield, weapon: WEAPONS[this.weapon].name,
-      ammo: this.ammo === Infinity ? null : this.ammo, bombs: this.bombs, mult: this.mult(),
-      foes: this.foes.length + this.pods.length + this.queue.length,
-      boss: boss ? Math.max(0, boss.hp / boss.maxHp) : null, banner: this.banner, bannerAt: this.bannerAt,
+      ...base, mode: 'ground', hull: 0, missiles: 0, hp: this.hp, shield: this.shield, weapon: WEAPONS[this.weapon].name,
+      ammo: this.ammo === Infinity ? null : this.ammo, foes: this.foes.length + this.pods.length + this.queue.length,
+      boss: boss ? Math.max(0, boss.hp / boss.maxHp) : null,
     };
   }
 

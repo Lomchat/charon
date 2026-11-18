@@ -1167,6 +1167,24 @@
 }
 .dk-game-foot b { margin-left: 8px; font-size: 12px; font-weight: 400; color: var(--dk-ink); }
 .dk-game-hp { display: flex; align-items: center; gap: 4px; }
+.dk-game-audio[data-off] b { color: var(--dk-faint); }
+/* In the air: the seaplane's hull, a bar. */
+.dk-game-hull { display: flex; align-items: center; gap: 10px; }
+.dk-game-hull > span { width: 150px; height: 10px; background: var(--dk-edge); border: 2px solid var(--dk-line); }
+.dk-game-hull > span > span { display: block; height: 100%; background: var(--dk-done); }
+.dk-game-hull[data-low] > span { border-color: #8a3038; }
+.dk-game-hull[data-low] > span > span { background: var(--dk-fail); }
+.dk-game-over p + p { margin-top: 8px; color: var(--dk-bg); }
+
+/* The 3D phase's stage (game/tps): a 3D canvas at a low resolution, scaled
+   up in whole pixels like the board, and its instruments over it. It fades in
+   over the board it covers: the eye holds still for as long (Tps: swing). */
+.dk-sky { position: absolute; inset: 0; z-index: 3; opacity: 0; transition: opacity 0.55s ease-out; background: var(--dk-edge); }
+.dk-sky.is-on { opacity: 1; }
+.dk-sky-gl, .dk-sky-hud { position: absolute; inset: 0; width: 100%; height: 100%; display: block; }
+.dk-sky-gl { image-rendering: pixelated; }
+.dk-sky-hud { pointer-events: none; }
+@media (prefers-reduced-motion: reduce) { .dk-sky { transition: none; } }
 .dk-game-hp em { margin-left: 6px; font-size: 10px; font-style: normal; color: var(--dk-bg); }
 .dk-heart rect { fill: #3a2a33; }
 .dk-heart[data-full] rect { fill: var(--dk-fail); }

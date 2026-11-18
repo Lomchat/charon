@@ -240,8 +240,6 @@ export default function Desk({ vpsList, folders, vpsPaths = [], initialSummaries
   const toggleSound = useCallback(() => {
     setSoundOn((on) => { setSound(!on); keep('desk.sound', !on); return !on; });
   }, []);
-  const toggleSoundRef = useRef(toggleSound);
-  toggleSoundRef.current = toggleSound;
 
   /** The mini-game's button: a run on the island on stage, or the end of one. */
   const play = useCallback(() => {
@@ -252,9 +250,11 @@ export default function Desk({ vpsList, folders, vpsPaths = [], initialSummaries
     setPick(null);
     setMenu(null);
     (document.activeElement as HTMLElement | null)?.blur?.();
-    // The click is the gesture a browser wants before it plays a sound.
+    // The click is the gesture a browser wants before it plays a sound: the
+    // desk's own cues, when they are on (the game has its own sound, and its
+    // own switch — the M key).
     if (sound) setSound(true);
-    if (!board.startArcade()) setError('The game is played on an island with robots: pick one in the selector first.');
+    if (!board.startArcade()) setError('Pick an island with robots first.');
   }, [sound]);
 
   useEffect(() => {
@@ -279,7 +279,6 @@ export default function Desk({ vpsList, folders, vpsPaths = [], initialSummaries
         if (how === 'double' && next?.kind === 'agent') setOpenId(next.id);
       },
       onZoom: setZoom,
-      onArcade: (what) => { if (what === 'sound') toggleSoundRef.current(); },
     });
     gameRef.current = board;
     setGame(board);
