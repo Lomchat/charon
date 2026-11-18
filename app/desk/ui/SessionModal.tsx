@@ -1,49 +1,38 @@
 'use client';
 
-// Le robot ouvert : sa session, telle quelle.
+// The robot, opened: its session as it is in Charon.
 //
-// Ce fichier est volontairement mince. Il ne reconstruit pas un transcript, il
-// ne réimplémente pas un composer, il ne redessine pas un explorateur : il
-// monte `<SessionView>`, le composant que Charon utilise pour sa propre
-// zone de session, et `<ToolPanel>` avec lui. Une correction apportée à la
-// zone de session de Charon — un nouveau bouton, une permission, un mode —
-// apparaît ici sans que personne ne touche au desk. C'est tout l'intérêt de
-// la dépendance à sens unique : le desk regarde Charon, Charon ignore le desk.
-
+// Deliberately thin. It mounts `<SessionView>` — the component Charon uses for
+// its own session area — so a fix to the transcript, the composer or a
+// permission card shows up here without anyone touching the desk.
 import { useEffect } from 'react';
 import SessionView from '@/app/SessionView';
+import type { SessionSummary } from '@/lib/sessionSummary';
 import type { Vps } from '@/lib/types/api';
-import type { DeskAction, DeskSession } from '../hall/palette';
-import { actionWord, beaconOf, robotName, stateOf, statusWord } from '../hall/palette';
+import { MOOD_COLOR, MOOD_WORD, agentName, moodOf } from '../game/model';
+import Portrait from './Portrait';
 
 type Sibling = { id: string; name: string | null; handle: string; confirmed?: boolean; status: string };
 
 type Props = {
-  session: DeskSession;
+  session: SessionSummary;
   vps: Vps | null;
   siblings: Sibling[];
-  action: DeskAction | null;
   onClose: () => void;
   onOpenSession: (sessionId: string) => void;
   onSessionsChanged: () => void;
 };
 
-export default function SessionModal({
-  session, vps, siblings, action, onClose, onOpenSession, onSessionsChanged
-}: Props) {
-  // La session ouverte garde sa pastille verte tant qu'on ne l'a pas quittée
-  // (ou qu'on ne lui a pas écrit) : la règle de Charon, appliquée (§14.47).
-  const state = stateOf(session);
-  const beacon = beaconOf(session);
+export default function SessionModal({ session, vps, siblings, onClose, onOpenSession, onSessionsChanged }: Props) {
+  const mood = moodOf(session);
 
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
       if (event.key !== 'Escape') return;
       const field = event.target as HTMLElement | null;
       const tag = field?.tagName;
-      // Échap dans un champ, c'est « annuler ce que je tape », pas « fermer ».
-      // Mais un champ vide n'a rien à annuler : sans ça, Échap ne fermerait
-      // jamais le modal, puisque le composer d'une session ouverte a le focus.
+      // Escape in a field means "cancel what I type", not "close" — but an
+      // empty composer has nothing to cancel, and it holds the focus.
       if (tag === 'INPUT') return;
       if (tag === 'TEXTAREA' && (field as HTMLTextAreaElement).value.trim()) return;
       onClose();
@@ -53,43 +42,22 @@ export default function SessionModal({
   }, [onClose]);
 
   return (
-    <div className="dsk-modal" role="dialog" aria-modal="true" aria-label={`session ${session.id}`}>
-      <div className="dsk-veil" onClick={onClose} />
-
-      <div className="dsk-frame">
-        <header className="dsk-frame-head">
-          {/* Le nom du robot, le même que sur son étiquette dans la salle : on
-              suit le robot du regard jusqu'ici sans se demander si c'est lui. */}
-          <span className="who">{robotName(session)}</span>
-          {/* Le titre est le handle quand il y en a un ; on n'ajoute donc le nom
-              que s'il dit autre chose — sinon l'en-tête affichait deux fois le
-              même mot. */}
-          {session.name && `@${session.handle ?? ''}` !== session.name && (
-            <span className="where">{session.name}</span>
-          )}
-          <span className="where">{vps ? vps.name : 'unknown machine'}</span>
-          <span className="where">{session.cwd || vps?.defaultPath || ''}</span>
-
-          <span className="state" style={{ color: beacon.css }}>
-            <i
-              style={state.speed ? { animationDuration: `${(1 / state.speed).toFixed(2)}s` } : { animation: 'none' }}
-            />
-            {statusWord(session)}
-          </span>
-          {action && <span className="where">{actionWord(action)}</span>}
-
-          <span className="spacer" />
-
-          <a href="/" target="_blank" rel="noreferrer">Open in Charon</a>
-          <button type="button" onClick={onClose} aria-label="Close">Close</button>
+    <div className="dk-modal" role="dialog" aria-modal="true" aria-label={`session ${agentName(session)}`}>
+      <div className="dk-veil" onClick={onClose} />
+      <div className="dk-frame">
+        <header className="dk-frame-head">
+          <Portrait kind={session.kind} mood={mood} chest={session.color} scale={1.5} />
+          <b>{agentName(session)}</b>
+          <span>{vps ? vps.name : 'unknown machine'}</span>
+          <span className="dk-frame-cwd">{session.cwd}</span>
+          <em style={{ color: MOOD_COLOR[mood] }}>{MOOD_WORD[mood]}</em>
+          <span className="dk-spacer" />
+          <a href={`/?session=${encodeURIComponent(session.id)}`} target="_blank" rel="noreferrer">Open in Charon</a>
+          <button type="button" onClick={onClose} aria-label="close">Close<kbd>Esc</kbd></button>
         </header>
-
-        <div className="dsk-embed app-root">
-          {/* Les accessoires que Charon passe à sa propre vue. `selected` est
-              la ligne de la session — celle que le desk tient à jour en direct,
-              pas une copie figée. */}
-          {/* `key`: une autre session (lien @handle) remonte la vue — l'état
-              du transcript ne passe jamais d'une session à l'autre. */}
+        <div className="dk-embed app-root">
+          {/* `key`: another session (an @handle link) remounts the view — the
+              transcript state never crosses from one session to the next. */}
           <SessionView
             key={session.id}
             sessionId={session.id}

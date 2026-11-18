@@ -8,6 +8,7 @@ import { getBuiltPyzSha, getBuiltAgentVersion } from '@/lib/server/agent/builtPy
 import { latestVersionsByKey, refreshAllLatestsIfStale } from '@/lib/server/hub/sdkSync';
 import { autoUpdatingVpsIds } from '@/lib/server/hub/sdkWatch';
 import { ssrSummaries } from '@/lib/server/sync/ssrSummaries';
+import { activitySnapshot, markWatched } from '@/lib/server/hub/sessionActivity';
 import { getSetting } from '@/lib/server/hub/settings';
 import { readCookie } from '@/lib/server/requestContext';
 import { isAuthRequired } from '@/lib/server/authGate.js';
@@ -109,17 +110,23 @@ export async function hubPage(load: TemplateLoader, req: Request): Promise<Respo
   });
 }
 
-/** `/desk` — the machine room (app/desk/Desk.tsx), same reads as `/`. */
+/** `/desk` — the fleet as a game board (app/desk/Desk.tsx), same reads as `/`
+ *  plus what each session is doing right now (sessionActivity.ts). */
 export async function deskPage(load: TemplateLoader, req: Request): Promise<Response> {
   if (!(await readSession())) return redirect('/login');
   seedInitialData();
   const folders = db.select().from(vpsFoldersTable)
     .orderBy(asc(vpsFoldersTable.position), asc(vpsFoldersTable.createdAt)).all();
   const vpsList = db.select().from(vpsTable).orderBy(asc(vpsTable.position)).all();
+  const vpsPaths = db.select().from(vpsPathsTable).all();
   const { summaries, sync } = ssrSummaries();
+  markWatched();
   return renderPage(load, 'desk', req, {
     title: 'The desk — Charon',
-    seed: { vpsList, folders, initialSummaries: summaries, initialSync: sync },
+    seed: {
+      vpsList, folders, vpsPaths, initialSummaries: summaries, initialSync: sync,
+      initialActivity: activitySnapshot(),
+    },
   });
 }
 

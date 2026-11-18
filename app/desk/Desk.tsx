@@ -1,192 +1,409 @@
 'use client';
 
-// Le desk : la salle, et la conversation qui s'ouvre dedans.
+// The desk: Charon's fleet as a game board, and the HUD laid over it.
 //
-// ─── D'où viennent les données ────────────────────────────────────────────────
-// Trois sources, et aucune n'est au desk :
+// ─── Where the data comes from ──────────────────────────────────────────────
+//  1. Charon's summary store (`app/sync/summaryStore.ts`, §14.108) — THE same
+//     `useSessionList()` as the sidebar: status, unread marker, pending gates.
+//     Seeded by the page, kept live by `session_summary` frames, reconciled by
+//     a resync or the 60 s poll. The desk patches nothing.
+//  2. `session_activity` frames (lib/sessionActivity.ts) — what each session is
+//     doing right now. Tool calls and text are focus-routed, so the hub folds
+//     them into one small LOW digest per session while a desk is watching; the
+//     snapshot GET is both the first paint and the heartbeat that keeps them
+//     coming.
+//  3. The page's own props (machines, folders) and the VPS slice of the store.
 //
-//  1. Le magasin de résumés de Charon (`app/sync/summaryStore.ts`, §14.108) —
-//     `useSessionList()`, LE MÊME que la barre latérale, l'en-tête et les
-//     onglets. Amorcé par les données de la page (`server/http/pages.ts §
-//     deskPage`, même constructeur que `/`),
-//     tenu à jour par les trames `session_summary` (statut vivant, marque
-//     « fini non lu », barrières en attente, attention), réconcilié par une
-//     resynchronisation ou par le sondage de 60 s. Le desk ne patche rien :
-//     une session créée, supprimée, endormie ailleurs arrive par là.
-//  2. Le flux SSE global — `subscribeAll`, pour ce que le résumé ne porte
-//     pas : ce que le robot est en train de faire (son écran) et ce qui se
-//     dit entre robots (les bulles).
-//  3. Les accessoires du serveur (VPS, dossiers) — fournis avec la page par
-//     `deskPage` ; l'état vivant des machines vient de la tranche VPS du même
-//     magasin (`useVpsRuntime()`).
+// ─── One island at a time ───────────────────────────────────────────────────
+// The board shows a SCENE: one machine's island (the default — the desk opens
+// on the last one visited, else on the one that most wants you) or the map.
+// The selector, the number keys and every "go to this robot" travel between
+// them; what happens on the other islands is told by the selector's cards,
+// the quest log and the counters, which stay fleet-wide.
 //
-// Rien n'est inventé. Le desk ne fabrique ni session, ni état, ni message : il
-// ne fait que poser dans l'espace ce que Charon raconte déjà.
-//
-// ─── Le sens de la dépendance ────────────────────────────────────────────────
-// `app/desk/**` importe `@/app/**` et `@/lib/**`. L'inverse n'existe pas : pas
-// un fichier de Charon ne mentionne le desk. C'est ce qui rend le desk
-// « semi-indépendant » — il suit Charon, Charon l'ignore.
+// ─── The dependency points one way ──────────────────────────────────────────
+// `app/desk/**` imports `@/app/**` and `@/lib/**`; nothing imports the desk.
+// What a session may receive is never decided here: every action is the route
+// Charon's own UI calls, behind Charon's own guards.
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   initSyncPosition, isDegraded, setFocus, subscribeAll, subscribeReconnect,
 } from '@/app/globalEventStream';
 import {
-  addOverlay, getSummary, hydrateSummaries, seedFromListResponse, useSessionList, useVpsRuntime,
+  addOverlay, hydrateSummaries, seedFromListResponse, useSessionList, useVpsRuntime,
 } from '@/app/sync/summaryStore';
 import { createRerunner } from '@/app/sync/revResource';
 import ConfirmModal from '@/app/ConfirmModal';
+import { getDraft, subscribeDrafts } from '@/app/inputDraftStore';
+import NewSessionWizard from '@/app/NewSessionWizard';
+import { useCacheTick } from '@/app/PromptCacheMarks';
 import PromptModal from '@/app/PromptModal';
 import SessionContextMenu from '@/app/SessionContextMenu';
 import { canResumeSession, canSleepSession } from '@/app/sessionBulkActions';
+import { sidebarPathKey } from '@/app/sidebarPathGroups';
 import { api } from '@/lib/api';
+import { isCacheWarm, sessionCacheReading } from '@/lib/promptCache';
+import type { SessionActivity } from '@/lib/sessionActivity';
 import type { SessionSummary } from '@/lib/sessionSummary';
 import type { SyncStamp } from '@/lib/sync/protocol';
-import type { Vps, VpsFolder } from '@/lib/types/api';
-import { World, type DeskModel } from './hall/world';
-import { roomName, stateOf, type DeskAction } from './hall/palette';
-import Hud, { type Counts } from './ui/Hud';
+import type { Vps, VpsFolder, VpsPath } from '@/lib/types/api';
+import { dropActivity, putActivity, replaceActivities } from './activityStore';
+import { readBest, useArcade } from './arcadeStore';
+import { Game, type Pick, type Scene } from './game/game';
+import { agentName, folderOf, moodOf, wantsYou, type Mood } from './game/model';
+import { homeIsland, islandsOf } from './islands';
+import { questsOf, type Quest } from './quests';
+import { setSound, sfx } from './sound';
+import ArcadeHud from './ui/ArcadeHud';
+import Help from './ui/Help';
+import IslandBar from './ui/IslandBar';
+import LimitsPanel from './ui/LimitsPanel';
+import QuestLog from './ui/QuestLog';
 import SessionModal from './ui/SessionModal';
-import StoreModal from './ui/StoreModal';
+import TopBar, { type Tally } from './ui/TopBar';
+import UnitPanel, { PlacePanel } from './ui/UnitPanel';
 
-// Le filet : le même rythme que Charon (§14.24) — 60 s, 15 s quand le hub est
-// trop ancien pour publier les résumés (mode dégradé).
+// The safety net keeps Charon's own rhythm (§14.24): 60 s, 15 s on a hub too
+// old to publish summaries.
 const POLL_MS = 60_000;
 const POLL_DEGRADED_MS = 15_000;
+/** A beat older than this is state, not news: no effect is replayed for it. */
+const FRESH_MS = 5_000;
 
 type Props = {
   vpsList: Vps[];
   folders: VpsFolder[];
+  vpsPaths?: VpsPath[];
   initialSummaries: SessionSummary[];
   initialSync: (SyncStamp & { buildId: string }) | null;
+  initialActivity?: Record<string, SessionActivity>;
 };
 
-/** Le détail d'un appel d'outil, en une ligne lisible. */
-function summarize(input: unknown): string {
-  if (input == null) return '';
-  if (typeof input === 'string') return input;
-  if (typeof input !== 'object') return String(input);
-  const record = input as Record<string, unknown>;
-  for (const key of ['command', 'file_path', 'path', 'pattern', 'query', 'url', 'prompt', 'description', 'notebook_path']) {
-    const value = record[key];
-    if (typeof value === 'string' && value) return value;
-  }
+type Feed = { key: number; at: number; text: string; tone: 'ask' | 'done' | 'fail' | 'work'; sessionId: string };
+
+function flag(key: string, fallback: boolean): boolean {
   try {
-    return JSON.stringify(input);
+    const raw = localStorage.getItem(key);
+    return raw == null ? fallback : raw === '1';
   } catch {
-    return '';
+    return fallback;
   }
 }
 
-function emptyCounts(): Counts {
-  return {
-    question: 0, unread: 0, working: 0, background: 0,
-    ready: 0, broken: 0, reconnecting: 0, asleep: 0
-  };
+function keep(key: string, value: boolean): void {
+  try { localStorage.setItem(key, value ? '1' : '0'); } catch { /* private mode */ }
 }
 
-export default function Desk({ vpsList, folders, initialSummaries, initialSync }: Props) {
-  // Comme `HubPanel` : le magasin est amorcé des données de la page au premier
-  // rendu, et la première connexion du flux reprend à leur révision (§9).
+const SCENE_KEY = 'desk.scene';
+
+/** A touch screen: focusing a field there opens a keyboard over the board. */
+const coarsePointer = typeof window !== 'undefined' && window.matchMedia?.('(pointer: coarse)').matches === true;
+
+function recall(key: string): string | null {
+  try { return localStorage.getItem(key); } catch { return null; }
+}
+
+function isTyping(target: EventTarget | null): boolean {
+  const el = target as HTMLElement | null;
+  if (!el?.tagName) return false;
+  return el.tagName === 'INPUT' || el.tagName === 'TEXTAREA' || el.tagName === 'SELECT' || el.isContentEditable;
+}
+
+export default function Desk({ vpsList, folders, vpsPaths = [], initialSummaries, initialSync, initialActivity }: Props) {
+  // Like `HubPanel`: the store is seeded from the page on first render, and the
+  // stream's first connection resumes from that revision (§9).
   initSyncPosition(initialSync);
   hydrateSummaries(initialSummaries, initialSync);
 
   const stageRef = useRef<HTMLDivElement | null>(null);
-  const worldRef = useRef<World | null>(null);
-  const actionsRef = useRef(new Map<string, DeskAction>());
+  const headRef = useRef<HTMLDivElement | null>(null);
+  const minimapRef = useRef<HTMLCanvasElement | null>(null);
+  const orderRef = useRef<HTMLTextAreaElement | null>(null);
+  const gameRef = useRef<Game | null>(null);
+  // The same game, as state: the selector's miniatures attach to it once it exists.
+  const [game, setGame] = useState<Game | null>(null);
 
-  const sessions = useSessionList(initialSummaries);
+  const all = useSessionList(initialSummaries);
   const runtime = useVpsRuntime();
   const vps = useMemo(() => vpsList.map((row) => {
     const live = runtime.get(row.id);
     return live ? { ...row, ...live } as Vps : row;
   }), [vpsList, runtime]);
-  const [openId, setOpenId] = useState<string | null>(null);
-  // Le placard ouvert : l'identifiant du VPS dont on regarde les robots
-  // endormis. Il vit SOUS le modal de session — on ouvre un dormant, on le
-  // referme, et la liste est toujours là.
-  const [storeId, setStoreId] = useState<string | null>(null);
-  const [fps, setFps] = useState(0);
-  const [live, setLive] = useState(false);
-  const [fresh, setFresh] = useState<number | null>(null);
+  const vpsById = useMemo(() => new Map(vps.map((v) => [v.id, v] as const)), [vps]);
+
+  const [showSleeping, setShowSleeping] = useState(() => flag('desk.sleeping', true));
+  const [sound, setSoundOn] = useState(() => flag('desk.sound', false));
+  // The mini-game (game/arcade.ts): on while a run lasts; its best score.
+  const arcade = useArcade();
+  const [best, setBest] = useState(0);
+  useEffect(() => { setBest(readBest()); }, [arcade.on, arcade.record]);
+  // Open by default, except where it would cover half of a small screen.
+  const [questsOpen, setQuestsOpen] = useState(() => flag('desk.quests', window.innerWidth > 820));
+  const [limitsOpen, setLimitsOpen] = useState(() => flag('desk.limits', window.innerWidth > 820));
+  const [zoom, setZoom] = useState(2);
+  const [live, setLive] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [help, setHelp] = useState(false);
-  const [onFloor, setOnFloor] = useState<number | null>(null);
+  const [feed, setFeed] = useState<Feed[]>([]);
 
-  // Le menu du clic droit, et les deux dialogues qu'il ouvre (renommer,
-  // supprimer). On n'y garde que des IDENTIFIANTS : à chaque rendu, la ligne
-  // vivante est relue dans `sessions`, sinon le menu parlerait d'un robot tel
-  // qu'il était au moment du clic — nom, état et permissions compris.
+  const [pick, setPick] = useState<Pick | null>(null);
+  const [openId, setOpenId] = useState<string | null>(null);
   const [menu, setMenu] = useState<{ id: string; x: number; y: number } | null>(null);
   const [renaming, setRenaming] = useState<string | null>(null);
   const [deleting, setDeleting] = useState<string | null>(null);
+  const [recruit, setRecruit] = useState<{ vpsId: string; cwd: string | null } | null>(null);
+  const [busy, setBusy] = useState<ReadonlySet<string>>(() => new Set());
 
-  /* --------------------------------------------------------------- la salle */
+  // Hidden sessions stay out of every list but the eye view (§14.118).
+  const sessions = useMemo(
+    () => all.filter((s) => s.hidden !== 1 && (showSleeping || moodOf(s) !== 'sleep')),
+    [all, showSleeping],
+  );
+  const byId = useMemo(() => new Map(sessions.map((s) => [s.id, s] as const)), [sessions]);
+  const quests = useMemo(() => questsOf(sessions), [sessions]);
+  const tally = useMemo(() => {
+    const t: Tally = { blocked: 0, question: 0, done: 0, error: 0, work: 0, bg: 0, idle: 0, sleep: 0 };
+    for (const s of sessions) t[moodOf(s)] += 1;
+    return t;
+  }, [sessions]);
+
+  // The warm prompt caches (lib/promptCache.ts), on the app's shared 30 s
+  // clock: the one that goes cold first leads, the running turns close.
+  const cacheNow = useCacheTick(true);
+  const warm = useMemo(() => sessions
+    .map((s) => ({ id: s.id, reading: sessionCacheReading(s, cacheNow) }))
+    .filter((w) => isCacheWarm(w.reading))
+    .sort((a, b) => (a.reading!.phase === 'live' ? 1 : 0) - (b.reading!.phase === 'live' ? 1 : 0)
+      || a.reading!.remainingMs - b.reading!.remainingMs)
+    .map((w) => w.id), [sessions, cacheNow]);
+
+  // The islands, in the selector's order: the inhabited ones, then the rest.
+  const islands = useMemo(() => islandsOf(sessions, vps, folders), [sessions, vps, folders]);
+  const inhabited = useMemo(() => islands.filter((i) => i.total > 0), [islands]);
+  const travelOrder = useMemo(
+    () => [...inhabited, ...islands.filter((i) => i.total === 0)].map((i) => i.id),
+    [islands, inhabited],
+  );
+  const [scene, setScene] = useState<Scene | null>(() => {
+    const remembered = recall(SCENE_KEY);
+    if (remembered === 'map') return { kind: 'map' };
+    const home = homeIsland(islandsOf(initialSummaries.filter((s) => s.hidden !== 1), vpsList, folders), remembered);
+    return home ? { kind: 'island', id: home } : null;
+  });
+  const sceneRef = useRef(scene);
+  const slideRef = useRef<-1 | 0 | 1>(0);
+  const lastIsland = useRef<string | null>(scene?.kind === 'island' ? scene.id : null);
+
+  const selectedId = pick?.kind === 'agent' ? pick.id : null;
+  const selected = selectedId ? byId.get(selectedId) ?? null : null;
+  const open = openId ? byId.get(openId) ?? all.find((s) => s.id === openId) ?? null : null;
+  const menuSession = menu ? byId.get(menu.id) ?? null : null;
+  const renamingSession = renaming ? byId.get(renaming) ?? null : null;
+  const deletingSession = deleting ? byId.get(deleting) ?? null : null;
+  const modal = Boolean(open || help || recruit || renaming || deleting);
+
+
+  /* ─────────────────────────────────────────────────────────── the board ── */
+
+  const select = useCallback((next: Pick | null) => setPick(next), []);
+
+  /** Show another scene. The camera slides in from the side the island is on. */
+  const travel = useCallback((next: Scene) => {
+    const now = sceneRef.current;
+    if (now && now.kind === next.kind && (next.kind === 'map' || (now.kind === 'island' && now.id === next.id))) return;
+    const at = (s: Scene | null) => (s?.kind === 'island' ? travelOrder.indexOf(s.id) : -1);
+    const from = at(now);
+    const to = at(next);
+    slideRef.current = from >= 0 && to >= 0 ? (to > from ? 1 : -1) : 0;
+    sceneRef.current = next;
+    if (next.kind === 'island') lastIsland.current = next.id;
+    try { localStorage.setItem(SCENE_KEY, next.kind === 'map' ? 'map' : next.id); } catch { /* private mode */ }
+    setScene(next);
+    setMenu(null);
+    // What was selected on the island left behind stays there.
+    setPick(null);
+  }, [travelOrder]);
+
+  /** Go to a robot, wherever it is: its island comes on stage, it is selected. */
+  const visit = useCallback((id: string) => {
+    const session = byId.get(id);
+    if (!session) return;
+    travel({ kind: 'island', id: session.vpsId });
+    setPick({ kind: 'agent', id });
+  }, [byId, travel]);
+
+  // The engine's callbacks are bound once: they read the latest through refs.
+  const travelRef = useRef(travel);
+  travelRef.current = travel;
+
+  const toggleSound = useCallback(() => {
+    setSoundOn((on) => { setSound(!on); keep('desk.sound', !on); return !on; });
+  }, []);
+  const toggleSoundRef = useRef(toggleSound);
+  toggleSoundRef.current = toggleSound;
+
+  /** The mini-game's button: a run on the island on stage, or the end of one. */
+  const play = useCallback(() => {
+    const board = gameRef.current;
+    if (!board) return;
+    if (board.arcadeOn) { board.stopArcade(); return; }
+    // The keyboard is the game's: nothing selected, no field holding the caret.
+    setPick(null);
+    setMenu(null);
+    (document.activeElement as HTMLElement | null)?.blur?.();
+    // The click is the gesture a browser wants before it plays a sound.
+    if (sound) setSound(true);
+    if (!board.startArcade()) setError('The game is played on an island with robots: pick one in the selector first.');
+  }, [sound]);
 
   useEffect(() => {
     const stage = stageRef.current;
-    if (!stage) return;
-    const world = new World(stage, {
-      onOpen: (id) => { setStoreId(null); setOpenId(id); },
-      // Un placard de stockage ouvert : la liste, pas une session.
-      onStore: (vpsId) => setStoreId(vpsId),
-      // Le clic droit : le menu du robot visé, à l'endroit du clic. Dans le
-      // vide, il n'ouvre rien — il referme celui qui était ouvert.
-      onMenu: (session, x, y) => setMenu(session ? { id: session.id, x, y } : null),
+    if (!stage) return undefined;
+    const board = new Game(stage, {
+      onPick: (next, how, x, y) => {
+        if (how === 'menu') {
+          if (next?.kind === 'agent') { setPick(next); setMenu({ id: next.id, x, y }); }
+          else setMenu(null);
+          return;
+        }
+        setMenu(null);
+        // On the map, a click on an island goes there (and keeps the robot it hit).
+        if (sceneRef.current?.kind === 'map' && next) {
+          const vpsId = next.kind === 'vps' ? next.id : next.kind === 'plot' ? next.vpsId : board.islandOf(next.id);
+          if (vpsId) travelRef.current({ kind: 'island', id: vpsId });
+          setPick(next.kind === 'agent' ? next : null);
+          return;
+        }
+        setPick(next);
+        if (how === 'double' && next?.kind === 'agent') setOpenId(next.id);
+      },
+      onZoom: setZoom,
+      onArcade: (what) => { if (what === 'sound') toggleSoundRef.current(); },
     });
-    world.onStats = setFps;
-    // Ce que la salle a réellement posé au sol : les machines sans agent éveillé
-    // n'y descendent pas, et l'habillage doit pouvoir le dire.
-    world.onLayout = (next) => setOnFloor(next.quais.length);
-    worldRef.current = world;
-    // Surface de mise au point : la salle s'expose sous `window.desk` pour
-    // qu'on puisse l'interroger depuis la console du navigateur — bornes,
-    // quais, position des robots. Rien dans le code ne s'en sert, et elle
-    // disparaît avec la page. C'est un outil, pas une API.
-    (window as unknown as { desk?: World }).desk = world;
-    world.start();
+    gameRef.current = board;
+    setGame(board);
+    board.attachMinimap(minimapRef.current);
+    // A debugging handle, nothing more: `window.desk` in the console.
+    (window as unknown as { desk?: Game }).desk = board;
+    board.start();
     return () => {
-      delete (window as unknown as { desk?: World }).desk;
-      world.dispose();
-      worldRef.current = null;
+      delete (window as unknown as { desk?: Game }).desk;
+      board.dispose();
+      gameRef.current = null;
+      setGame(null);
     };
   }, []);
 
-  // Le modèle descend dans la salle à chaque changement. `update` ne
-  // reconstruit le hall que si sa FORME a bougé ; le reste du temps, il
-  // remplace le récit que la boucle de rendu lit image par image.
+  // What the HUD covers, told to the board BEFORE it frames anything: the
+  // island is centred in what is left (under the two top rows, right of the
+  // quest log when it is open).
   useEffect(() => {
-    const model: DeskModel = { sessions, vps, folders };
-    worldRef.current?.update(model, actionsRef.current);
+    const measure = () => {
+      const board = gameRef.current;
+      if (!board) return;
+      const head = headRef.current?.getBoundingClientRect();
+      // The left column (quest log, limits) stands on the left of a wide
+      // screen, lies at the foot of a narrow one (≤820px, desk.css). Folded,
+      // both are a title each: nothing to keep clear of.
+      const narrow = window.innerWidth <= 820;
+      const column = questsOpen || limitsOpen ? document.querySelector('.dk-left')?.getBoundingClientRect() : null;
+      board.setSafeArea({
+        left: column && !narrow ? Math.round(column.right + 10) : 0,
+        top: head ? Math.round(head.bottom + 6) : 0,
+        right: 0,
+        bottom: column && narrow ? Math.round(window.innerHeight - column.top + 8) : 8,
+      });
+    };
+    measure();
+    const observer = new ResizeObserver(measure);
+    if (headRef.current) observer.observe(headRef.current);
+    const column = document.querySelector('.dk-left');
+    if (column) observer.observe(column);
+    window.addEventListener('resize', measure);
+    return () => { observer.disconnect(); window.removeEventListener('resize', measure); };
+  }, [questsOpen, limitsOpen]);
+
+  useEffect(() => {
+    gameRef.current?.setModel({ sessions, vps, folders });
   }, [sessions, vps, folders]);
 
-  /* --------------------------------------------------------------- données */
+  useEffect(() => {
+    if (!scene) return;
+    gameRef.current?.setScene(scene, slideRef.current);
+    slideRef.current = 0;
+  }, [scene]);
 
-  // Le filet de la liste : le GET par défaut de Charon, versé dans le magasin
-  // (complet, estampillé `sync` — une réponse plus vieille que ce qu'il tient
-  // n'y écrit rien). Un seul en vol, une relance après lui.
+  // A machine that left the fleet cannot stay on stage.
+  useEffect(() => {
+    if (scene?.kind === 'map') return;
+    if (scene && islands.some((i) => i.id === scene.id)) return;
+    const home = homeIsland(islands, null);
+    if (home) travel({ kind: 'island', id: home });
+  }, [scene, islands, travel]);
+
+  // Robots with an order typed and not sent wear a pencil: the draft store
+  // only speaks when a session starts or stops holding text.
+  useEffect(() => {
+    const mark = () => gameRef.current?.setDrafts(new Set(sessions.filter((s) => getDraft(s.id).trim()).map((s) => s.id)));
+    mark();
+    return subscribeDrafts(mark);
+  }, [sessions]);
+
+  // The selection, on the board: brackets, and the robot kept clear of the
+  // drawer that just opened over the right of the stage (the view goes back
+  // once nothing is selected).
+  useEffect(() => {
+    const board = gameRef.current;
+    if (!board) return;
+    board.select(pick);
+    if (pick?.kind === 'agent') {
+      // The drawer stands on the right of a wide screen, lies at the foot of
+      // a narrow one (desk.css). Its own size, not its box: it slides in.
+      const panel = document.querySelector<HTMLElement>('.dk-unit');
+      const side = window.innerWidth > 820;
+      board.reveal(pick.id, !panel ? {} : side ? { right: panel.offsetWidth + 20 } : { bottom: panel.offsetHeight + 20 });
+    } else if (!pick) board.rest();
+  }, [pick, scene]);
+
+  // The keyboard belongs to whatever is open on top of the board.
+  useEffect(() => { gameRef.current?.setInputEnabled(!modal); }, [modal]);
+
+  // A selection whose session left the board is no selection.
+  useEffect(() => {
+    if (selectedId && !byId.has(selectedId)) select(null);
+  }, [selectedId, byId, select]);
+
+  /* ──────────────────────────────────────────────────────────────── data ── */
+
   const [lister] = useState(() => createRerunner(async () => {
     try {
-      const r = await api.listSessions();
-      seedFromListResponse(r);
+      seedFromListResponse(await api.listSessions());
       setError(null);
       setLive(true);
-      setFresh(0);
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
       setLive(false);
     }
   }));
   const refresh = useCallback(() => { void lister.trigger(); }, [lister]);
-  /** Après une action : seul un hub sans résumés a besoin qu'on redemande. */
   const refreshIfDegraded = useCallback(() => { if (isDegraded()) refresh(); }, [refresh]);
 
-  // Le pouls : un sondage à l'ouverture, puis toutes les minutes (15 s en mode
-  // dégradé), et au retour sur l'onglet — jamais dans un onglet caché, la
-  // salle n'a personne à qui parler.
+  /** The activity snapshot: first paint, backstop, and the hub's heartbeat. */
+  const pullActivity = useCallback(() => {
+    api.getDeskActivity().then((r) => {
+      replaceActivities(r.activity ?? {});
+      gameRef.current?.setActivities(r.activity ?? {});
+    }).catch(() => { /* an older hub: the board simply shows no detail */ });
+  }, []);
+
   useEffect(() => {
+    if (initialActivity) {
+      replaceActivities(initialActivity);
+      gameRef.current?.setActivities(initialActivity);
+    }
     refresh();
+    pullActivity();
     let lastAt = Date.now();
     const timer = setInterval(() => {
       if (document.hidden) return;
@@ -194,295 +411,134 @@ export default function Desk({ vpsList, folders, initialSummaries, initialSync }
       if (Date.now() - lastAt < every - 1_000) return;
       lastAt = Date.now();
       refresh();
+      pullActivity();
     }, POLL_DEGRADED_MS);
     const onVisible = () => {
       if (document.hidden) return;
       lastAt = Date.now();
       refresh();
+      pullActivity();
     };
     document.addEventListener('visibilitychange', onVisible);
     return () => {
       clearInterval(timer);
       document.removeEventListener('visibilitychange', onVisible);
     };
-  }, [refresh]);
-
-  const touch = useCallback(() => setFresh(0), []);
-  useEffect(() => {
-    const timer = setInterval(() => {
-      setFresh((value) => (value == null ? value : value + 1));
-    }, 1000);
-    return () => clearInterval(timer);
-  }, []);
-
-  /* ------------------------------------------------------------------ flux */
+    // `initialActivity` is the page seed: read once.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [refresh, pullActivity]);
 
   useEffect(() => {
-    const remember = (id: string, action: DeskAction) => {
-      actionsRef.current.set(id, { ...action, at: Date.now() });
-    };
-
     const off = subscribeAll((event) => {
-      // Statuts, marques « fini non lu », barrières et liste arrivent par le
-      // magasin de résumés (`session_summary`). Un hub trop ancien pour les
-      // publier (mode dégradé) n'a que ses trames d'avant : elles veulent dire
-      // « la liste a bougé », on la redemande.
       if (isDegraded() && (event.type === 'session_list_changed' || event.type === 'status'
         || event.type === 'session_unread' || event.type === 'permission_request'
         || event.type === 'user_question' || event.type === 'exit_plan_request'
         || event.type === 'interaction_resolved')) {
         refresh();
       }
-      const id = (event as { sessionId?: string }).sessionId;
-      if (!id) return;
-      touch();
-      switch (event.type) {
-        case 'permission_request':
-          remember(id, { kind: 'perm', tool: event.tool });
-          break;
-        case 'user_question':
-          remember(id, { kind: 'question', detail: event.questions?.[0]?.question ?? '' });
-          break;
-        case 'exit_plan_request':
-          remember(id, { kind: 'question', detail: event.plan?.slice(0, 160) ?? '' });
-          break;
-        case 'tool_use':
-          remember(id, { kind: 'tool', tool: event.name, detail: summarize(event.input) });
-          break;
-        case 'assistant_text':
-        case 'thinking':
-        case 'user_echo':
-        case 'external_message':
-        case 'peer_message_status':
-        case 'stop':
-        case 'compaction':
-        case 'scheduled_fire':
-        case 'bg_task':
-        case 'error':
-        case 'turn_error':
-          // Ceux-là partagent une même forme : ils racontent « ce qui vient de
-          // se passer ». On les traduit en un fait unique, que l'écran du robot
-          // affiche tel quel.
-          applyAction(id, event);
-          break;
-        default:
-          break;
-      }
+      if (event.type !== 'session_activity') return;
+      const id = event.sessionId;
+      const activity = event.activity;
+      putActivity(id, activity);
+      gameRef.current?.beat(id, activity, Date.now() - activity.at < FRESH_MS);
     });
+    // A reconnect resumes (nothing lost) or resyncs (the store gets the
+    // snapshot); the activity digest is not in either, so it is pulled again.
+    const offReconnect = subscribeReconnect(() => { setLive(true); pullActivity(); });
+    return () => { off(); offReconnect(); };
+  }, [refresh, pullActivity]);
 
-    function applyAction(id: string, event: {
-      type: string; [key: string]: unknown;
-    }) {
-      switch (event.type) {
-        case 'assistant_text': {
-          // Les morceaux de texte arrivent un mot à la fois : on les recolle
-          // tant qu'ils se suivent, sinon l'écran du robot ne montrerait
-          // qu'une syllabe.
-          const previous = actionsRef.current.get(id);
-          const chunk = String((event as { delta?: string }).delta ?? '');
-          const joined = previous?.kind === 'text' && Date.now() - (previous.at ?? 0) < 8000
-            ? `${previous.detail ?? ''}${chunk}`.slice(-220)
-            : chunk.slice(-220);
-          remember(id, { kind: 'text', detail: joined });
-          break;
-        }
-        case 'thinking':
-          remember(id, { kind: 'think', detail: String((event as { text?: string }).text ?? '').slice(-220) });
-          break;
-        case 'user_echo':
-          remember(id, { kind: 'user', detail: String((event as { content?: string }).content ?? '').slice(0, 220) });
-          break;
-        case 'stop':
-          remember(id, { kind: 'stop' });
-          break;
-        case 'compaction':
-          remember(id, { kind: 'compact' });
-          break;
-        case 'scheduled_fire':
-          remember(id, { kind: 'user', detail: String((event as { prompt?: string }).prompt ?? '').slice(0, 220) });
-          break;
-        case 'bg_task': {
-          const task = event as { kind?: string; description?: string };
-          if (task.kind === 'started') remember(id, { kind: 'bg', detail: task.description ?? '' });
-          break;
-        }
-        case 'error':
-          remember(id, { kind: 'error', detail: String((event as { msg?: string }).msg ?? '') });
-          break;
-        case 'turn_error':
-          remember(id, { kind: 'error', detail: String((event as { kind?: string }).kind ?? '') });
-          break;
-        case 'external_message':
-          applyExternal(id, event as never);
-          break;
-        case 'peer_message_status':
-          applyPeerStatus(id, event as never);
-          break;
-        default:
-          break;
-      }
+  // What just happened, read off the moods changing: the feed and the cues.
+  const moods = useRef<Map<string, Mood> | null>(null);
+  const feedKey = useRef(0);
+  useEffect(() => {
+    const before = moods.current;
+    const now = new Map<string, Mood>();
+    const news: Feed[] = [];
+    let cue: 'quest' | 'done' | 'fail' | null = null;
+    for (const s of sessions) {
+      const mood = moodOf(s);
+      now.set(s.id, mood);
+      const was = before?.get(s.id);
+      if (!before || was === mood) continue;
+      const name = agentName(s);
+      const add = (text: string, tone: Feed['tone']) => {
+        feedKey.current += 1;
+        news.push({ key: feedKey.current, at: Date.now(), text, tone, sessionId: s.id });
+      };
+      if (mood === 'blocked' || mood === 'question') { add(`${name} needs you`, 'ask'); cue = 'quest'; }
+      else if (mood === 'done') { add(`${name} finished`, 'done'); cue ??= 'done'; }
+      else if (mood === 'error') { add(`${name} failed`, 'fail'); cue ??= 'fail'; }
+      else if (mood === 'work' && was !== 'blocked' && was !== 'bg') add(`${name} started working`, 'work');
+      if (mood !== 'work' && mood !== 'bg' && mood !== 'blocked') dropActivity(s.id);
     }
-
-    /** Un message venu d'un autre robot : il traverse la salle. */
-    function applyExternal(id: string, event: {
-      text: string; from?: string; sourceSessionId?: string; expectsReply?: boolean;
-    }) {
-      remember(id, { kind: 'peer', peer: 'in', who: event.from, detail: event.text });
-      worldRef.current?.bubble({
-        from: event.from ? `@${event.from}` : 'a robot',
-        fromSession: event.sourceSessionId ?? null,
-        fromHandle: event.from ?? null,
-        toSession: id,
-        toHandle: getSummary(id)?.handle ?? null,
-        text: event.text,
-        status: 'received',
-      });
-    }
-
-    function applyPeerStatus(id: string, event: {
-      status: string; target?: string; targetSessionId?: string; text?: string; error?: string;
-    }) {
-      if (event.status === 'replied') {
-        remember(id, { kind: 'peer', peer: 'in', who: event.target, detail: event.text ?? '' });
-        worldRef.current?.bubble({
-          from: event.target ? `@${event.target}` : 'a robot',
-          fromSession: event.targetSessionId ?? null,
-          fromHandle: event.target ?? null,
-          toSession: id,
-          toHandle: getSummary(id)?.handle ?? null,
-          text: event.text ?? 'reply',
-          status: 'replied',
-        });
-      } else if (event.status === 'failed' || event.status === 'timed_out') {
-        remember(id, { kind: 'peer', peer: 'out', who: event.target, detail: event.error ?? event.status });
-      }
-    }
-
-    // Une reconnexion reprend (rien de perdu) ou resynchronise (le magasin
-    // reçoit l'instantané) : la liste n'a pas à être redemandée.
-    const offReconnect = subscribeReconnect(() => setLive(true));
-
-    return () => {
-      off();
-      offReconnect();
-    };
-  }, [refresh, touch]);
-
-  /* ------------------------------------------------- ce que la salle raconte */
-
-  const counts = useMemo(() => {
-    const tally = emptyCounts();
-    for (const session of sessions) tally[stateOf(session).id] += 1;
-    return tally;
+    moods.current = now;
+    if (news.length) setFeed((list) => [...list, ...news].slice(-6));
+    if (cue) sfx[cue]();
   }, [sessions]);
 
-  const open = useMemo(
-    () => (openId ? sessions.find((s) => s.id === openId) ?? null : null),
-    [openId, sessions]
-  );
-
-  const siblings = useMemo(() => {
-    if (!open) return [];
-    return sessions
-      .filter((s) => s.vpsId === open.vpsId && s.id !== open.id && s.handle)
-      .map((s) => ({
-        id: s.id,
-        name: s.name ?? null,
-        handle: s.handle as string,
-        status: String(s.liveStatus ?? s.status),
-      }));
-  }, [sessions, open]);
-
-  const openVps = useMemo(
-    () => (open ? vps.find((v) => v.id === open.vpsId) ?? null : null),
-    [open, vps]
-  );
-
-  // Le placard ouvert : la machine visée, et ses robots endormis. La liste est
-  // celle de Charon, dans son ordre — le desk ne trie rien, sinon la même
-  // session changerait de rang d'une seconde à l'autre.
-  const storeVps = useMemo(
-    () => (storeId ? vps.find((v) => v.id === storeId) ?? null : null),
-    [storeId, vps]
-  );
-
-  const storeAsleep = useMemo(
-    () => (storeId ? sessions.filter((s) => s.vpsId === storeId && stateOf(s).id === 'asleep') : []),
-    [storeId, sessions]
-  );
-
-  // La ligne vivante d'un identifiant : c'est ce que le menu du clic droit, le
-  // dialogue de renommage et celui de suppression regardent. Une session
-  // supprimée ailleurs disparaît donc d'elle-même de ces trois-là.
-  const byId = useMemo(() => new Map(sessions.map((s) => [s.id, s] as const)), [sessions]);
-  const menuSession = menu ? byId.get(menu.id) ?? null : null;
-  const renamingSession = renaming ? byId.get(renaming) ?? null : null;
-  const deletingSession = deleting ? byId.get(deleting) ?? null : null;
-
-  /* ------------------------------------------------------------------ effets */
-
-  // Ouvrir une session, c'est la regarder : on le dit au serveur — la même
-  // route que Charon appelle. La QUITTER (fermer le modal, en ouvrir une
-  // autre) est l'accusé de lecture : le serveur efface la marque « fini, pas
-  // lu » de ce qu'un regard ATTENTIF vient de quitter (§14.47) et publie le
-  // résumé qui l'efface ici. Tant que le modal reste ouvert, la marque reste.
+  // Feed lines fade on their own.
   useEffect(() => {
-    if (!openId) { void setFocus(null); return; }
+    if (!feed.length) return undefined;
+    const timer = setTimeout(() => setFeed((list) => list.filter((f) => Date.now() - f.at < 9_000)), 2_000);
+    return () => clearTimeout(timer);
+  }, [feed]);
+
+  /* ───────────────────────────────────────────────────────────── actions ── */
+
+  // Watching a session — opened in full, or its conversation in the drawer —
+  // is focusing it: the same route Charon calls, the one its live frames
+  // follow. LEAVING it is the read receipt (§14.47). The desk owns the focus:
+  // the drawer's transcript focuses on mount, and nothing else lets go of it.
+  const watchedId = openId ?? selected?.id ?? null;
+  useEffect(() => {
+    if (!watchedId) { void setFocus(null); return; }
     if (document.visibilityState !== 'visible') return;
-    void setFocus(openId);
-  }, [openId]);
+    void setFocus(watchedId);
+  }, [watchedId]);
 
-  // Le clavier appartient au modal tant qu'il est ouvert — session ou liste.
-  useEffect(() => {
-    worldRef.current?.setInputEnabled(!open && !storeId);
-  }, [open, storeId]);
-
-  const select = useCallback((id: string | null) => {
-    worldRef.current?.select(id);
-    if (id) worldRef.current?.focusOn(id);
+  const fail = useCallback((what: string, e: unknown) => {
+    setError(`${what}: ${e instanceof Error ? e.message : String(e)}`);
   }, []);
 
-  // Ouvrir un dormant depuis le placard, c'est le même geste qu'ouvrir un
-  // robot depuis la salle : sa session, par-dessus, et la liste qui attend
-  // derrière. La caméra, elle, ne bouge pas plus que pour un robot — la salle
-  // doit être là où on l'a laissée quand tout se referme.
-  const openSession = useCallback((id: string) => {
-    worldRef.current?.select(id);
-    setOpenId(id);
+  /** A quest settled from the desk: the small cue that says so. */
+  const cleared = useCallback(() => { sfx.act(); }, []);
+
+  /** Run one action on a quest; the card stays disabled until it settles. */
+  const during = useCallback(async (key: string, run: () => Promise<unknown>) => {
+    setBusy((set) => new Set(set).add(key));
+    try {
+      await run();
+    } finally {
+      setBusy((set) => { const next = new Set(set); next.delete(key); return next; });
+    }
   }, []);
 
-  // Recentrer, c'est revenir à la vue d'entrée : le milieu de l'allée, assez
-  // haut pour embrasser les deux rangées. Le point de vue appartient à la
-  // salle — elle seule connaît ses bornes.
-  const onRecenter = useCallback(() => {
-    const world = worldRef.current;
-    if (!world) return;
-    world.select(null);
-    world.recenter();
-  }, []);
+  // Pessimistic on purpose (§14.18): the quest leaves when the summary says
+  // the gate is gone, never before.
+  const onPermission = useCallback((quest: Quest, allow: boolean) => {
+    if (!quest.gate) return;
+    void during(quest.key, () => api.respondPermission(quest.sessionId, quest.gate!.id, allow))
+      .then(() => { cleared(); refreshIfDegraded(); }, (e) => fail(allow ? 'allow' : 'deny', e));
+  }, [during, cleared, refreshIfDegraded, fail]);
 
-  /* ------------------------------------------------- le menu du clic droit */
+  const onRead = useCallback((id: string) => {
+    const overlay = addOverlay(id, { unreadStop: 0 });
+    void during(`${id}:read`, () => api.markSessionRead(id).then((r) => overlay.ack(r?.sync)))
+      .then(() => { cleared(); refreshIfDegraded(); }, (e) => { overlay.fail(); fail('read', e); });
+  }, [during, cleared, refreshIfDegraded, fail]);
 
-  // Endormir ou réveiller : la MÊME route que la barre latérale de Charon. La
-  // salle ne dort personne elle-même — elle demande, Charon exécute, et elle se
-  // recolle au résultat. Ce qu'une session peut recevoir n'est pas non plus
-  // décidé ici : `canSleepSession` / `canResumeSession` sont les règles de
-  // Charon, et la salle ne fait que leur poser la question.
-  const lifecycle = useCallback((action: 'sleep' | 'resume', id: string) => {
-    const call = action === 'sleep' ? api.sleepSession : api.resumeSession;
-    void call(id).then(() => refreshIfDegraded()).catch((e: unknown) => {
-      setError(`${action}: ${e instanceof Error ? e.message : String(e)}`);
-    });
+  const onOrder = useCallback(async (id: string, text: string) => {
+    await api.sendSessionInput(id, text, crypto.randomUUID());
+    sfx.act();
+    refreshIfDegraded();
   }, [refreshIfDegraded]);
 
-  // Supprimer. L'erreur n'est pas attrapée ici : elle remonte à `<ConfirmModal>`,
-  // qui la montre sous la question à laquelle elle répond — au lieu d'une bande
-  // en haut de la salle, loin du bouton qu'on vient de presser.
-  // Le robot sort de la salle quand la route a réussi : un calque du magasin
-  // (§14.32), tenu jusqu'à ce que le résumé « supprimé » soit arrivé. Pas
-  // avant : le calque retire la ligne dont le dialogue dépend, qui se
-  // démonterait en pleine requête et perdrait l'erreur d'un échec (comme
-  // HubPanel.deleteOne).
+  const lifecycle = useCallback((action: 'sleep' | 'resume' | 'stop', id: string) => {
+    const call = action === 'sleep' ? api.sleepSession : action === 'resume' ? api.resumeSession : api.interruptSession;
+    void call(id).then(() => refreshIfDegraded(), (e: unknown) => fail(action, e));
+  }, [refreshIfDegraded, fail]);
+
   const deleteOne = useCallback(async (id: string) => {
     const r = await api.deleteAgentSession(id);
     addOverlay(id, { removed: true }).ack(r?.sync);
@@ -490,77 +546,316 @@ export default function Desk({ vpsList, folders, initialSummaries, initialSync }
     refreshIfDegraded();
   }, [refreshIfDegraded]);
 
-  // Renommer : le nom de Charon (`name`), pas l'adresse. Voir l'avertissement du
-  // dialogue — une plaque écrit l'adresse tant que le robot en a une.
   const applyRename = useCallback(async (id: string, name: string) => {
     const overlay = addOverlay(id, { name: name || null });
     try {
       const r = await api.renameAgentSession(id, name || null);
       overlay.ack(r?.sync);
-    } catch (error) {
+    } catch (e) {
       overlay.fail();
-      throw error;
+      throw e;
     }
     setRenaming(null);
     refreshIfDegraded();
   }, [refreshIfDegraded]);
 
-  // Refermer le menu. Cette fonction doit être STABLE, et c'est une contrainte
-  // de `SessionContextMenu`, pas une coquetterie : son garde-fou de 350 ms — celui
-  // qui empêche l'appui long d'un écran tactile de refermer le menu qu'il vient
-  // d'ouvrir — vit dans un effet dont `onClose` est la dépendance, si bien qu'un
-  // `onClose` recréé à chaque rendu REJOUE l'effet et repousse le garde-fou. Or
-  // la salle se rend au moins une fois par seconde (le pouls, les images par
-  // seconde, chaque événement du flux), et bien plus souvent quand la flotte
-  // parle : le menu ne se refermait alors plus au clic, ou seulement par chance,
-  // dans l'accalmie. `useCallback` le fixe une fois pour toutes.
+  const openSession = useCallback((id: string) => {
+    const session = byId.get(id);
+    if (session && wantsYou(moodOf(session), session)) cleared();
+    visit(id);
+    setOpenId(id);
+  }, [byId, cleared, visit]);
+
+  /** Next robot in a mood (the chips), or next one that wants you (Tab). */
+  const cycle = useCallback((match: (s: SessionSummary) => boolean, back = false) => {
+    const pool = sessions.filter(match);
+    if (!pool.length) return;
+    const at = pool.findIndex((s) => s.id === selectedId);
+    const next = pool[(at + (back ? -1 : 1) + pool.length) % pool.length];
+    visit(next.id);
+  }, [sessions, selectedId, visit]);
+
+  const cycleMood = useCallback((mood: Mood) => {
+    cycle((s) => {
+      const m = moodOf(s);
+      if (mood === 'blocked') return m === 'blocked' || m === 'question';
+      if (mood === 'work') return m === 'work' || m === 'bg';
+      return m === mood;
+    });
+  }, [cycle]);
+
+  const nextQuest = useCallback((back = false) => {
+    if (!quests.length) return;
+    const ids = [...new Set(quests.map((q) => q.sessionId))];
+    const at = ids.indexOf(selectedId ?? '');
+    visit(ids[(at + (back ? -1 : 1) + ids.length) % ids.length]);
+  }, [quests, selectedId, visit]);
+
+  /** The next warm cache: the one closest to going cold first. */
+  const nextWarm = useCallback(() => {
+    if (!warm.length) return;
+    visit(warm[(warm.indexOf(selectedId ?? '') + 1) % warm.length]);
+  }, [warm, selectedId, visit]);
+
+  /** Previous / next inhabited island, round and round. */
+  const stepIsland = useCallback((dir: -1 | 1) => {
+    if (!inhabited.length) return;
+    const now = sceneRef.current;
+    const at = now?.kind === 'island' ? inhabited.findIndex((i) => i.id === now.id) : -1;
+    const next = at < 0 ? (dir > 0 ? 0 : inhabited.length - 1) : (at + dir + inhabited.length) % inhabited.length;
+    travel({ kind: 'island', id: inhabited[next].id });
+  }, [inhabited, travel]);
+
+  /** The map, or back from it to the island last visited. */
+  const toggleMap = useCallback(() => {
+    if (sceneRef.current?.kind !== 'map') { travel({ kind: 'map' }); return; }
+    const back = lastIsland.current && islands.some((i) => i.id === lastIsland.current)
+      ? lastIsland.current : homeIsland(islands, null);
+    if (back) travel({ kind: 'island', id: back });
+  }, [islands, travel]);
+
+  const selectedPermission = useMemo(
+    () => (selectedId ? quests.find((q) => q.sessionId === selectedId && q.kind === 'permission') ?? null : null),
+    [quests, selectedId],
+  );
+  const selectedMood = selected ? moodOf(selected) : null;
+  const canRead = selected != null && (selectedMood === 'done' || (selectedMood === 'error' && wantsYou('error', selected)));
+
+  // `SessionContextMenu` needs a STABLE onClose: its 350 ms guard lives in an
+  // effect keyed on it, and this page re-renders often.
   const closeMenu = useCallback(() => setMenu(null), []);
 
-  /* ------------------------------------------------------------------ rendu */
+  /* ──────────────────────────────────────────────────────────── keyboard ── */
+
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      // A run of the mini-game owns the keyboard (the board routes it).
+      if (modal || arcade.on || e.metaKey || e.ctrlKey || e.altKey) return;
+      if (isTyping(e.target)) {
+        if (e.key === 'Escape') (e.target as HTMLElement).blur();
+        return;
+      }
+      const key = e.key.length === 1 ? e.key.toLowerCase() : e.key;
+      // Enter / Space on a focused control (a button, a link, the recap that
+      // folds) is that control's own: not also a shortcut of the board.
+      if ((key === 'Enter' || key === ' ')
+        && (e.defaultPrevented || (e.target as HTMLElement | null)?.closest?.('button, a[href], [role="button"]'))) return;
+      const game = gameRef.current;
+      switch (key) {
+        case 'Tab':
+        case ' ':
+          e.preventDefault();
+          nextQuest(e.shiftKey);
+          break;
+        case 'Enter':
+          if (selectedId) { e.preventDefault(); openSession(selectedId); }
+          break;
+        case 'Escape':
+          if (menu) setMenu(null);
+          else select(null);
+          break;
+        case 'f':
+        case '0':
+          game?.fit();
+          break;
+        case 'm':
+          toggleMap();
+          break;
+        case 'g':
+          play();
+          break;
+        case 'PageUp':
+        case 'PageDown':
+          e.preventDefault();
+          stepIsland(key === 'PageUp' ? -1 : 1);
+          break;
+        case '/':
+          if (selectedId) { e.preventDefault(); orderRef.current?.focus(); }
+          break;
+        case 'y':
+          if (selectedPermission && !busy.has(selectedPermission.key)) onPermission(selectedPermission, true);
+          break;
+        case 'n':
+          if (selectedPermission && !busy.has(selectedPermission.key)) onPermission(selectedPermission, false);
+          break;
+        case 'r':
+          if (selectedId && canRead) onRead(selectedId);
+          break;
+        case 'x':
+          if (selectedId && selectedMood === 'work') lifecycle('stop', selectedId);
+          break;
+        case '?':
+          setHelp(true);
+          break;
+        default:
+          // 1…9: straight to that island of the selector.
+          if (/^[1-9]$/.test(key) && inhabited[Number(key) - 1]) travel({ kind: 'island', id: inhabited[Number(key) - 1].id });
+          break;
+      }
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [modal, arcade.on, menu, selectedId, selectedPermission, selectedMood, canRead, busy, inhabited, nextQuest, openSession,
+    select, onPermission, onRead, lifecycle, travel, stepIsland, toggleMap, play]);
+
+  /* ─────────────────────────────────────────────────────────────── render ── */
+
+  const siblings = useMemo(() => {
+    if (!open) return [];
+    return all
+      .filter((s) => s.vpsId === open.vpsId && s.id !== open.id && s.handle)
+      .map((s) => ({ id: s.id, name: s.name ?? null, handle: s.handle as string, status: String(s.liveStatus ?? s.status) }));
+  }, [all, open]);
+
+  const place = useMemo(() => {
+    if (!pick || pick.kind === 'agent') return null;
+    const vpsId = pick.kind === 'vps' ? pick.id : pick.vpsId;
+    const machine = vpsById.get(vpsId);
+    if (!machine) return null;
+    const here = sessions.filter((s) => s.vpsId === vpsId);
+    if (pick.kind === 'vps') {
+      const state = machine.agentStatus === 'ok' ? 'agent connected' : `agent ${machine.agentStatus}`;
+      return {
+        title: machine.name, vpsId, cwd: null as string | null,
+        lines: [`${here.length} agent${here.length === 1 ? '' : 's'} · ${state}`],
+      };
+    }
+    const n = here.filter((s) => sidebarPathKey(s.cwd) === pick.cwd).length;
+    return {
+      title: pick.cwd, vpsId, cwd: pick.cwd === '~' ? null : pick.cwd,
+      lines: [`${machine.name} · ${n} agent${n === 1 ? '' : 's'} on this deck`],
+    };
+  }, [pick, vpsById, sessions]);
 
   return (
-    <div className="desk">
-      {/* La toile ET les étiquettes : la salle accroche son calque ici même,
-          à côté du canvas. Ce div ne contient donc rien au premier rendu, et
-          c'est normal — React n'a pas à connaître ces éléments-là. */}
-      <div className="desk-stage" ref={stageRef} />
-      <Hud
-        counts={counts}
-        total={sessions.length}
-        awake={sessions.length - counts.asleep}
-        asleep={counts.asleep}
-        machines={vps.length}
-        zones={folders.length}
-        onFloor={onFloor}
-        fps={fps}
-        live={live}
-        fresh={fresh}
-        onRecenter={onRecenter}
-        onHelp={() => setHelp((value) => !value)}
-      />
+    <div className={`desk${arcade.on ? ' is-arcade' : ''}${(selected && !open) || place ? ' has-drawer' : ''}`}>
+      {/* The board mounts its canvas and its labels in here. */}
+      <div className="dk-stage" ref={stageRef} />
 
-      {error && <div className="dsk-banner">Charon ne répond pas — {error}</div>}
+      <div className="dk-hud">
+        <div className="dk-head" ref={headRef}>
+          <TopBar
+            tally={tally}
+            total={sessions.length}
+            warm={warm.length}
+            best={Math.max(best, arcade.best)}
+            playing={arcade.on}
+            zoom={zoom}
+            live={live}
+            sound={sound}
+            showSleeping={showSleeping}
+            onCycle={cycleMood}
+            onWarm={nextWarm}
+            onPlay={play}
+            onZoom={(delta) => gameRef.current?.zoomBy(delta)}
+            onFit={() => gameRef.current?.fit()}
+            onSound={toggleSound}
+            onSleeping={() => setShowSleeping((on) => { keep('desk.sleeping', !on); return !on; })}
+            onHelp={() => setHelp(true)}
+          />
+          <IslandBar islands={islands} scene={scene} game={game} onScene={travel} onStep={stepIsland} />
+        </div>
 
-      {/* Le menu d'un robot : celui de Charon, monté tel quel. Le desk ne
-          redessine pas ses entrées et n'en invente aucune — ce qu'une session
-          peut recevoir, c'est Charon qui le sait. Trois seulement, et elles
-          sont posées : renommer, endormir (ou réveiller), supprimer.
+        {/* The left column: what waits on you, and what the accounts have left. */}
+        <div className="dk-left">
+          <QuestLog
+            quests={quests}
+            sessions={byId}
+            vps={vpsById}
+            selectedId={selectedId}
+            busy={busy}
+            open={questsOpen}
+            onToggle={() => setQuestsOpen((on) => { keep('desk.quests', !on); return !on; })}
+            onVisit={visit}
+            onOpen={openSession}
+            onPermission={onPermission}
+            onRead={onRead}
+          />
+          <LimitsPanel
+            sessions={sessions}
+            open={limitsOpen}
+            onToggle={() => setLimitsOpen((on) => { keep('desk.limits', !on); return !on; })}
+          />
+        </div>
 
-          Ce que la salle ne propose PAS, et pourquoi : la couleur d'une ligne
-          (dans la salle, la teinte d'un robot est son ÉTAT — une couleur de
-          ligne viendrait la contredire), et l'adresse / le dossier de travail
-          (ce sont les vocabulaires de Charon, on les édite là-bas). */}
+        <div className="dk-corner">
+          <ol className="dk-feed" aria-live="polite">
+            {feed.map((f) => (
+              <li key={f.key} data-tone={f.tone}>
+                <button type="button" onClick={() => visit(f.sessionId)}>{f.text}</button>
+              </li>
+            ))}
+          </ol>
+          <canvas
+            ref={minimapRef}
+            className="dk-minimap"
+            aria-label="minimap"
+            onPointerDown={(e) => {
+              const rect = e.currentTarget.getBoundingClientRect();
+              const jump = (x: number, y: number) => gameRef.current?.jumpFromMinimap(x - rect.left, y - rect.top);
+              jump(e.clientX, e.clientY);
+              e.currentTarget.setPointerCapture(e.pointerId);
+              const target = e.currentTarget;
+              const move = (ev: PointerEvent) => jump(ev.clientX, ev.clientY);
+              const up = () => { target.removeEventListener('pointermove', move); target.removeEventListener('pointerup', up); };
+              target.addEventListener('pointermove', move);
+              target.addEventListener('pointerup', up);
+            }}
+          />
+        </div>
+
+        {selected && !open && (
+          <UnitPanel
+            session={selected}
+            vps={vpsById.get(selected.vpsId) ?? null}
+            permission={selectedPermission}
+            busy={selectedPermission ? busy.has(selectedPermission.key) : busy.has(`${selected.id}:read`)}
+            orderRef={orderRef}
+            // Every robot, a permission pending or not (Y / N then need Esc
+            // first, or a click on Allow / Deny). A finger gets no on-screen
+            // keyboard it did not ask for.
+            autoFocus={!coarsePointer}
+            onNext={nextQuest}
+            onOpen={() => openSession(selected.id)}
+            onOrder={(text) => onOrder(selected.id, text)}
+            onStop={() => lifecycle('stop', selected.id)}
+            onSleep={canSleepSession(selected) ? () => lifecycle('sleep', selected.id) : undefined}
+            onResume={canResumeSession(selected) ? () => lifecycle('resume', selected.id) : undefined}
+            onRead={canRead ? () => onRead(selected.id) : undefined}
+            onPermission={onPermission}
+            onMore={(x, y) => setMenu({ id: selected.id, x, y })}
+            onClose={() => select(null)}
+          />
+        )}
+        {place && (
+          <PlacePanel
+            title={place.title}
+            lines={place.lines}
+            canRecruit
+            onRecruit={() => setRecruit({ vpsId: place.vpsId, cwd: place.cwd })}
+            onClose={() => select(null)}
+          />
+        )}
+
+        <ArcadeHud />
+
+        {error && (
+          <button type="button" className="dk-banner" onClick={() => setError(null)} title="dismiss">
+            {error}
+          </button>
+        )}
+      </div>
+
+      {/* Charon's own menu and dialogs, mounted as they are: what a session can
+          receive is Charon's to say. */}
       {menuSession && menu && (
         <SessionContextMenu
-          title={roomName(menuSession)}
+          title={agentName(menuSession)}
           subtitle={menuSession.cwd || undefined}
           x={menu.x}
           y={menu.y}
           showColor={false}
           onRename={() => setRenaming(menuSession.id)}
-          // Un robot endormi n'est plus dans la salle — il est dans l'armoire —,
-          // donc « Resume » ne se présente ici que pour un robot en erreur, le
-          // seul cas où la salle montre un robot que Charon sait réveiller.
           onSleep={canSleepSession(menuSession) ? () => lifecycle('sleep', menuSession.id) : undefined}
           onResume={canResumeSession(menuSession) ? () => lifecycle('resume', menuSession.id) : undefined}
           onDelete={() => setDeleting(menuSession.id)}
@@ -571,14 +866,8 @@ export default function Desk({ vpsList, folders, initialSummaries, initialSync }
       {renamingSession && (
         <PromptModal
           title="Rename session"
-          // Dit où ce nom se lit VRAIMENT. La plaque d'un robot écrit son
-          // adresse tant qu'il en a une : renommer un robot qui a un handle ne
-          // change donc rien dans la salle, et il faut le dire avant, pas après.
-          hint={renamingSession.handle
-            ? <>Charon’s list, and this session’s header, show this name. Its plate in the room keeps writing <b>@{renamingSession.handle}</b> — that is its address, and an address is not renamed.</>
-            : <>This name is what Charon’s list, the header, and the robot’s plate in the room all show.</>}
           initial={renamingSession.name ?? ''}
-          placeholder={renamingSession.cwd.split('/').filter(Boolean).pop() ?? undefined}
+          placeholder={folderOf(renamingSession.cwd)}
           confirmLabel="rename"
           busyLabel="renaming…"
           icon="✎"
@@ -596,91 +885,47 @@ export default function Desk({ vpsList, folders, initialSummaries, initialSync }
           onClose={() => setDeleting(null)}
         >
           <div className="confirm-target">
-            <span className="ct-name">{roomName(deletingSession)}</span>
+            <span className="ct-name">{agentName(deletingSession)}</span>
             <span className="ct-sub">{deletingSession.cwd}</span>
           </div>
           <p className="confirm-text">
             The session and its whole history (messages, permissions, logs) will be
-            permanently deleted. This cannot be undone — to keep it, put the robot to
-            sleep instead.
+            permanently deleted. This cannot be undone — to keep it, put it to sleep instead.
           </p>
         </ConfirmModal>
       )}
 
-      {/* Le placard est monté AVANT le modal de session : à z-index égal, c'est
-          le dernier du DOM qui passe devant. La liste reste donc derrière la
-          session qu'on vient d'ouvrir dedans, et la refermer la retrouve. */}
-      {storeVps && (
-        <StoreModal
-          vps={storeVps}
-          asleep={storeAsleep}
-          covered={Boolean(open)}
-          onOpenSession={openSession}
-          onClose={() => setStoreId(null)}
+      {recruit && (
+        <NewSessionWizard
+          kind="agent"
+          vpsList={vps}
+          vpsFolders={folders}
+          vpsPaths={vpsPaths}
+          initialVpsId={recruit.vpsId}
+          initialCwd={recruit.cwd}
+          onClose={() => setRecruit(null)}
+          onCreatedSession={(created) => {
+            setRecruit(null);
+            refresh();
+            // Its island now; the robot itself once its summary has landed.
+            travel({ kind: 'island', id: created.vpsId });
+            setTimeout(() => setPick({ kind: 'agent', id: created.id }), 900);
+          }}
         />
       )}
 
       {open && (
         <SessionModal
           session={open}
-          vps={openVps}
+          vps={vpsById.get(open.vpsId) ?? null}
           siblings={siblings}
-          action={actionsRef.current.get(open.id) ?? null}
-          onClose={() => { select(null); setOpenId(null); }}
-          onOpenSession={(id) => { select(id); setOpenId(id); }}
+          onClose={() => setOpenId(null)}
+          onOpenSession={openSession}
           onSessionsChanged={refreshIfDegraded}
         />
       )}
 
       {help && <Help onClose={() => setHelp(false)} />}
-    </div>
-  );
-}
-
-function Help({ onClose }: { onClose: () => void }) {
-  return (
-    <div className="dsk-modal" role="dialog" aria-modal="true">
-      <div className="dsk-veil" onClick={onClose} />
-      <div
-        className="dsk-card"
-        style={{
-          position: 'relative', margin: 'auto', width: 'min(720px, 92vw)',
-          maxHeight: '80vh', overflow: 'auto', padding: '24px 28px', lineHeight: 1.55, fontSize: 13.5
-        }}
-      >
-        <h2 style={{ margin: '0 0 12px', fontSize: 18 }}>The desk</h2>
-        <p style={{ margin: '0 0 12px', color: 'var(--dsk-dim)' }}>
-          Charon’s machine room, in three dimensions. Every robot is an open session;
-          every bay is a VPS; every zone painted on the floor is a folder from its
-          sidebar. Nothing here is simulated: what you see is Charon’s real state,
-          pushed by its own event stream.
-        </p>
-        <ul style={{ margin: '0 0 14px', paddingLeft: 18, color: 'var(--dsk-dim)' }}>
-          <li><b>One click</b> on a robot opens its session — the real one, with its
-            transcript, its composer and its file browser.</li>
-          <li><b>The three pulses</b>: blue, the turn is running; orange, a permission
-            or a question is waiting; green, a turn ended and nobody has opened it.</li>
-          <li><b>The shells</b> are painted in the engine’s colour: every agent family
-            has its own, and a session routed to an endpoint also carries a dot in
-            that endpoint’s tint.</li>
-          <li><b>The folders</b> are the third level, and they branch. Inside a
-            machine, every working directory is a painted floor, named in its own
-            aisle band: the robots that share it stand in single file on it, one
-            behind the other, receding from the aisle. A directory that contains
-            others opens their floors inside its own, side by side and at the
-            same depth — so the room is read like the tree it is, and it is
-            Charon’s tree: same grouping, same order as its sidebar. A folder
-            with one sub-folder and no robot of its own gets no floor at all —
-            its name simply grows (<code>/opt/iron_golem</code>).</li>
-        </ul>
-        <p style={{ margin: '0 0 10px', color: 'var(--dsk-faint)', fontSize: 12.5 }}>
-          The legend on the left folds away — click its title. It is folded by
-          default: it would otherwise sit on the busiest machine of the room.
-          This page lives in <code>app/desk/</code> and only ever reads Charon:
-          delete the folder and Charon will not notice.
-        </p>
-        <button className="dsk-open" type="button" onClick={onClose}>Close</button>
-      </div>
     </div>
   );
 }

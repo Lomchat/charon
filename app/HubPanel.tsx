@@ -2029,24 +2029,24 @@ export default function HubPanel({ vpsList: initialVpsList, vpsFolders: initialF
           <line x1="106" y1="187" x2="154" y2="187" stroke="currentColor" strokeWidth="4.5" opacity="0.7"/>
         </svg>
         <h1>CHARON</h1>
-        {/* The desk: the same sessions, the same engines, read as a machine
-            room in three.js. It is a PLACE, not a panel — it has its own route
+        {/* The desk: the same sessions, the same engines, read as a game
+            board. It is a PLACE, not a panel — it has its own route
             and its own tab, so it renders on its own while you keep reading a
             session here (app/desk, served at /desk).
-            A new tab is the whole point: the room takes the screen and the
-            keyboard (WASD floats through it), which is not something a drawer
-            can share with the chat box.
+            A new tab is the whole point: the board takes the screen and the
+            keyboard (WASD pans it), which is not something a drawer can share
+            with the chat box.
             This anchor and its phone twin in the ⋮ drawer (head-right) are the
             ONLY references to /desk outside app/desk/ — delete that folder and
-            these two are the ones left pointing nowhere. Hidden ≤820px: a
-            WASD room is no use under a finger, and the header row needs the room. */}
+            these two are the ones left pointing nowhere. Hidden ≤820px: the
+            header row needs the room (the drawer link takes over). */}
         <a
           className="head-btn head-desk"
           href="/desk"
           target="_blank"
           rel="noopener noreferrer"
-          title="the desk — Charon's machine room"
-          aria-label="open the desk, the machine room, in a new tab"
+          title="the desk — your fleet as a game board"
+          aria-label="open the desk, the fleet as a game board, in a new tab"
         >
           <IconRobot />
         </a>
@@ -2154,8 +2154,8 @@ export default function HubPanel({ vpsList: initialVpsList, vpsFolders: initialF
             href="/desk"
             target="_blank"
             rel="noopener noreferrer"
-            title="the desk — Charon's machine room"
-            aria-label="open the desk, the machine room, in a new tab"
+            title="the desk — your fleet as a game board"
+            aria-label="open the desk, the fleet as a game board, in a new tab"
             data-label="the desk"
           >
             <IconRobot />

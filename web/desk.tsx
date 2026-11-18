@@ -5,5 +5,5 @@ import '@/app/desk/desk.css';
 import type { ComponentProps } from 'react';
 import Desk from '@/app/desk/Desk';
 
-// `/desk` — the machine room. Server data: server/http/pages.ts § deskPage.
+// `/desk` — the fleet as a game board. Server data: server/http/pages.ts § deskPage.
 mount(<Desk {...readSeed<ComponentProps<typeof Desk>>()} />);
