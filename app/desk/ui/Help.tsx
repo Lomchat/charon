@@ -1,32 +1,31 @@
 'use client';
 
 const KEYS: Array<[string, string]> = [
-  ['1 … 9', 'go to that island'],
+  ['1 … 9', 'that island'],
   ['PageUp · PageDown', 'previous / next island'],
-  ['M', 'the map of every island, and back'],
-  ['Tab · Space', 'jump to the next robot that wants you, on any island'],
-  ['drag · WASD · arrows', 'move over the island'],
+  ['M', 'the map'],
+  ['Tab · Space', 'next robot that wants you'],
+  ['drag · WASD · arrows', 'move'],
   ['wheel · + −', 'zoom'],
-  ['F', 'frame the island again'],
+  ['F', 'frame the island'],
   ['click', 'select a robot'],
-  ['double-click · Enter', 'open its session'],
-  ['select a robot', 'the caret is in its order: type, Enter sends (empty: opens it)'],
-  ['Esc', 'leave the order — the keys below work again'],
-  ['Y · N', 'allow / deny the selected robot’s request'],
-  ['R', 'mark its finished turn as read'],
-  ['X', 'stop its turn'],
+  ['double-click · Enter', 'open the session'],
+  ['type', 'an order for the selected robot — Enter sends'],
+  ['Esc', 'leave the order, then deselect'],
+  ['Y · N', 'allow / deny'],
+  ['R', 'mark as read'],
+  ['X', 'stop the turn'],
   ['right-click', 'rename, sleep, delete'],
-  ['G · PLAY', 'the mini-game: defend the island (its own keys are shown there)'],
-  ['Esc again', 'deselect'],
+  ['G', 'the mini-game'],
 ];
 
 const LEGEND: Array<[string, string, string]> = [
-  ['work', 'at its console, screen lit', 'a turn is running — the screen shows what it is doing'],
-  ['ask', '! or ? over its head', 'it waits on you: a permission, a question, a plan'],
-  ['done', '✓ over its head', 'the turn finished and nobody has read it'],
-  ['fail', '✖ and smoke', 'the turn failed'],
-  ['idle', 'standing beside its console', 'connected, nothing to do'],
-  ['bg', 'small drones around it', 'background tasks still running'],
+  ['work', 'at its console', 'working'],
+  ['ask', '! or ?', 'waits on you'],
+  ['done', '✓', 'finished, unread'],
+  ['fail', '✖', 'failed'],
+  ['idle', 'beside its console', 'idle'],
+  ['bg', 'drones around it', 'background tasks'],
 ];
 
 export default function Help({ onClose }: { onClose: () => void }) {
@@ -35,12 +34,6 @@ export default function Help({ onClose }: { onClose: () => void }) {
       <div className="dk-veil" onClick={onClose} />
       <div className="dk-help">
         <h2>The desk</h2>
-        <p>
-          Your fleet as a board. Every island is a machine, every wooden deck a working directory,
-          every robot a session — clay for Claude, white for Codex, slate for Cursor. The board shows
-          one island at a time: the cards at the top travel between them, and say what goes on where
-          you are not. Nothing here is simulated: the board draws what Charon knows, as it happens.
-        </p>
         <div className="dk-help-cols">
           <div>
             <h3>Reading a robot</h3>
@@ -49,11 +42,6 @@ export default function Help({ onClose }: { onClose: () => void }) {
                 <li key={sign}><i data-tone={tone} aria-hidden="true" /><b>{sign}</b><span>{meaning}</span></li>
               ))}
             </ul>
-            <p className="dk-help-fine">
-              The number before a name is its level: the size of its context, one level per 100k tokens
-              (hover the level under a selected robot for its numbers).
-              The island’s beacon takes the colour of what its machine most needs.
-            </p>
           </div>
           <div>
             <h3>Keys</h3>

@@ -94,10 +94,7 @@ export default function AccountSwitch({ session }: { session: SessionSummary }) 
       {open && (
         <span className="dk-acct-pop" role="menu">
           <strong>Switch account{waiting ? <em>{waiting.note}</em> : null}</strong>
-          <span className="dk-acct-hint">
-            {waiting ? `Switching restarts the session: ${waiting.row.replace(/: switching restarts the session.*/, '')}.`
-              : 'Same conversation, restarted on the other account (a few seconds).'}
-          </span>
+          {waiting && <span className="dk-acct-hint">{waiting.row.replace(/: switching restarts the session.*/, '')}</span>}
           {others.map((account) => {
             const expired = account.status === 'expired';
             const usage = data.usage[account.id] ?? null;

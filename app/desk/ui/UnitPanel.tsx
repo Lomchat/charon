@@ -85,26 +85,13 @@ export default function UnitPanel({
       <header className="dk-unit-head">
         <div className="dk-unit-face">
           <Portrait kind={session.kind} mood={mood} chest={session.color} scale={low ? 3 : 4} />
-          {/* The level is the context: one per 100k tokens. Hovering (or
-              focusing) it says so, with this robot's own numbers. */}
+          {/* The level is the context: one per 100k tokens. Its tip gives the
+              number, nothing more. */}
           <div className="dk-unit-level" tabIndex={0} aria-describedby="dk-level-tip">
             <b>LV {lv ? lv.level : '–'}</b>
             <span><span style={{ width: `${lv ? (lv.into / LEVEL_TOKENS) * 100 : 0}%` }} /></span>
             <div className="dk-tip" id="dk-level-tip" role="tooltip">
-              <strong>{lv ? `Level ${lv.level}` : 'No level yet'} · context</strong>
-              <p>A robot’s level is the size of its context: one level per 100k tokens.</p>
-              {lv ? (
-                <>
-                  <p>
-                    <b>{name}</b> carries <b>{fmtTokens(lv.tokens)}</b> tokens, so level {lv.level}{' '}
-                    ({fmtTokens(lv.level * LEVEL_TOKENS)} – {fmtTokens((lv.level + 1) * LEVEL_TOKENS)}).
-                    Level {lv.level + 1} in {fmtTokens(LEVEL_TOKENS - lv.into)} more.
-                  </p>
-                  <p>It is what the next message re-reads: the higher the level, the more a cold cache costs.</p>
-                </>
-              ) : (
-                <p>This session has no context reading yet: its level appears after its first turn.</p>
-              )}
+              {lv ? <><b>{fmtTokens(lv.tokens)}</b> context · LV {lv.level + 1} at {fmtTokens((lv.level + 1) * LEVEL_TOKENS)}</> : 'no context yet'}
             </div>
           </div>
         </div>
@@ -166,8 +153,8 @@ export default function UnitPanel({
               {gateLine(permission.gate) ? <pre>{gateLine(permission.gate)}</pre> : null}
             </div>
           )}
-          {!permission && mood === 'blocked' && <p className="dk-unit-note">Waiting for your answer — open it to reply.</p>}
-          {mood === 'question' && <p className="dk-unit-note">{session.gates?.[0]?.title ?? 'It has a question for you.'}</p>}
+          {!permission && mood === 'blocked' && <p className="dk-unit-note">Waiting for your answer.</p>}
+          {mood === 'question' && <p className="dk-unit-note">{session.gates?.[0]?.title ?? 'A question for you.'}</p>}
         </div>
       )}
 

@@ -55,7 +55,7 @@ export default function QuestLog({
       {open && (
         <div className="dk-quests-list">
           {quests.length === 0 && (
-            <p className="dk-quests-empty">All clear. Nobody is waiting on you.</p>
+            <p className="dk-quests-empty">All clear.</p>
           )}
           {quests.map((quest) => {
             const session = sessions.get(quest.sessionId);

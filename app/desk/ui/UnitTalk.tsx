@@ -149,12 +149,12 @@ export default function UnitTalk({ session }: { session: SessionSummary }) {
     {/* Charon's side pills (app.css), each at its own fixed place. */}
     {!empty && !isLoadingHistory && (!edge.top || more) && (
       <button type="button" className="app-scroll-up-pill is-agent" onClick={up}
-        aria-label="scroll up to the previous agent message" title="previous agent message — from the foot: the top of the last one">
+        aria-label="scroll up to the previous agent message" title="previous message">
         <span className="app-scroll-arrow">▴</span>
       </button>
     )}
     {!edge.foot && (
-      <button type="button" className="app-scroll-pill" onClick={down} aria-label="go to the last message" title="go to the last message">
+      <button type="button" className="app-scroll-pill" onClick={down} aria-label="go to the last message" title="last message">
         <span className="app-scroll-arrow">▾</span>
       </button>
     )}
