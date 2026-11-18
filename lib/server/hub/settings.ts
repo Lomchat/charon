@@ -121,6 +121,8 @@ const DEFAULTS = {
   'claude.default_effort': '',
   // 'true' = new Claude sessions start with ultracode on (§14.56).
   'claude.default_ultracode': '',
+  // 'true' = new Claude sessions start with the CLI's fast mode asked for.
+  'claude.default_fast_mode': '',
   // 'false' = no recap under each finished turn (§14.122); '' = on.
   'claude.auto_recap': '',
   // Safe source default. An installation may explicitly choose Claude's
@@ -142,6 +144,9 @@ const DEFAULTS = {
   // 'medium' | 'high' | 'xhigh' | 'max' | 'ultra'. cf. CLAUDE.md §14.59.
   'codex.default_model': '',
   'codex.default_effort': '',
+  // New Codex sessions' speed tier (§14.59): '' = the model's default, else a
+  // tier id (`default` = standard, `priority` = Fast, `ultrafast`).
+  'codex.default_service_tier': '',
   // Safe source default (the CLI's "Default" preset). `accept-all` (the CLI's
   // "Full Access") remains an explicit installation choice.
   'codex.default_permission_mode': 'workspace-write',

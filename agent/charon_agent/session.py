@@ -654,6 +654,9 @@ class AgentSession:
             # Ultracode: standing dynamic-workflow orchestration, a switch
             # BESIDE effort since CLI 2.1.284 (§14.56). Read at construction.
             "ultracode": raw_cfg.get("ultracode") is True,
+            # The CLI's fast mode, opted in through the same inline settings;
+            # the CLI says at each init whether it can serve it.
+            "fastMode": raw_cfg.get("fastMode") is True,
         }
 
     def __init__(
@@ -959,8 +962,9 @@ class AgentSession:
         )
         await self._save_state()
 
-    async def set_effort(self, effort: str | None, ultracode: bool | None = None) -> None:
-        """Update the effort level (and the ultracode switch) for this session.
+    async def set_effort(self, effort: str | None, ultracode: bool | None = None,
+                         fast_mode: bool | None = None) -> None:
+        """Update the effort level (and the ultracode / fast switches).
 
         Like model, takes effect at the next SDK start. Effort is part of
         ClaudeAgentOptions and ultracode of its settings, both read at client
@@ -976,10 +980,13 @@ class AgentSession:
         self.effort = effort or None
         if ultracode is not None:
             self.session_config["ultracode"] = bool(ultracode)
+        if fast_mode is not None:
+            self.session_config["fastMode"] = bool(fast_mode)
         self._emit(
             "effort_changed",
             effort=self.effort,
             ultracode=bool(self.session_config.get("ultracode")),
+            fast_mode=bool(self.session_config.get("fastMode")),
             applied_at_next_start=self._client is not None,
         )
         await self._save_state()
@@ -2509,6 +2516,15 @@ class AgentSession:
                     efforts = _extract_effort_support(sdata)
                     if efforts:
                         info["model_efforts"] = efforts
+                    # The CLI's fast-mode verdict for THIS process and model:
+                    # `sdk_opt_in_required` = available, not asked for.
+                    fstate = sdata.get("fast_mode_state")
+                    if isinstance(fstate, str):
+                        freason = sdata.get("fast_mode_disabled_reason")
+                        info["fast_mode"] = {
+                            "state": fstate,
+                            "reason": freason if isinstance(freason, str) else None,
+                        }
                     # Which commands are SKILLS: get_server_info() lists both
                     # without telling them apart (the composer's `/` menu).
                     skills = sdata.get("skills")
@@ -2706,6 +2722,7 @@ class AgentSession:
             if self.effort == "ultracode":  # legacy pseudo-effort (§14.56)
                 self.effort = "xhigh"
                 self.session_config["ultracode"] = True
+            inline_settings: dict[str, Any] = {}
             if self.session_config.get("ultracode"):
                 # Ultracode = STANDING dynamic-workflow orchestration (the
                 # Workflow tool on by default), enabled by the CLI `ultracode`
@@ -2714,9 +2731,13 @@ class AgentSession:
                 # effort and no longer pins xhigh, so the effort below is sent
                 # as well. Needs the Workflows feature on the account; without
                 # it the CLI just runs without. §14.35 / §14.56.
-                options_kwargs["settings"] = json.dumps(
-                    {"enableWorkflows": True, "ultracode": True}
-                )
+                inline_settings.update({"enableWorkflows": True, "ultracode": True})
+            if self.session_config.get("fastMode"):
+                # The SDK must opt in (`sdk_opt_in_required` otherwise); the
+                # CLI still refuses per model/account and says so at init.
+                inline_settings["fastMode"] = True
+            if inline_settings:
+                options_kwargs["settings"] = json.dumps(inline_settings)
             if self.effort:
                 options_kwargs["effort"] = self.effort
             options_kwargs.update(self._advanced_option_kwargs())

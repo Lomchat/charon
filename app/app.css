@@ -4328,19 +4328,26 @@ html[data-density='small'] .cs-sub-fold { font-size: 8.5px; }
 }
 .toggle:focus-visible { outline: 2px solid var(--accent-strong); outline-offset: 3px; }
 .toggle:disabled { opacity: .5; cursor: default; }
-/* Compact (popover rows), and violet when on (ultracode, §14.56). */
+/* Compact (popover rows), and toned when on: violet = ultracode (§14.56),
+   info = ultrafast (§14.59). */
 .toggle.sm { width: 36px; height: 20px; }
 .toggle.sm .knob { width: 14px; height: 14px; }
 .toggle.sm.on .knob { transform: translateX(16px); }
-.toggle.tone-violet:hover { border-color: var(--violet); }
-.toggle.tone-violet.on {
-  background: linear-gradient(180deg, color-mix(in srgb, var(--violet) 34%, transparent), color-mix(in srgb, var(--violet) 16%, transparent));
-  border-color: var(--violet);
-  box-shadow: 0 0 12px color-mix(in srgb, var(--violet) 32%, transparent);
+.toggle.tone-violet {
+  --switch-tone: var(--violet);
 }
-.toggle.tone-violet.on .knob {
-  background: var(--violet);
-  box-shadow: 0 0 8px color-mix(in srgb, var(--violet) 60%, transparent), 0 1px 4px color-mix(in srgb, var(--shadow-color) 30%, transparent);
+.toggle.tone-info {
+  --switch-tone: var(--info);
+}
+.toggle.tone-violet:hover, .toggle.tone-info:hover { border-color: var(--switch-tone); }
+.toggle.tone-violet.on, .toggle.tone-info.on {
+  background: linear-gradient(180deg, color-mix(in srgb, var(--switch-tone) 34%, transparent), color-mix(in srgb, var(--switch-tone) 16%, transparent));
+  border-color: var(--switch-tone);
+  box-shadow: 0 0 12px color-mix(in srgb, var(--switch-tone) 32%, transparent);
+}
+.toggle.tone-violet.on .knob, .toggle.tone-info.on .knob {
+  background: var(--switch-tone);
+  box-shadow: 0 0 8px color-mix(in srgb, var(--switch-tone) 60%, transparent), 0 1px 4px color-mix(in srgb, var(--shadow-color) 30%, transparent);
 }
 .app-modal .modal-close {
   position: absolute; top: 14px; right: 14px;
@@ -6365,6 +6372,12 @@ html[data-density='small'] .cs-sub-fold { font-size: 8.5px; }
 }
 .set-hint { font-size: 12px; color: var(--text-muted); margin: 0 0 14px; line-height: 1.55; }
 .set-meta { font-size: 11px; color: var(--text-muted); margin-top: 6px; line-height: 1.5; }
+/* A note belongs to the setting above it: close under it, a full gap before
+   the next one (a label keeps 14px under itself, a switch row 10px). */
+.settings-pane .set-meta { margin: 6px 0 18px; }
+.settings-pane label + .set-meta { margin-top: -8px; }
+.settings-pane .switch-row + .set-meta { margin-top: -4px; }
+.settings-pane .switch-row + label { margin-top: 6px; }
 .settings-foot { border-top: 1px solid var(--border); padding-top: 12px; margin-top: 12px; }
 @media (max-width: 700px) {
   .app-modal.settings-modal { height: 92vh; padding: 22px 16px 14px; }
@@ -9435,7 +9448,7 @@ html:not([data-file-icons='mono']) .tt-row:not(.ignored) > .tt-ico.fi { opacity:
   .runtime-value { font-size: 10.5px; line-height: 1.25; gap: 3px; }
   .runtime-value .agent-logo, .runtime-effort-symbol { display: none; }
   .runtime-effective { font-size: 8px; line-height: 1; margin-top: 0; }
-  .runtime-cell > .runtime-ultracode-tag { margin-top: 0; font-size: 9px; line-height: 13px; padding: 0 5px; }
+  .runtime-cell > .runtime-switch-tag { margin-top: 0; font-size: 9px; line-height: 13px; padding: 0 5px; }
   .app-bar .runtime-usage { display: none; }
   .session-header-layout:has(.has-endpoint) > .bar-ident { grid-column: 1; }
   .session-header-layout:has(.has-endpoint) > .session-header-controls { grid-column: 2; grid-row: 1; }
@@ -9461,7 +9474,7 @@ html:not([data-file-icons='mono']) .tt-row:not(.ignored) > .tt-ico.fi { opacity:
   }
   .app-bar:not(.is-expanded) .runtime-effort:not(:has(.runtime-effort-params)) { min-width: max-content; }
   .app-bar:not(.is-expanded) .runtime-effective,
-  .app-bar:not(.is-expanded) .runtime-ultracode-tag { display: none; }
+  .app-bar:not(.is-expanded) .runtime-switch-tag { display: none; }
   .app-bar:not(.is-expanded) .session-runtime-panel > .bar-context-row { display: none; }
   .app-bar:not(.is-expanded) .session-runtime-panel .runtime-model { border-radius: var(--radius-md) 0 0 var(--radius-md); }
   .app-bar:not(.is-expanded) .session-runtime-panel .runtime-effort { border-radius: 0 var(--radius-md) var(--radius-md) 0; }
@@ -9579,10 +9592,17 @@ html:not([data-file-icons='mono']) .tt-row:not(.ignored) > .tt-ico.fi { opacity:
   font: 500 11px/1.3 var(--body); text-transform: none; letter-spacing: 0;
 }
 .pop-kit button.runtime-apply:hover:not(:disabled) { background: color-mix(in srgb, var(--warning) 22%, transparent); color: var(--warning); }
-/* Ultracode: a switch beside effort (§14.56) — a row with its glyph, its
-   words and a violet switch; the whole row flips it. Same row in the
-   new-session form (`.wiz-adv-switch`). Its tag in the effort cell below. */
-.pop-kit .runtime-ultracode, .wiz-adv-switch {
+/* A provider's switch beside effort — ultracode (§14.56, violet), ultrafast
+   (§14.59, `.tone-info`): a row with its glyph, its words and a toned
+   switch; the whole row flips it. Same row in the new-session form
+   (`.wiz-adv-switch`). Its tag in the effort cell below. */
+.pop-kit .runtime-switch, .wiz-adv-switch, .runtime-cell > .runtime-switch-tag {
+  --switch-tone: var(--violet);
+}
+.pop-kit .runtime-switch.tone-info, .wiz-adv-switch.tone-info, .runtime-cell > .runtime-switch-tag.tone-info {
+  --switch-tone: var(--info);
+}
+.pop-kit .runtime-switch, .wiz-adv-switch {
   display: flex; flex-direction: row; align-items: center; gap: 10px;
   padding: 8px 10px; cursor: pointer; user-select: none;
   transition: background .18s ease, border-color .18s ease;
@@ -9590,38 +9610,53 @@ html:not([data-file-icons='mono']) .tt-row:not(.ignored) > .tt-ico.fi { opacity:
 .wiz-adv-switch {
   background: var(--bg-inset); border: 1px solid var(--border); border-radius: var(--radius-lg);
 }
-.pop-kit .runtime-ultracode:hover, .wiz-adv-switch:hover {
-  border-color: color-mix(in srgb, var(--violet) 45%, var(--border));
+.pop-kit .runtime-switch:hover, .wiz-adv-switch:hover {
+  border-color: color-mix(in srgb, var(--switch-tone) 45%, var(--border));
 }
-.pop-kit .runtime-ultracode.on, .wiz-adv-switch.on {
-  border-color: color-mix(in srgb, var(--violet) 55%, transparent);
-  background: color-mix(in srgb, var(--violet) 8%, var(--bg-raised));
+.pop-kit .runtime-switch.on, .wiz-adv-switch.on {
+  border-color: color-mix(in srgb, var(--switch-tone) 55%, transparent);
+  background: color-mix(in srgb, var(--switch-tone) 8%, var(--bg-raised));
 }
-.runtime-ultracode .ru-ico, .wiz-adv-switch .ru-ico {
+.runtime-switch .ru-ico, .wiz-adv-switch .ru-ico {
   flex: none; display: grid; place-items: center; width: 26px; height: 26px; border-radius: 50%;
   font-size: 13px; color: var(--text-faint);
   background: color-mix(in srgb, var(--text-faint) 12%, transparent);
   transition: color .18s ease, background .18s ease, box-shadow .18s ease;
 }
-.runtime-ultracode.on .ru-ico, .wiz-adv-switch.on .ru-ico {
-  color: var(--violet); background: color-mix(in srgb, var(--violet) 18%, transparent);
-  box-shadow: 0 0 10px color-mix(in srgb, var(--violet) 35%, transparent);
+.runtime-switch.on .ru-ico, .wiz-adv-switch.on .ru-ico {
+  color: var(--switch-tone); background: color-mix(in srgb, var(--switch-tone) 18%, transparent);
+  box-shadow: 0 0 10px color-mix(in srgb, var(--switch-tone) 35%, transparent);
 }
-.runtime-ultracode .ru-text, .wiz-adv-switch .ru-text {
+.runtime-switch .ru-text, .wiz-adv-switch .ru-text {
   flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px;
   font: 12px/1.35 var(--body); color: var(--text);
 }
-.runtime-ultracode .ru-text b, .wiz-adv-switch .ru-text b { font-weight: 600; letter-spacing: .01em; }
-.runtime-ultracode.on .ru-text b, .wiz-adv-switch.on .ru-text b { color: var(--violet); }
-.runtime-ultracode .ru-text small, .wiz-adv-switch .ru-text small { color: var(--text-faint); font-size: 11px; line-height: 1.4; }
+.runtime-switch .ru-text b, .wiz-adv-switch .ru-text b { font-weight: 600; letter-spacing: .01em; }
+.runtime-switch.on .ru-text b, .wiz-adv-switch.on .ru-text b { color: var(--switch-tone); }
+.runtime-switch .ru-text small, .wiz-adv-switch .ru-text small { color: var(--text-faint); font-size: 11px; line-height: 1.4; }
+/* Codex speed (§14.59): the same row, a segment per tier instead of a switch. */
+.pop-kit .runtime-switch.speed-row, .wiz-adv-switch.speed-row { cursor: default; }
+.speed-seg {
+  flex: none; display: inline-flex; overflow: hidden;
+  border: 1px solid var(--border); border-radius: var(--radius-sm);
+}
+.speed-seg button {
+  background: transparent; border: 0; border-right: 1px solid var(--border);
+  color: var(--text-muted); cursor: pointer; padding: 4px 8px;
+  font: 500 11px/1.2 var(--body); text-transform: none; letter-spacing: 0;
+}
+.speed-seg button:last-child { border-right: 0; }
+.speed-seg button:hover:not(:disabled):not(.on) { color: var(--text); }
+.speed-seg button.on { color: var(--switch-tone); background: color-mix(in srgb, var(--switch-tone) 16%, transparent); }
+.speed-seg button:disabled { opacity: .5; cursor: default; }
 /* Under the effort, like `.runtime-effective` under the model: its own
    short pill, never stretched by the cell's column. */
-.runtime-cell > .runtime-ultracode-tag {
+.runtime-cell > .runtime-switch-tag {
   align-self: flex-start; max-width: 100%; overflow: hidden; text-overflow: ellipsis;
   margin-top: -2px; padding: 0 7px; border-radius: 999px;
   font: 500 10px/16px var(--body); letter-spacing: .02em; white-space: nowrap;
-  color: var(--violet); background: color-mix(in srgb, var(--violet) 14%, transparent);
-  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--violet) 28%, transparent);
+  color: var(--switch-tone); background: color-mix(in srgb, var(--switch-tone) 14%, transparent);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--switch-tone) 28%, transparent);
 }
 
 /* Shared select triggers; popup lives above scrolling modals via a workspace portal. */
@@ -9648,6 +9683,8 @@ button.dv-folder-select { max-width: 170px; padding: 4px 7px; font-size: 11px; }
    PickerControl trigger, then the FILES the choice resolves to. Every colour
    is a semantic token (§14.99). */
 .ss-picker { display: flex; flex-direction: column; gap: 6px; margin-top: 6px; }
+/* Sentences, though they sit inside an uppercase field label. */
+.ss-picker > p { text-transform: none; letter-spacing: 0; }
 .ss-picker > .picker-trigger { width: 100%; }
 .ss-files { margin: 0; color: var(--text-muted); font: 11px/1.5 var(--mono); overflow-wrap: anywhere; }
 .ss-warn { margin: 0; color: var(--warning); font: 11px/1.45 var(--body); }

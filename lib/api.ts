@@ -839,9 +839,10 @@ export const api = {
   setSessionModel: (id: string, model: string | null, fallbackModel: string | null = null) =>
     send<SetSessionModelResponse>('POST', `/api/sessions/${id}/model`,
       { model, fallbackModel } as SetSessionModelBody),
-  setSessionEffort: (id: string, effort: string | null, ultracode?: boolean) =>
+  /** `switches`: the provider's settings beside effort (EffortSwitches). */
+  setSessionEffort: (id: string, effort: string | null, switches?: import('@/lib/types/api').EffortSwitches) =>
     send<SetSessionEffortResponse>('POST', `/api/sessions/${id}/effort`,
-      (typeof ultracode === 'boolean' ? { effort, ultracode } : { effort }) as SetSessionEffortBody),
+      ({ effort, ...switches }) as SetSessionEffortBody),
   // Codex model catalog for a VPS (account-driven, per-VPS). Mirrors
   // getClaudeModels but sourced from the agent's list_codex_models RPC.
   getCodexModels: (vpsId: string, profile = "default") =>

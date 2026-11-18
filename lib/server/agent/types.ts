@@ -116,6 +116,9 @@ export type CodexModelInfo = {
   default_effort?: string | null;
   efforts?: string[];
   supports_personality?: boolean;
+  /** Catalog speed tiers (agent >= 0.137): `priority` = Fast, `ultrafast`. */
+  service_tiers?: { id: string; name?: string | null; description?: string | null }[];
+  default_service_tier?: string | null;
 };
 
 export type AgentCodexModelsResult =
@@ -241,7 +244,7 @@ export type AgentEvent = (
   // null fields mean "cleared back to default".
   | { event: 'model_changed'; session_id: string; model: string | null; fallback_model: string | null; applied_at_next_start?: boolean }
   // ultracode (agent >= 0.134.0, Claude): the switch beside effort (§14.56).
-  | { event: 'effort_changed'; session_id: string; effort: AnyEffort | null; ultracode?: boolean; applied_at_next_start?: boolean }
+  | { event: 'effort_changed'; session_id: string; effort: AnyEffort | null; ultracode?: boolean; fast_mode?: boolean; service_tier?: string | null; applied_at_next_start?: boolean }
   // effective_model (agent >= 0.6.0): the model id Anthropic actually used on
   // the last AssistantMessage. Emitted on CHANGE only (= once per turn at
   // most). Useful when the configured `model` is an alias ('opus' → real id)
@@ -351,6 +354,8 @@ export type AgentEvent = (
       event: 'session_info'; session_id: string;
       capabilities?: string[]; slash_commands?: string[]; tools?: string[];
       plugins?: string[]; model_efforts?: Record<string, string[]>;
+      /** Claude CLI's fast-mode verdict at init (agent >= 0.137). */
+      fast_mode?: { state: string; reason: string | null };
       // The account's REAL model catalog with per-model effort support, read
       // from get_server_info() at start (agent >= 0.37.0). Solves what §14.43
       // could not: a live catalog with no api key. `resolved` expands aliases

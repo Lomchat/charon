@@ -44,6 +44,8 @@ export const SETTINGS_WRITE_ALLOWLIST = [
   ]),
   'claude.default_fallback_model',
   'claude.default_ultracode',
+  'claude.default_fast_mode',
+  'codex.default_service_tier',
   // 'false' = no recap under each finished turn (§14.122); default on.
   'claude.auto_recap',
   // Fleet default for the Claude settings scope (§14.100). A VPS and a session

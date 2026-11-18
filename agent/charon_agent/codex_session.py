@@ -360,6 +360,15 @@ def _enum_val(v: Any) -> Any:
     return getattr(v, "value", v)
 
 
+_UNSET: Any = object()
+
+
+def _service_tier_id(v: Any) -> str | None:
+    """A speed tier: a catalog id (`priority`, `ultrafast`…), the legacy
+    `fast`/`flex`, or `default` (standard). None = inherit."""
+    return v if isinstance(v, str) and re.fullmatch(r"[a-z][a-z0-9_-]{0,31}", v) else None
+
+
 def _json_value(v: Any) -> Any:
     if v is None or isinstance(v, (str, int, float, bool)):
         return v
@@ -409,6 +418,12 @@ async def fetch_codex_models(account_profile: str = "default") -> dict[str, Any]
             efforts = []
             for e in (getattr(m, "supported_reasoning_efforts", None) or []):
                 efforts.append(_enum_val(getattr(e, "reasoning_effort", e)))
+            tiers = []
+            for t in (getattr(m, "service_tiers", None) or []):
+                tid = getattr(t, "id", None)
+                if isinstance(tid, str) and tid:
+                    tiers.append({"id": tid, "name": getattr(t, "name", None) or tid,
+                                  "description": getattr(t, "description", None)})
             models.append({
                 "id": getattr(m, "id", None) or getattr(m, "model", None),
                 "display_name": getattr(m, "display_name", None),
@@ -418,6 +433,8 @@ async def fetch_codex_models(account_profile: str = "default") -> dict[str, Any]
                 "default_effort": _enum_val(getattr(m, "default_reasoning_effort", None)),
                 "efforts": [e for e in efforts if e],
                 "supports_personality": bool(getattr(m, "supports_personality", False)),
+                "service_tiers": tiers,
+                "default_service_tier": getattr(m, "default_service_tier", None),
             })
         return {"ok": True, "models": models,
                 "sdk_version": CODEX_SDK_VERSION, "cli_version": CODEX_CLI_VERSION}
@@ -737,6 +754,8 @@ class CodexSession:
         self.status: str = "starting"
         self._client: Any = None            # AsyncCodex (non-None while running)
         self._thread: Any = None            # AsyncThread
+        # The service tier the thread holds: an override outlives its turn.
+        self._thread_service_tier: str | None = None
         self._active_turn: Any = None       # AsyncTurnHandle (live turn)
         self._main_task: asyncio.Task | None = None
         self._global_task: asyncio.Task | None = None
@@ -1213,16 +1232,21 @@ class CodexSession:
         )
         await self._save_state()
 
-    async def set_effort(self, effort: str | None) -> None:
+    async def set_effort(self, effort: str | None, service_tier: Any = _UNSET) -> None:
+        """Effort and the speed tier beside it: both are sent with every turn,
+        so both apply at the next one. `service_tier` absent = unchanged."""
         if endpoint_of(self.codex_config):
             selected_params(endpoint_of(self.codex_config), "codex", self.model or "", effort)
         elif effort is not None and effort not in self.VALID_EFFORTS:
             self._emit("error", msg=f"invalid effort {effort!r} (valid: {self.VALID_EFFORTS})")
             return
         self.effort = effort or None
+        if service_tier is not _UNSET:
+            self.codex_config["service_tier"] = _service_tier_id(service_tier)
         self._emit(
             "effort_changed",
             effort=self.effort,
+            service_tier=self.codex_config.get("service_tier"),
             applied_at_next_start=False,
         )
         await self._save_state()
@@ -1301,7 +1325,7 @@ class CodexSession:
             "developer_instructions": cfg.get("developerInstructions") if isinstance(cfg.get("developerInstructions"), str) else None,
             "summary": cfg.get("summary") if cfg.get("summary") in ("auto", "concise", "detailed", "none") else None,
             "personality": cfg.get("personality") if cfg.get("personality") in ("friendly", "pragmatic", "none") else None,
-            "service_tier": cfg.get("serviceTier") if cfg.get("serviceTier") in ("fast", "flex") else None,
+            "service_tier": _service_tier_id(cfg.get("serviceTier")),
             "ephemeral": bool(cfg.get("ephemeral")),
             "model_provider": cfg.get("modelProvider") if isinstance(cfg.get("modelProvider"), str) else None,
             "env": {str(k): str(v)[:8192] for k, v in (cfg.get("env") or {}).items()}
@@ -1396,7 +1420,7 @@ class CodexSession:
                     "baseInstructions": self.codex_config.get("base_instructions"),
                     "developerInstructions": self.codex_config.get("developer_instructions"),
                     "modelProvider": "charon_custom" if endpoint_of(self.codex_config) else self.codex_config.get("model_provider"),
-                    "serviceTier": self.codex_config.get("service_tier"),
+                    "serviceTier": self._service_tier_wire(),
                     "approvalsReviewer": "user" if endpoint_of(self.codex_config) else self.codex_config.get("approvals_reviewer", "auto_review"),
                 }.items() if v is not None}
                 result = await client._client.thread_fork(self.claude_session_id, params)
@@ -1414,7 +1438,7 @@ class CodexSession:
                         "base_instructions": self.codex_config.get("base_instructions"),
                         "developer_instructions": self.codex_config.get("developer_instructions"),
                         "model_provider": self.codex_config.get("model_provider"),
-                        "service_tier": self.codex_config.get("service_tier"),
+                        "service_tier": self._service_tier_wire(),
                     }.items() if v is not None},
                 )
             if title:
@@ -1668,6 +1692,7 @@ class CodexSession:
             })
             from openai_codex.api import AsyncThread
             new_thread = AsyncThread(self._client, result.thread.id)
+            self._thread_service_tier = getattr(result, "service_tier", None)
             response_thread = result.thread
         else:
             new_thread = await self._sdk_thread_start(self._client, resume=False)
@@ -2282,8 +2307,8 @@ class CodexSession:
             value = self.codex_config.get(src)
             if src == "model_provider" and endpoint_of(self.codex_config):
                 value = "charon_custom"
-            if src == "service_tier" and endpoint_of(self.codex_config):
-                value = None
+            if src == "service_tier":
+                value = self._service_tier_wire()
             if src == "developer_instructions":
                 value = self._peer_developer_instructions()
             if value is not None:
@@ -2307,6 +2332,7 @@ class CodexSession:
         if resume:
             return AsyncThread(client, await self._thread_resume(client, params))
         result = await client._client.thread_start(params)
+        self._thread_service_tier = getattr(result, "service_tier", None)
         return AsyncThread(client, result.thread.id)
 
     async def _thread_resume(self, client: Any, params: dict[str, Any]) -> str:
@@ -2323,6 +2349,8 @@ class CodexSession:
             {"threadId": self.claude_session_id, **params},
             response_model=ResumedThread,
         )
+        tier = result.raw.get("serviceTier")
+        self._thread_service_tier = tier if isinstance(tier, str) else None
         return result.thread.id
 
     async def _sdk_turn(self, thread: Any, content: Any) -> Any:
@@ -2345,15 +2373,19 @@ class CodexSession:
         for src, dst in (
             ("output_schema", "outputSchema"),
             ("personality", "personality"),
-            ("service_tier", "serviceTier"),
             ("summary", "summary"),
         ):
             value = self.codex_config.get(src)
             if value is not None:
                 params[dst] = _enum_val(value)
+        tier = self._service_tier_wire()
+        if tier is not None:
+            params["serviceTier"] = tier
         # Preserve the handle even if the turn-start reply is lost.
         self._record_materialized_thread()
         result = await self._client._client.turn_start(thread.id, content, params=params)
+        if tier is not None:
+            self._thread_service_tier = tier
         return AsyncTurnHandle(self._client, thread.id, result.turn.id)
 
     def to_info(self) -> dict[str, Any]:
@@ -2471,11 +2503,25 @@ class CodexSession:
         eff = _coerce_effort(self.effort) if not endpoint_of(self.codex_config) else None
         if eff is not None:
             kw["effort"] = eff
-        for key in ("output_schema", "personality", "service_tier", "summary"):
+        for key in ("output_schema", "personality", "summary"):
             value = self.codex_config.get(key)
             if value is not None:
                 kw[key] = value
+        tier = self._service_tier_wire()
+        if tier is not None:
+            kw["service_tier"] = tier
         return kw
+
+    def _service_tier_wire(self) -> str | None:
+        """The tier to send; None inherits. The CLI omits (standard speed) a
+        tier the model does not advertise. An override persists on the thread,
+        so going back to inherit must say `default` while the thread holds one."""
+        if endpoint_of(self.codex_config):
+            return None
+        tier = self.codex_config.get("service_tier")
+        if tier is None and getattr(self, "_thread_service_tier", None) not in (None, "default"):
+            return "default"
+        return tier
 
     def _persisted_codex_config(self) -> dict[str, Any]:
         return {

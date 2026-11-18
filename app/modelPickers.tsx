@@ -7,7 +7,7 @@ import EffortPicker from './EffortPicker';
 import CodexModelPicker from './CodexModelPicker';
 import CodexEffortPicker from './CodexEffortPicker';
 import CursorModelPicker from './CursorModelPicker';
-import CursorEffortPicker from './CursorEffortPicker';
+import CursorEffortPicker, { CursorParamSwitches } from './CursorEffortPicker';
 import CursorEffortSummary from './CursorEffortSummary';
 import { pruneCursorEffort } from './cursorEffort';
 import { invalidateModels } from './modelsCache';
@@ -34,6 +34,15 @@ export type ProviderModelPickerProps = {
   catalogVersion?: string;
 };
 export type ProviderEffortPickerProps = ProviderModelPickerProps & { modelId: string };
+/** A model's on/off knobs as switch rows beside the effort control; each
+ *  flip writes the whole stored effort. `className` places the rows. */
+export type ProviderEffortSwitchesProps = {
+  vpsId: string; modelId: string; value: string;
+  onChange: (effort: string) => void;
+  disabled?: boolean; className: string;
+  /** The Settings form's own row style. */
+  plain?: boolean;
+};
 /** Read-only rendering of a stored effort, for the closed header cell. */
 export type ProviderEffortSummaryProps = {
   vpsId: string; modelId: string; effort: string | null;
@@ -48,6 +57,9 @@ export type ProviderCatalog = {
   /** How the stored effort READS when the control is closed. Absent for a
    *  provider whose effort is one word — the word is its own summary. */
   EffortSummary?: ComponentType<ProviderEffortSummaryProps>;
+  /** The model's on/off knobs, as switches beside the effort control (and
+   *  left out of it). Absent where the effort has none. */
+  EffortSwitches?: ComponentType<ProviderEffortSwitchesProps>;
   /** The effort to keep when the MODEL changes. Absent where the vocabulary is
    *  the provider's rather than the model's, so nothing can go stale. */
   pruneEffort?: (vpsId: string, modelId: string, effort: string | null)
@@ -103,6 +115,7 @@ export const PROVIDER_CATALOGS: Record<SessionProvider, ProviderCatalog> = {
     Effort: (props) => <CursorEffortPicker {...props} />,
     invalidate: (vpsId) => invalidateCursorModels(vpsId),
     EffortSummary: (props) => <CursorEffortSummary {...props} />,
+    EffortSwitches: (props) => <CursorParamSwitches {...props} />,
     pruneEffort: pruneCursorEffort,
   },
 };

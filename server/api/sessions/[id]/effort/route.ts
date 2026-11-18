@@ -5,6 +5,7 @@ import { queueEndpoint } from '@/lib/server/agent/endpointOps';
 import { requireApiSession } from '@/lib/server/session';
 import { syncAfter } from '@/lib/server/sync/sessionSummaries';
 import { getOrCreateStream } from '@/lib/server/agent/sessionOps';
+import { isServiceTierId } from '@/lib/providerConfigFlags';
 import { isKnownEffort } from '@/lib/server/hub/modelSync';
 import {
   PROVIDERS, asSessionProvider, isEffortValue, type SessionProvider,
@@ -21,7 +22,7 @@ function isEffortAcceptable(kind: SessionProvider, raw: string): boolean {
 }
 
 // POST /api/sessions/[id]/effort
-// Body: { effort: 'low' | 'medium' | 'high' | 'xhigh' | 'max' | null, ultracode?: boolean }
+// Body: { effort: 'low' | 'medium' | 'high' | 'xhigh' | 'max' | null } & EffortSwitches
 //
 // Mirrors claude_agent_sdk.EffortLevel. Invalid values are rejected here
 // (400) so the UI can surface the error immediately; the agent also drops
@@ -55,6 +56,15 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
   // Claude's ultracode switch rides with effort (§14.56): both are read at
   // client construction, so both apply at the next start. Absent = unchanged.
   let ultracode = typeof body?.ultracode === 'boolean' ? body.ultracode as boolean : undefined;
+  const fastMode = typeof body?.fastMode === 'boolean' ? body.fastMode as boolean : undefined;
+  // Codex's speed tier (§14.59): present = change it, null = inherit.
+  let serviceTier: string | null | undefined;
+  if (body && 'serviceTier' in body) {
+    if (body.serviceTier !== null && !isServiceTierId(body.serviceTier)) {
+      return Response.json({ error: `invalid serviceTier '${String(body.serviceTier)}'` }, { status: 400 });
+    }
+    serviceTier = body.serviceTier as string | null;
+  }
   let effort: string | null;
   if (raw == null || raw === '') {
     effort = null;
@@ -71,7 +81,8 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
     );
   }
   try {
-    await stream.setEffort(effort as any, kind === 'claude' ? ultracode : undefined);
+    // Each switch reaches only its own provider (sessionOps checks the kind).
+    await stream.setEffort(effort as any, { ultracode, fastMode, serviceTier });
     return Response.json({ ok: true, sync: syncAfter([id]) });
   } catch (e: any) {
     return Response.json({ error: e?.message ?? String(e) }, { status: 500 });

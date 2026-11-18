@@ -66,7 +66,20 @@ export type CodexModelPick = {
   isDefault?: boolean;
   efforts?: string[];          // per-model supported reasoning efforts
   defaultEffort?: string | null;
+  /** Catalog speed tiers (`priority` = Fast, `ultrafast`…); absent = an
+   *  agent too old to say. */
+  serviceTiers?: { id: string; name: string; hint?: string }[];
+  /** The tier a turn gets when none is asked; null = standard. */
+  defaultServiceTier?: string | null;
 };
+
+/** A provider's settings beside effort, absent = unchanged: Claude's
+ *  ultracode (§14.56) and fast mode (next start), Codex's speed tier
+ *  (§14.59, next turn; null = inherit, `default` = standard). */
+export type EffortSwitches = { ultracode?: boolean; fastMode?: boolean; serviceTier?: string | null };
+/** The Claude CLI's fast-mode verdict at its last init; reason
+ *  `sdk_opt_in_required` = available, not asked for. */
+export type FastModeVerdict = { state: string; reason: string | null };
 export type CodexModelsResponse = {
   ok: boolean;
   models: CodexModelPick[];
@@ -1223,6 +1236,10 @@ export type SessionListItem = AgentSession & {
   recap?: import('@/lib/sessionRecap').SessionRecap | null;
   /** Claude's ultracode switch (§14.56), off its private construction JSON. */
   ultracode?: boolean;
+  /** Claude's fast mode (same source). */
+  fastMode?: boolean;
+  /** Codex's speed tier (§14.59), same source; null = inherit. */
+  serviceTier?: string | null;
 };
 
 // Non-sensitive VPS fields that can change while the dashboard stays open.
@@ -1435,6 +1452,8 @@ export type AgentSessionDetailResponse = {
   // user has a reliable source of truth — independent of the LLM's
   // self-identification (which is famously unreliable, training cutoff).
   effectiveModel?: string | null;
+  /** The Claude CLI's fast-mode verdict at its last init; null = unknown. */
+  fastModeVerdict?: FastModeVerdict | null;
   // Authoritative ACTIVE registry derived from the full persisted bg_task
   // history, not from the paginated `messages` window. Optional so a cached
   // response produced by an older hub remains usable during rolling deploys.
@@ -1599,13 +1618,18 @@ export type ClaudeSessionConfig = SharedSessionConfig & {
   /** Standing dynamic-workflow orchestration, a switch beside effort (§14.56).
    *  Absent at create = the fleet default (`claude.default_ultracode`). */
   ultracode?: boolean;
+  /** The CLI's fast mode, beside effort; read at construction. */
+  fastMode?: boolean;
 };
 
 export type CodexSessionConfig = SharedSessionConfig & {
   configOverrides?: string[];
   summary?: 'auto' | 'concise' | 'detailed' | 'none' | null;
   personality?: 'friendly' | 'pragmatic' | 'none' | null;
-  serviceTier?: 'fast' | 'flex' | null;
+  /** Speed (§14.59): a catalog tier id (`priority`, `ultrafast`…), legacy
+   *  `fast`/`flex`, or `default` (standard); null = inherit. Sent per turn;
+   *  the CLI ignores a tier the model does not offer. */
+  serviceTier?: string | null;
   ephemeral?: boolean;
   modelProvider?: string | null;
   codexBin?: string | null;
@@ -1734,7 +1758,7 @@ export type SetSessionModelResponse = { ok: true } | { error: string };
 // POST /api/sessions/[id]/effort (effort validity depends on the
 // session's kind — Codex efforts are CodexEffortLevel).
 /** Native effort level or a validated per-model parameter set (Cursor/endpoints). */
-export type SetSessionEffortBody = { effort: string | null; ultracode?: boolean };
+export type SetSessionEffortBody = { effort: string | null } & EffortSwitches;
 export type SetSessionEffortResponse = { ok: true } | { error: string };
 
 // GET /api/claude/models — short aliases plus API-discovered concrete models.

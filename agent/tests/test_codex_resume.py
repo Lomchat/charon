@@ -213,6 +213,24 @@ class TestCodexResume(unittest.TestCase):
         self.assertEqual(saved["summary"], "detailed")
         self.assertTrue(saved["ephemeral"])
 
+    def test_speed_back_to_standard_names_the_tier(self):
+        # A turn's service tier persists on the thread: going back to standard
+        # by sending nothing would leave every later turn ultrafast.
+        s = _make_session(THREAD_ID)
+        s._configure({"serviceTier": "ultrafast"})
+        self.assertEqual(s._service_tier_wire(), "ultrafast")
+        asyncio.run(s.set_effort(None, service_tier=None))
+        self.assertIsNone(_events(s, "effort_changed")[-1]["service_tier"])
+        self.assertIsNone(s._service_tier_wire())  # thread never held it
+
+        async def resumed(method, params, response_model):
+            return response_model({"thread": {"id": THREAD_ID}, "serviceTier": "ultrafast"})
+        client = types.SimpleNamespace(_client=types.SimpleNamespace(request=resumed))
+        asyncio.run(s._thread_resume(client, {}))
+        self.assertEqual(s._service_tier_wire(), "default")
+        s._configure({"serviceTier": "flex"})
+        self.assertEqual(s._service_tier_wire(), "flex")
+
     def test_resume_success_keeps_thread_id(self):
         s = _make_session(THREAD_ID)
         c = FakeClient()

@@ -192,6 +192,9 @@ export const providerText = {
   /** Ultracode, in the new-session form (§14.56). */
   ultracodeHint: (kind: Kind) =>
     `${providerName(kind)} plans big tasks as dynamic workflows of parallel agents, at any effort.`,
+  /** Fast mode, beside effort, in the new-session form. */
+  fastModeHint: (kind: Kind) =>
+    `Faster output where ${providerName(kind)} allows it for the model and plan.`,
   /** Its permission profiles, readable only from a live session (§14.96). */
   profilesUnavailable: (kind: Kind) =>
     `profiles unavailable until the ${providerName(kind)} session is running on a compatible agent`,

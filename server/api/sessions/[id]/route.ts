@@ -1,4 +1,4 @@
-import { ultracodeOf } from '@/lib/providerConfigFlags';
+import { ultracodeOf, fastModeOf, serviceTierOf } from '@/lib/providerConfigFlags';
 import { accountProfileId, accountProfileNumber } from '@/lib/accountProfiles';
 import { publicConnection } from '@/lib/server/customEndpoints';
 import { sessionTokenUsage } from '@/lib/server/agent/sessionTokenUsage';
@@ -300,7 +300,7 @@ export async function GET(req: Request, { params }: { params: Promise<{ id: stri
     // The session's cross-session fact as the list/SSE carry it (§14.108);
     // null when archived. Window mode only.
     ...(since == null ? { summary: buildSessionSummary(id) } : {}),
-    session: { ...row, providerConfig: undefined, goalJson: undefined, ultracode: ultracodeOf(row.providerConfig), accountProfile: accountProfileId(row.providerConfig), accountProfileNumber: accountProfileNumber(row.providerConfig), endpoint: publicConnection(row.providerConfig) },
+    session: { ...row, providerConfig: undefined, goalJson: undefined, ultracode: ultracodeOf(row.providerConfig), fastMode: fastModeOf(row.providerConfig), serviceTier: serviceTierOf(row.providerConfig), accountProfile: accountProfileId(row.providerConfig), accountProfileNumber: accountProfileNumber(row.providerConfig), endpoint: publicConnection(row.providerConfig) },
     liveStatus: stream ? stream.status : row.status,
     liveCompacting: stream?.compacting === true,
     // Still on the agent code of before an update (§14.117): header warning.
@@ -345,6 +345,8 @@ export async function GET(req: Request, { params }: { params: Promise<{ id: stri
     // just because the stream isn't hydrated (peekStream is hydrate-free, §14.45).
     // Null when no turn ever happened or the agent never reported one.
     effectiveModel: stream?.effectiveModel ?? row.effectiveModel ?? null,
+    // The Claude CLI's fast-mode verdict (memory only; null = unknown).
+    fastModeVerdict: stream?.fastModeVerdict ?? null,
     pendingPermissions: pendingPerms.map((p) => {
       let input: any = {};
       try { input = JSON.parse(p.toolInput); } catch {}
@@ -482,7 +484,7 @@ export async function PATCH(req: Request, { params }: { params: Promise<{ id: st
   // the summary dirty and makes legacy tabs refetch the list.
   emitGlobalSessionListChanged(id);
 
-  const publicRow = { ...row, providerConfig: undefined, goalJson: undefined, ultracode: ultracodeOf(row.providerConfig), accountProfile: accountProfileId(row.providerConfig), accountProfileNumber: accountProfileNumber(row.providerConfig), endpoint: publicConnection(row.providerConfig) };
+  const publicRow = { ...row, providerConfig: undefined, goalJson: undefined, ultracode: ultracodeOf(row.providerConfig), fastMode: fastModeOf(row.providerConfig), serviceTier: serviceTierOf(row.providerConfig), accountProfile: accountProfileId(row.providerConfig), accountProfileNumber: accountProfileNumber(row.providerConfig), endpoint: publicConnection(row.providerConfig) };
   const sync = syncAfter([id]);
   return Response.json({ ...publicRow, sync });
 }

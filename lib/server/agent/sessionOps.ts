@@ -32,6 +32,7 @@ import { getSetting, getSettingBool, type SettingKey } from '@/lib/server/hub/se
 import type { AgentEvent, EffortLevel, AgentKind, AnyEffort, SessionMode } from './types';
 import type {
   ClaudeSessionConfig, CodexSessionConfig, CursorSessionConfig, ProviderSessionConfig,
+  EffortSwitches, FastModeVerdict,
 } from '@/lib/types/api';
 import { resolveSettingSources, safeParseSettingSources } from '@/lib/settingSources';
 import { AgentRpcError } from './types';
@@ -63,7 +64,7 @@ import { withBgTaskLaunchers } from '@/lib/server/hub/conversationSources';
 import { readScheduledTasks, recordScheduledTasks } from '@/lib/server/hub/scheduledTaskState';
 import { readGoal, recordGoal } from '@/lib/server/hub/goalState';
 import { createLiveFold, foldLiveFrame, type LiveActivity, type LiveFold } from '@/lib/liveActivity';
-import { ultracodeOf } from '@/lib/providerConfigFlags';
+import { ultracodeOf, fastModeOf, serviceTierOf, isServiceTierId } from '@/lib/providerConfigFlags';
 import { dueScheduledTask, fireKey, matchFiredTask, type ScheduledTask } from '@/lib/scheduledTasks';
 import { readCodexBgState } from '@/lib/server/hub/codexBgState';
 import { codexTerminalProcessId, type BgTask } from '@/app/bgTasks';
@@ -184,15 +185,19 @@ export const UNATTENDED_QUESTION_REASON =
   'Nobody is watching this session (unattended mode), so no one can answer this question. '
   + 'Make the most reasonable choice yourself, state the assumption you made, and continue.';
 
-/** Write Claude's ultracode switch into the session's construction JSON:
- *  the next start/resume sends it (§14.56). */
-export function setUltracode(sessionId: string, on: boolean): void {
+/** Write a provider's setting beside effort into the session's construction
+ *  JSON (every start/resume sends it): Claude's ultracode (§14.56) and fast
+ *  mode as `true`/absent, Codex's speed tier (§14.59) as an id/null. */
+export function setEffortSwitch(sessionId: string, key: 'ultracode' | 'fastMode', on: boolean): void;
+export function setEffortSwitch(sessionId: string, key: 'serviceTier', tier: string | null): void;
+export function setEffortSwitch(sessionId: string, key: 'ultracode' | 'fastMode' | 'serviceTier', value: boolean | string | null): void {
   const row = db.select({ providerConfig: agentSessions.providerConfig }).from(agentSessions)
     .where(eq(agentSessions.id, sessionId)).get();
   if (!row) return;
   const cfg = (parseProviderConfig(row.providerConfig) ?? {}) as Record<string, unknown>;
-  if ((cfg.ultracode === true) === on) return;
-  if (on) cfg.ultracode = true; else delete cfg.ultracode;
+  const next = value === false ? undefined : value;
+  if ((cfg[key] ?? null) === (next ?? null)) return;
+  if (next === undefined || next === null) delete cfg[key]; else cfg[key] = next;
   db.update(agentSessions).set({ providerConfig: JSON.stringify(cfg) })
     .where(eq(agentSessions.id, sessionId)).run();
 }
@@ -264,7 +269,11 @@ function resolveCodexConfig(value: CodexSessionConfig | null | undefined): Codex
     : getSetting('codex.default_approvals_reviewer') === 'auto_review'
       ? 'auto_review'
       : 'user';
-  return { ...(value ?? {}), approvalsReviewer: reviewer };
+  // Speed (§14.59): the caller's tier (null included), else the fleet default.
+  const fleetTier = getSetting('codex.default_service_tier');
+  const serviceTier = value?.serviceTier !== undefined ? value.serviceTier
+    : isServiceTierId(fleetTier) ? fleetTier : null;
+  return { ...(value ?? {}), approvalsReviewer: reviewer, serviceTier };
 }
 
 /** Persist Cursor overrides without freezing values derived from the mode. */
@@ -292,11 +301,13 @@ function resolveClaudeConfig(
 ): ClaudeSessionConfig {
   // Ultracode (§14.56): the caller's choice, else the fleet default; stored
   // only when on, like every flag of this JSON.
-  const { ultracode, ...rest } = value ?? {};
+  const { ultracode, fastMode, ...rest } = value ?? {};
   const on = typeof ultracode === 'boolean' ? ultracode : getSetting('claude.default_ultracode') === 'true';
+  const fast = typeof fastMode === 'boolean' ? fastMode : getSetting('claude.default_fast_mode') === 'true';
   return {
     ...rest,
     ...(on ? { ultracode: true } : {}),
+    ...(fast ? { fastMode: true } : {}),
     settingSources: resolveSettingSources(
       value?.settingSources,
       safeParseSettingSources(vpsRow?.claudeSettingSources),
@@ -682,6 +693,13 @@ export class SessionStream {
   effort: AnyEffort | null = null;
   /** Claude's ultracode switch (§14.56), mirrored from provider_config. */
   ultracode = false;
+  /** Claude's fast mode, mirrored from provider_config. */
+  fastMode = false;
+  /** Codex's speed tier (§14.59), mirrored from provider_config. */
+  serviceTier: string | null = null;
+  /** The Claude CLI's fast-mode verdict at its last init; memory only, like
+   *  `sessionInfo` (it describes the running process). */
+  fastModeVerdict: FastModeVerdict | null = null;
   customEndpoint = false;
   // The model Anthropic actually used on the last AssistantMessage. Captured
   // from the `effective_model` event (agent >= 0.6.0), persisted in
@@ -1021,6 +1039,8 @@ export class SessionStream {
     fallbackModel?: string | null;
     effort?: string | null;
     ultracode?: boolean;
+    fastMode?: boolean;
+    serviceTier?: string | null;
     effectiveModel?: string | null;
     customEndpoint?: boolean;
   }) {
@@ -1045,6 +1065,8 @@ export class SessionStream {
     this.customEndpoint = !!opts.customEndpoint;
     this.effort = isValidEffortForKind(opts.effort, this.kind, this.customEndpoint) ? (opts.effort as AnyEffort) : null;
     this.ultracode = opts.ultracode === true;
+    this.fastMode = opts.fastMode === true;
+    this.serviceTier = opts.serviceTier ?? null;
     this.effectiveModel = opts.effectiveModel ?? null;
     // Delta providers' reasoning coalesces hub-side (one row per block).
     this.coalesceThinking = PROVIDERS[this.kind]?.thinkingDelivery === 'delta';
@@ -2351,7 +2373,13 @@ export class SessionStream {
         } catch {}
         this.pendingApply.effort = !!ev.applied_at_next_start;
         if (typeof ev.ultracode === 'boolean' && this.kind === 'claude' && ev.ultracode !== this.ultracode) {
-          try { setUltracode(this.id, ev.ultracode); this.ultracode = ev.ultracode; markSummaryDirty(this.id); } catch {}
+          try { setEffortSwitch(this.id, 'ultracode', ev.ultracode); this.ultracode = ev.ultracode; markSummaryDirty(this.id); } catch {}
+        }
+        if (typeof ev.fast_mode === 'boolean' && this.kind === 'claude' && ev.fast_mode !== this.fastMode) {
+          try { setEffortSwitch(this.id, 'fastMode', ev.fast_mode); this.fastMode = ev.fast_mode; markSummaryDirty(this.id); } catch {}
+        }
+        if (ev.service_tier !== undefined && this.kind === 'codex' && (ev.service_tier ?? null) !== this.serviceTier) {
+          try { setEffortSwitch(this.id, 'serviceTier', ev.service_tier ?? null); this.serviceTier = ev.service_tier ?? null; markSummaryDirty(this.id); } catch {}
         }
         const effortFrame: Extract<WorkerEvent, { type: 'effort_changed' }> = {
           type: 'effort_changed',
@@ -2360,7 +2388,8 @@ export class SessionStream {
           effort: this.effort as EffortLevel | null,
           appliedAtNextStart: !!ev.applied_at_next_start,
         };
-        if (this.kind === 'claude') effortFrame.ultracode = this.ultracode;
+        if (this.kind === 'claude') { effortFrame.ultracode = this.ultracode; effortFrame.fastMode = this.fastMode; }
+        if (this.kind === 'codex') effortFrame.serviceTier = this.serviceTier;
         this._broadcast(effortFrame);
         break;
       case 'effective_model':
@@ -2484,6 +2513,14 @@ export class SessionStream {
           ...(ev.models !== undefined ? { models: ev.models } : {}),
         };
         this._broadcast({ type: 'session_info', ...this.sessionInfo });
+        if (ev.fast_mode && typeof ev.fast_mode.state === 'string') {
+          const verdict: FastModeVerdict = { state: ev.fast_mode.state, reason: ev.fast_mode.reason ?? null };
+          const was = this.fastModeVerdict;
+          if (!was || was.state !== verdict.state || was.reason !== verdict.reason) {
+            this.fastModeVerdict = verdict;
+            this._broadcast({ type: 'fast_mode', ...verdict });
+          }
+        }
         break;
       case 'external_message': {
         if (this._replayAlreadyPersisted(ev)) { this._dropReplayedAssistantBuffer(); break; }
@@ -3125,17 +3162,30 @@ export class SessionStream {
    * as setModel — effort is also part of ClaudeAgentOptions. Pass null to
    * clear back to the global default. Invalid values are dropped agent-side.
    */
-  async setEffort(effort: AnyEffort | null, ultracode?: boolean): Promise<void> {
-    // Ultracode (Claude, §14.56) is construction config: the row is its
+  async setEffort(effort: AnyEffort | null, switches: EffortSwitches = {}): Promise<void> {
+    // The switches beside effort are construction config: the row is their
     // truth for the next start/resume, written first so an agent too old to
-    // echo it still gets it at the restart.
-    if (typeof ultracode === 'boolean' && this.kind === 'claude') {
-      setUltracode(this.id, ultracode);
-      this.ultracode = ultracode;
+    // echo them still gets them at the restart (§14.56, §14.59).
+    const { ultracode, fastMode, serviceTier } = switches;
+    const params: Record<string, unknown> = { session_id: this.id, effort: effort ?? null };
+    if (this.kind === 'claude') {
+      if (typeof ultracode === 'boolean') {
+        setEffortSwitch(this.id, 'ultracode', ultracode);
+        this.ultracode = ultracode;
+        params.ultracode = ultracode;
+      }
+      if (typeof fastMode === 'boolean') {
+        setEffortSwitch(this.id, 'fastMode', fastMode);
+        this.fastMode = fastMode;
+        params.fast_mode = fastMode;
+      }
+    }
+    if (this.kind === 'codex' && serviceTier !== undefined) {
+      setEffortSwitch(this.id, 'serviceTier', serviceTier);
+      this.serviceTier = serviceTier;
+      params.service_tier = serviceTier;
     }
     const client = getAgentClientForVpsId(this.vpsId);
-    const params: Record<string, unknown> = { session_id: this.id, effort: effort ?? null };
-    if (typeof ultracode === 'boolean' && this.kind === 'claude') params.ultracode = ultracode;
     await client.call('set_effort', params);
   }
 
@@ -5084,6 +5134,8 @@ export function getOrCreateStream(sessionId: string): SessionStream | null {
     fallbackModel: row.fallbackModel ?? null,
     effort: row.effort ?? null,
     ultracode: ultracodeOf(row.providerConfig),
+    fastMode: fastModeOf(row.providerConfig),
+    serviceTier: serviceTierOf(row.providerConfig),
     customEndpoint: !!connectionConfig(row.providerConfig).customEndpoint,
     // Last API-confirmed model — needed right after a Charon restart so the
     // very next assistant flush is stamped correctly (the agent won't re-emit

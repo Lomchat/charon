@@ -1,7 +1,8 @@
 'use client';
 
 /** THE on/off control (`.toggle` in app.css): a sliding knob, never a native
- *  checkbox. `tone` recolours the on state (violet = ultracode, §14.56);
+ *  checkbox. `tone` recolours the on state (violet = ultracode, §14.56;
+ *  info = ultrafast, §14.59);
  *  `size="sm"` fits a popover row. */
 export default function Switch({ checked, onChange, label, disabled = false, tone, size }: {
   checked: boolean;
@@ -9,7 +10,7 @@ export default function Switch({ checked, onChange, label, disabled = false, ton
   /** Accessible name — the visible text beside it usually says the same. */
   label?: string;
   disabled?: boolean;
-  tone?: 'violet';
+  tone?: 'violet' | 'info';
   size?: 'sm';
 }) {
   return (

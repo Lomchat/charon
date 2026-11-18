@@ -129,6 +129,13 @@ export function paramValueLabel(param: CursorModelParameter, value: string): str
   return clean(param.values?.find((v) => v.value === value)?.label) || value;
 }
 
+/** An on/off knob (`fast`, `thinking`): exactly the values true and false.
+ *  Shown as a switch beside the effort control, never inside it. */
+export function isSwitchParam(param: CursorModelParameter): boolean {
+  const values = (param.values ?? []).map((v) => v.value).sort();
+  return values.length === 2 && values[0] === 'false' && values[1] === 'true';
+}
+
 export function paramLabel(param: CursorModelParameter): string {
   return clean(param.label) || param.id;
 }

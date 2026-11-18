@@ -741,11 +741,19 @@ async def run(method: str, params: dict[str, Any], session: Any, host: Any) -> A
         effort = params.get("effort")
         if effort is not None and not isinstance(effort, str):
             raise RpcError(ERR_INVALID_PARAMS, "effort must be a string or null")
-        ultracode = params.get("ultracode")
-        if isinstance(ultracode, bool) and getattr(s, "kind", "claude") == "claude":
-            await s.set_effort(effort, ultracode=ultracode)
-        else:
-            await s.set_effort(effort)
+        kind = getattr(s, "kind", "claude")
+        switches: dict[str, Any] = {}
+        if kind == "claude":
+            for key, kw in (("ultracode", "ultracode"), ("fast_mode", "fast_mode")):
+                if isinstance(params.get(key), bool):
+                    switches[kw] = params[key]
+        elif kind == "codex" and "service_tier" in params:
+            # Present = change it; null = standard speed.
+            tier = params.get("service_tier")
+            if tier is not None and not isinstance(tier, str):
+                raise RpcError(ERR_INVALID_PARAMS, "service_tier must be a string or null")
+            switches["service_tier"] = tier
+        await s.set_effort(effort, **switches)
         deferred = (getattr(s, "kind", "claude") != "codex") and s._client is not None
         return {
             "ok": True,

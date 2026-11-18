@@ -32,7 +32,7 @@ import {
 } from '@/lib/sessionCapabilities';
 import { FRAME_SNAPSHOT_CLASS, isTechnicalFrame, type SnapshotClass, type TranscriptView } from '@/lib/transcriptRows';
 import { cmpRev, type SyncRev } from '@/lib/sync/rev';
-import type { SessionWindowResponse } from '@/lib/types/api';
+import type { FastModeVerdict, SessionWindowResponse } from '@/lib/types/api';
 import { mergeSessionTokenUsage, type SessionTokenUsage } from '@/lib/sessionTokenUsage';
 import { resolveAsyncQuestionMessages } from '@/lib/asyncQuestions';
 import { scheduledFireContent } from '@/lib/scheduledTasks';
@@ -421,6 +421,12 @@ export type TranscriptMeta = {
   effort: string | null;
   /** Claude's ultracode switch, beside effort (§14.56). */
   ultracode: boolean;
+  /** Claude's fast mode, beside effort (applies at the next start). */
+  fastMode: boolean;
+  /** The Claude CLI's fast-mode verdict at its last init; null = unknown. */
+  fastModeVerdict: FastModeVerdict | null;
+  /** Codex's speed tier (§14.59); null = the model's default. */
+  serviceTier: string | null;
   /** A config change queued behind a live SDK client (`appliedAtNextStart`):
    *  carried across snapshots (no row holds it), cleared by the next start. */
   modelPendingApply: boolean;
@@ -515,7 +521,7 @@ export function createTranscriptState(sessionId: string, provider?: SessionProvi
     snapshotRev: null, toolCallBase: null, toolCallIdsSince: new Set(), afterId: 0, hubBoundaries: false, hasMore: false, oldestChatId: null,
     provider: p, session: null,
     meta: {
-      permissionMode: defaultSessionMode(p), model: null, fallbackModel: null, effort: null, ultracode: false,
+      permissionMode: defaultSessionMode(p), model: null, fallbackModel: null, effort: null, ultracode: false, fastMode: false, fastModeVerdict: null, serviceTier: null,
       modelPendingApply: false, effortPendingApply: false, effectiveModel: null,
     },
     tokenUsage: null, liveUsage: null, loaded: false, seq: 0, retryBanner: false,
@@ -1000,7 +1006,12 @@ export function applyFrame(s: TranscriptState, ev: SessionFrame, ctx: Transcript
     case 'effort_changed':
       st = { ...st, meta: { ...st.meta, effort: (ev.effort as string | null) || null,
         ...(typeof ev.ultracode === 'boolean' ? { ultracode: ev.ultracode } : {}),
+        ...(typeof ev.fastMode === 'boolean' ? { fastMode: ev.fastMode } : {}),
+        ...(ev.serviceTier !== undefined ? { serviceTier: ev.serviceTier ?? null } : {}),
         effortPendingApply: !!ev.appliedAtNextStart } };
+      break;
+    case 'fast_mode':
+      st = { ...st, meta: { ...st.meta, fastModeVerdict: { state: ev.state, reason: ev.reason ?? null } } };
       break;
     case 'effective_model':
       if (typeof ev.model === 'string' && ev.model.length > 0) {
@@ -1178,7 +1189,7 @@ export function applySnapshot(s: TranscriptState, r: SessionWindowResponse,
   messages = reconciled.messages;
 
   const bg = bgTasksAfterWindowAnswer(rebuilt.bgTasks, r, s.bgTasks.values());
-  const sess = r.session as (SessionWindowResponse['session'] & { model?: string | null; fallbackModel?: string | null; effort?: string | null; ultracode?: boolean }) | undefined;
+  const sess = r.session as (SessionWindowResponse['session'] & { model?: string | null; fallbackModel?: string | null; effort?: string | null; ultracode?: boolean; fastMode?: boolean; serviceTier?: string | null }) | undefined;
   const pm = sess?.permissionMode as SessionMode | undefined;
   const tailKeepsPaging = kept.length > 0;
   return {
@@ -1215,6 +1226,9 @@ export function applySnapshot(s: TranscriptState, r: SessionWindowResponse,
       fallbackModel: sess?.fallbackModel ?? null,
       effort: sess?.effort || null,
       ultracode: sess?.ultracode === true,
+      fastMode: sess?.fastMode === true,
+      fastModeVerdict: r.fastModeVerdict ?? null,
+      serviceTier: sess?.serviceTier ?? null,
       effectiveModel: r.effectiveModel ?? null,
       // The hub's known flags win (a `starting` lost in a resync gap must not
       // leave a stale "apply now"); unknown ones keep the view's value.

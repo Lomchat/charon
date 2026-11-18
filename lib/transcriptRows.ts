@@ -111,6 +111,7 @@ export const FRAME_SNAPSHOT_CLASS: Record<KnownFrameType, SnapshotClass> = {
   mode_changed: 'durable',
   model_changed: 'durable',
   effort_changed: 'durable',
+  fast_mode: 'durable',               // `fastModeVerdict` (stream memory, set before the publish)
   effective_model: 'durable',
   session_id: 'durable',
   transcript_reset: 'durable',       // the rollback deleted the rows first

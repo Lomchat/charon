@@ -93,6 +93,14 @@ async function fetchCodexModels(vpsId: string, profile: string): Promise<CodexMo
       isDefault: !!m.is_default,
       efforts: Array.isArray(m.efforts) ? m.efforts.filter((e): e is string => typeof e === 'string') : [],
       defaultEffort: m.default_effort ?? null,
+      ...(Array.isArray(m.service_tiers)
+        ? {
+          serviceTiers: m.service_tiers
+            .filter((t) => typeof t?.id === 'string' && t.id.length > 0)
+            .map((t) => ({ id: t.id, name: t.name || t.id, ...(t.description ? { hint: t.description } : {}) })),
+          defaultServiceTier: m.default_service_tier ?? null,
+        }
+        : {}),
     }));
 
   const data: CodexModelsResponse = { ok: true, models, efforts: unionEfforts(models) };

@@ -1,5 +1,8 @@
 'use client';
 import Switch from './Switch';
+import { codexSpeedOf, useCodexSpeeds } from './codexModelsCache';
+import { SpeedRow, SwitchRow } from './EffortSwitches';
+import { CLAUDE_FAST_HINT } from '@/lib/speedCosts';
 import PickerControl, { PickerOption } from './PickerControl';
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { api, sessionApi } from '@/lib/api';
@@ -194,8 +197,11 @@ export default function NewSessionWizard({
   const [outputSchemaText, setOutputSchemaText] = useState('');
   const [codexSummary, setCodexSummary] = useState<'auto' | 'concise' | 'detailed' | 'none'>('auto');
   const [codexPersonality, setCodexPersonality] = useState<'friendly' | 'pragmatic' | 'none'>('pragmatic');
-  const [codexServiceTier, setCodexServiceTier] = useState<'fast' | 'flex'>('fast');
   const [codexEphemeral, setCodexEphemeral] = useState(false);
+  // null = untouched: the fleet default (`codex.default_service_tier`,
+  // `claude.default_fast_mode`), resolved server-side.
+  const [codexSpeed, setCodexSpeed] = useState<string | null>(null);
+  const [claudeFast, setClaudeFast] = useState<boolean | null>(null);
   const [codexModelProvider, setCodexModelProvider] = useState('');
   const [sessionEnv, setSessionEnv] = useState('');
   const [codexBin, setCodexBin] = useState('');
@@ -205,6 +211,11 @@ export default function NewSessionWizard({
   const [settingSources, setSettingSources] = useState<ClaudeSettingSource[] | null>(null);
   const [globalDefaults, setGlobalDefaults] = useState<{
     model: string; fallbackModel: string; effort: string; ultracode: boolean;
+    /** `codex.default_model`: which model a blank Codex choice gets. */
+    codexModel: string;
+    /** `claude.default_fast_mode` / `codex.default_service_tier`. */
+    fastMode: boolean;
+    codexServiceTier: string;
     /** Fleet default mode, per provider — labels the picker's "default" row. */
     modes: Partial<Record<AgentKind, string>>;
     settingSources: ClaudeSettingSource[];
@@ -250,6 +261,9 @@ export default function NewSessionWizard({
         fallbackModel: s['claude.default_fallback_model'] ?? '',
         effort: s['claude.default_effort'] ?? '',
         ultracode: s['claude.default_ultracode'] === 'true',
+        codexModel: s['codex.default_model'] ?? '',
+        fastMode: s['claude.default_fast_mode'] === 'true',
+        codexServiceTier: s['codex.default_service_tier'] ?? '',
         modes: Object.fromEntries(SESSION_PROVIDERS.map((p) => [
           p,
           s[providerSettingKey(p, 'default_permission_mode')] || defaultSessionMode(p, 'create'),
@@ -263,13 +277,17 @@ export default function NewSessionWizard({
   // Reset per-backend config when the backend switches (model ids / efforts
   // aren't comparable across Claude and Codex).
   useEffect(() => {
-    setModel(''); setFallbackModel(''); setEffort(''); setUltracode(null); setSessionMode('');
+    setModel(''); setFallbackModel(''); setEffort(''); setUltracode(null); setCodexSpeed(null); setClaudeFast(false); setSessionMode('');
     setEndpointId(''); setEndpointModel(''); setConnectionTouched(false);
   }, [selKind]);
 
   const vps = vpsId ? vpsList.find((v) => v.id === vpsId) ?? null : null;
   const endpointChoices = kind === 'agent' ? endpointsFor(selKind) : NO_ENDPOINTS;
   const selectedEndpoint = endpointId ? endpointChoices.find((e) => e.id === endpointId) ?? null : null;
+  // Codex's Ultrafast switch (§14.59) is offered only by the model's catalog.
+  const speeds = useCodexSpeeds(vps?.id ?? '', selProfile, model || globalDefaults?.codexModel || '',
+    kind === 'agent' && selKind === 'codex' && !!vps && !selectedEndpoint);
+  const speed = codexSpeed ?? codexSpeedOf(globalDefaults?.codexServiceTier || null, speeds?.defaultTier);
   // The account as it stands, endpoint fallback aside.
   const accountAvail = vps && kind === 'agent' ? backendAvailability(profileVps(vps, selKind), selKind) : null;
   const accountReady = !!accountAvail?.ok;
@@ -531,7 +549,8 @@ export default function NewSessionWizard({
             configOverrides: codexOverrides.split('\n').map((v) => v.trim()).filter(Boolean),
             summary: codexSummary,
             personality: codexPersonality,
-            serviceTier: codexServiceTier,
+            // Absent = the fleet default; a pick is sent as is (`default` = standard).
+            ...(codexSpeed !== null && speeds && !selectedEndpoint ? { serviceTier: codexSpeed } : {}),
             ephemeral: codexEphemeral,
             modelProvider: codexModelProvider.trim() || null,
             codexBin: codexBin.trim() || null,
@@ -545,6 +564,7 @@ export default function NewSessionWizard({
             // VPS → hub chain and persists the result (§14.100).
             ...(settingSources ? { settingSources } : {}),
             ...(ultracode !== null && !selectedEndpoint ? { ultracode } : {}),
+            ...(claudeFast !== null && !selectedEndpoint ? { fastMode: claudeFast } : {}),
           };
         } else {
           // Cursor: no instruction/schema/env surface at all. The mode carries
@@ -977,7 +997,7 @@ export default function NewSessionWizard({
                               placeholder={selectedEndpoint.model} autoComplete="off" spellCheck={false} />}
                       </label>
                     ) : (() => {
-                      const { Model, Effort } = PROVIDER_CATALOGS[selKind];
+                      const { Model, Effort, EffortSwitches } = PROVIDER_CATALOGS[selKind];
                       const inherit = providerText.agentLabel(selKind) + ' default';
                       return (
                         <>
@@ -997,17 +1017,23 @@ export default function NewSessionWizard({
                                 inheritPlaceholder={globalDefaults?.effort || inherit} />
                             </label>
                           )}
-                          {selKind === 'claude' && !selectedEndpoint && (() => {
-                            const on = ultracode ?? globalDefaults?.ultracode ?? false;
-                            return <div className={`wiz-adv-switch${on ? ' on' : ''}`} onClick={() => setUltracode(!on)}>
-                              <span className="ru-ico" aria-hidden>✦</span>
-                              <span className="ru-text">
-                                <b>Ultracode</b>
-                                <small>{providerText.ultracodeHint(selKind)}</small>
-                              </span>
-                              <Switch checked={on} onChange={setUltracode} tone="violet" size="sm" label="Ultracode" />
-                            </div>;
-                          })()}
+                          {EffortSwitches && (
+                            <EffortSwitches vpsId={vps.id} modelId={model} value={effort} onChange={setEffort}
+                              className="wiz-adv-switch" />
+                          )}
+                          {selKind === 'claude' && !selectedEndpoint && (
+                            <SwitchRow className="wiz-adv-switch" label="Ultracode" glyph="✦"
+                              on={ultracode ?? globalDefaults?.ultracode ?? false} onFlip={setUltracode}
+                              hint={providerText.ultracodeHint(selKind)} />
+                          )}
+                          {selKind === 'claude' && !selectedEndpoint && (
+                            <SwitchRow className="wiz-adv-switch" label="Fast" glyph="»" tone="info" title={CLAUDE_FAST_HINT}
+                              on={claudeFast ?? globalDefaults?.fastMode ?? false} onFlip={setClaudeFast}
+                              hint={providerText.fastModeHint(selKind)} />
+                          )}
+                          {selKind === 'codex' && speeds && (
+                            <SpeedRow className="wiz-adv-switch" tiers={speeds.tiers} value={speed} onChange={setCodexSpeed} />
+                          )}
                         </>
                       );
                     })()}
@@ -1037,11 +1063,6 @@ export default function NewSessionWizard({
                           <PickerControl value={codexSummary} onValueChange={(nextValue) => setCodexSummary(nextValue as any)}>
                             <option value="auto">auto</option><option value="concise">concise</option>
                             <option value="detailed">detailed</option><option value="none">none</option>
-                          </PickerControl>
-                        </label>
-                        <label className="wiz-adv-field">service tier
-                          <PickerControl value={codexServiceTier} onValueChange={(nextValue) => setCodexServiceTier(nextValue as any)}>
-                            <option value="fast">fast</option><option value="flex">flex</option>
                           </PickerControl>
                         </label>
                         <label className="wiz-adv-field">base instructions

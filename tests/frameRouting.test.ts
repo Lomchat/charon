@@ -27,7 +27,7 @@ const ALL_TYPES = [
   'pending_snapshot', 'transcript_reset', 'session_resync', 'assistant_flushed', 'assistant_reopened',
   'question_delivery', 'shell_unread', 'compacting', 'runtime_outdated', 'side_question', 'side_answer',
   'live_activity',
-  'session_activity',
+  'session_activity', 'fast_mode',
 ] as const satisfies readonly KnownFrameType[];
 type _Missing = Exclude<KnownFrameType, (typeof ALL_TYPES)[number]>;
 const _exhaustive: [_Missing] extends [never] ? true : _Missing = true;

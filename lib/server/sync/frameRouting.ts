@@ -99,6 +99,7 @@ export const FRAME_CLASS: Record<KnownFrameType, FrameClass> = {
   // What the running CLI can do: read hub-side (in memory) — no browser
   // consumes the frame.
   session_info: INTERNAL,
+  fast_mode: FOCUSED,
   // Typed turn failure (auth/billing): a logged-out session lights up
   // everywhere (§14.65/68).
   turn_error: LOW,

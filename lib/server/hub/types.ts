@@ -65,7 +65,9 @@ export type BridgeEvent =
   // the change takes effect on the next sleep+resume. null values mean
   // "cleared back to the global default".
   | { type: 'model_changed'; model: string | null; fallbackModel: string | null; appliedAtNextStart: boolean }
-  | { type: 'effort_changed'; effort: EffortLevel | null; ultracode?: boolean; appliedAtNextStart: boolean }
+  | { type: 'effort_changed'; effort: EffortLevel | null; ultracode?: boolean; fastMode?: boolean; serviceTier?: string | null; appliedAtNextStart: boolean }
+  // The Claude CLI's fast-mode verdict, on change (FastModeVerdict).
+  | { type: 'fast_mode'; state: string; reason: string | null }
   // effective_model = what Anthropic ACTUALLY billed for the last
   // AssistantMessage. Differs from `model` (= configured value) when the
   // user picked an alias, or when fallback_model kicked in. Emitted on

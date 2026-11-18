@@ -4,10 +4,56 @@ import { useEffect, useState } from 'react';
 import type { CursorModel } from '@/lib/types/api';
 import { getCursorModels, peekCursorModels } from './cursorModelsCache';
 import {
-  decodeModelParams, encodeModelParams, modelAxes, paramLabel, paramValueLabel,
+  decodeModelParams, encodeModelParams, isSwitchParam, modelAxes, paramLabel, paramValueLabel,
   splitModelSpec,
 } from '@/lib/modelParams';
 import { applicableParams } from './cursorEffort';
+import { fastMultiplier } from '@/lib/modelPricing';
+import { SwitchRow } from './EffortSwitches';
+import type { ProviderEffortSwitchesProps } from './modelPickers';
+
+/** The VPS's Cursor catalog, cached per tab. */
+function useCursorCatalog(vpsId: string): { models: CursorModel[]; loaded: boolean } {
+  const [models, setModels] = useState<CursorModel[]>(
+    () => peekCursorModels(vpsId)?.models ?? [],
+  );
+  const [loaded, setLoaded] = useState(() => peekCursorModels(vpsId) != null);
+  useEffect(() => {
+    let cancelled = false;
+    getCursorModels(vpsId).then((r) => {
+      if (cancelled) return;
+      setModels(r.models ?? []);
+      setLoaded(true);
+    }).catch(() => { if (!cancelled) setLoaded(true); });
+    return () => { cancelled = true; };
+  }, [vpsId]);
+  return { models, loaded };
+}
+
+/** The selected model's on/off knobs (`fast`, `thinking`…) as switch rows;
+ *  each flip merges one axis into the stored parameter set. */
+export function CursorParamSwitches({ vpsId, modelId, value, onChange, disabled, className, plain }: ProviderEffortSwitchesProps) {
+  const { models } = useCursorCatalog(vpsId);
+  const spec = splitModelSpec(modelId);
+  const model = models.find((m) => m.id === spec.id) ?? null;
+  if (!model) return null;
+  const axes = modelAxes(model);
+  const current = applicableParams(model, value ? decodeModelParams(value) : spec.params);
+  // The fast lane's own published rate, as a multiple of the normal one.
+  const fastCost = fastMultiplier(model.price, model.fastPrice);
+  return <>
+    {axes.all.filter(isSwitchParam).map((param) => {
+      const speed = param.id === 'fast';
+      return (
+        <SwitchRow key={param.id} className={className} plain={plain} label={paramLabel(param)}
+          glyph={speed ? '»' : '✦'} tone={speed ? 'info' : 'violet'}
+          title={speed && fastCost ? `${fastCost.replace(/x$/, '×')} the price per token` : undefined}
+          on={(current[param.id] ?? axes.defaults[param.id]) === 'true'} disabled={disabled}
+          onFlip={(on) => onChange(encodeModelParams({ ...current, [param.id]: on ? 'true' : 'false' }))} />
+      );
+    })}
+  </>;
+}
 
 type Props = {
   presentation?: 'select' | 'list';
@@ -32,20 +78,7 @@ export default function CursorEffortPicker({
   vpsId, value, onChange, modelId, inheritPlaceholder, noInherit, className, style, id,
   presentation, disabled,
 }: Props) {
-  const [models, setModels] = useState<CursorModel[]>(
-    () => peekCursorModels(vpsId)?.models ?? [],
-  );
-  const [loaded, setLoaded] = useState(() => peekCursorModels(vpsId) != null);
-
-  useEffect(() => {
-    let cancelled = false;
-    getCursorModels(vpsId).then((r) => {
-      if (cancelled) return;
-      setModels(r.models ?? []);
-      setLoaded(true);
-    }).catch(() => { if (!cancelled) setLoaded(true); });
-    return () => { cancelled = true; };
-  }, [vpsId]);
+  const { models, loaded } = useCursorCatalog(vpsId);
 
   // Parameters in a model-id suffix remain part of the effective selection.
   const spec = splitModelSpec(modelId);
@@ -60,7 +93,9 @@ export default function CursorEffortPicker({
   const axes = modelAxes(model);
 
   type Row = { key: string; label: string; value: string; title?: string };
-  const groups: { key: string; label: string; rows: Row[] }[] = axes.all.map((param) => ({
+  // On/off knobs are switches beside this control (`CursorParamSwitches`).
+  const switches = axes.all.filter(isSwitchParam);
+  const groups: { key: string; label: string; rows: Row[] }[] = axes.all.filter((p) => !isSwitchParam(p)).map((param) => ({
     key: param.id,
     label: paramLabel(param),
     rows: (param.values ?? []).map((entry) => ({
@@ -79,7 +114,7 @@ export default function CursorEffortPicker({
   // has since dropped is still what the session runs, and hiding it would show a
   // control that disagrees with the session.
   const known = new Set(groups.flatMap((g) => g.rows.map((r) => r.value)));
-  if (applicable && !known.has(applicable)) {
+  if (applicable && groups.length && !known.has(applicable)) {
     groups.push({
       key: 'current',
       label: 'current',
@@ -105,7 +140,7 @@ export default function CursorEffortPicker({
           {inheritPlaceholder ? `inherit (${inheritPlaceholder})` : 'default for this model'}
         </option>
       )}
-      {!groups.length && (
+      {!groups.length && !switches.length && (
         <option value="" disabled>
           {!loaded ? 'loading catalog…'
             : model ? 'this model has no adjustable parameters'

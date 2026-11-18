@@ -21,6 +21,7 @@ import {
   unhandledProvider,
 } from '@/lib/sessionCapabilities';
 import { parseSettingSources } from '@/lib/settingSources';
+import { isServiceTierId } from '@/lib/providerConfigFlags';
 import { listVpsRuntimeSnapshots } from '@/lib/server/agent/vpsRuntimeSnapshot';
 import { timeSection } from '@/lib/server/perf/loopLag';
 
@@ -166,6 +167,7 @@ function normalizeProviderConfig(kind: AgentKind, raw: unknown): ProviderSession
       return {
         ...shared, skills, ...(settingSources === null ? {} : { settingSources }),
         ...(typeof r.ultracode === 'boolean' ? { ultracode: r.ultracode } : {}),
+        ...(typeof r.fastMode === 'boolean' ? { fastMode: r.fastMode } : {}),
       };
     }
     case 'codex': {
@@ -174,7 +176,8 @@ function normalizeProviderConfig(kind: AgentKind, raw: unknown): ProviderSession
         configOverrides: names(r.configOverrides, 2048, 64) ?? [],
         summary: pick(r.summary, ['auto', 'concise', 'detailed', 'none'] as const),
         personality: pick(r.personality, ['friendly', 'pragmatic', 'none'] as const),
-        serviceTier: pick(r.serviceTier, ['fast', 'flex'] as const),
+        // Absent = the fleet default (`codex.default_service_tier`).
+        ...(r.serviceTier === null || isServiceTierId(r.serviceTier) ? { serviceTier: r.serviceTier } : {}),
         ephemeral: r.ephemeral === true,
         modelProvider: text(r.modelProvider, 256),
         codexBin: text(r.codexBin, 4096),

@@ -19,7 +19,7 @@ import EffortPicker from './EffortPicker';
 import CodexModelPicker from './CodexModelPicker';
 import CodexEffortPicker from './CodexEffortPicker';
 import CursorModelPicker from './CursorModelPicker';
-import CursorEffortPicker from './CursorEffortPicker';
+import CursorEffortPicker, { CursorParamSwitches } from './CursorEffortPicker';
 import { pruneCursorEffort } from './cursorEffort';
 import { catalogVpsFor } from './modelPickers';
 import { MODE_LABELS, providerText } from '@/lib/providerText';
@@ -39,6 +39,8 @@ import { applyTheme, currentThemeId } from './themeClient';
 import { applyDensity, currentDensity, DEFAULT_DENSITY, resolveDensity } from './density';
 import { applyFileIcons, currentFileIcons, DEFAULT_FILE_ICONS, resolveFileIcons, type FileIconStyle } from './fileIconStyle';
 import { FileIconSample } from './fileIcons';
+import { useCodexSpeedChoices } from './codexModelsCache';
+import { CLAUDE_FAST_HINT, codexSpeedRange } from '@/lib/speedCosts';
 
 
 type Props = {
@@ -159,6 +161,7 @@ export default function SettingsModal({ onClose, vpsList, initialCat, modelNotic
   // and the picker then looks like the provider has no models (§14.103).
   const cursorVps = useMemo(() => catalogVpsFor('cursor', vpsList), [vpsList]);
   const codexVps = useMemo(() => catalogVpsFor('codex', vpsList), [vpsList]);
+  const codexSpeedChoices = useCodexSpeedChoices(codexVps?.id ?? null);
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape' && !sessionSettings) close(); };
@@ -499,11 +502,16 @@ export default function SettingsModal({ onClose, vpsList, initialCat, modelNotic
                         label="Ultracode by default" tone="violet"
                       />
                     </div>
-                    <p className="set-meta">
-                      Claude plans big tasks as dynamic workflows of parallel
-                      agents, at whatever effort. New sessions inherit it; a
-                      session switches it from its effort menu.
-                    </p>
+                    <p className="set-meta">Big tasks run as workflows of parallel agents.</p>
+                    <div className="switch-row">
+                      <span>fast by default</span>
+                      <Toggle
+                        checked={s['claude.default_fast_mode'] === 'true'}
+                        onChange={(v) => set('claude.default_fast_mode', v ? 'true' : '')}
+                        label="Fast by default" tone="info"
+                      />
+                    </div>
+                    <p className="set-meta">{CLAUDE_FAST_HINT}, where the model and plan allow it.</p>
                     <label>default mode
                       <PickerControl
                         value={s['claude.default_permission_mode'] ?? 'normal'}
@@ -601,6 +609,21 @@ export default function SettingsModal({ onClose, vpsList, initialCat, modelNotic
                             inheritPlaceholder={`${providerText.agentLabel('codex')} default`}
                           />
                         </label>
+                        {codexSpeedChoices && <>
+                          <label>default speed
+                            <PickerControl
+                              value={s['codex.default_service_tier'] ?? ''}
+                              onValueChange={(v) => set('codex.default_service_tier', v)}
+                            >
+                              <option value="">Standard</option>
+                              {codexSpeedChoices.map((t) => {
+                                const cost = codexSpeedRange(t.id);
+                                return <option key={t.id} value={t.id}>{cost ? `${t.name} — ${cost}` : t.name}</option>;
+                              })}
+                            </PickerControl>
+                          </label>
+                          <p className="set-meta">A model without the tier runs at standard speed.</p>
+                        </>}
                       </>
                     ) : (
                       <>
@@ -676,11 +699,12 @@ export default function SettingsModal({ onClose, vpsList, initialCat, modelNotic
                         />
                       </label>
                     )}
-                    <p className="set-meta">
-                      Effort here is the chosen model’s own parameters — its
-                      reasoning ladder and switches differ per model, so pick the
-                      model first.
-                    </p>
+                    <p className="set-meta">The chosen model’s own parameters: pick the model first.</p>
+                    {cursorVps && (
+                      <CursorParamSwitches vpsId={cursorVps.id} modelId={s['cursor.default_model'] ?? ''}
+                        value={s['cursor.default_effort'] ?? ''} onChange={(v) => set('cursor.default_effort', v)}
+                        className="" plain />
+                    )}
                     <label>default mode
                       <PickerControl
                         value={s['cursor.default_permission_mode'] || defaultSessionMode('cursor')}

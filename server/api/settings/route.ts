@@ -11,6 +11,7 @@ import { isThemeId } from '@/app/themes';
 import { isDensity } from '@/app/density';
 import { isFileIconStyle } from '@/app/fileIconStyle';
 import { SETTINGS_WRITE_ALLOWLIST } from '@/lib/server/hub/settingsKeys';
+import { isServiceTierId } from '@/lib/providerConfigFlags';
 
 
 // Secrets are never returned in full to the browser. Two display shapes:
@@ -102,6 +103,11 @@ export async function POST(req: Request) {
     }
     if (k === 'codex.default_approvals_reviewer'
         && val !== 'user' && val !== 'auto_review') {
+      rejected.push(k);
+      continue;
+    }
+    if ((k === 'claude.default_fast_mode' && val !== 'true' && val !== '')
+        || (k === 'codex.default_service_tier' && val !== '' && !isServiceTierId(val))) {
       rejected.push(k);
       continue;
     }

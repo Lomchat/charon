@@ -23,7 +23,7 @@ import type { TurnLedger } from '@/lib/promptCache';
 import { Fragment, memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
 import type { Vps } from '@/lib/db/schema';
 import { addOverlay, getSummary, subscribeSummaries } from './sync/summaryStore';
-import type { SessionListItem, AgentKind, SessionAttachment } from '@/lib/types/api';
+import type { SessionListItem, AgentKind, SessionAttachment, FastModeVerdict } from '@/lib/types/api';
 import {
   asSessionProvider, hasEffortAxis, isSessionEffort, PROVIDERS, sessionCapabilities, sessionModes,
   showsTurnCost, supportsSessionCapability,
@@ -46,6 +46,9 @@ import BgTasksBar from './BgTasksBar';
 import ScheduledTasksBar from './ScheduledTasksBar';
 import GoalBar, { GoalEditor } from './GoalBar';
 import Switch from './Switch';
+import { codexSpeedOf, useCodexSpeeds } from './codexModelsCache';
+import { SpeedRow, SwitchRow, fastModeBlocker, fastModeOffered } from './EffortSwitches';
+import { CLAUDE_FAST_HINT } from '@/lib/speedCosts';
 import UsageMeter, { UsageRings } from './UsageMeter';
 import SessionTokenMeter from './SessionTokenMeter';
 import type { SessionTokenUsage } from '@/lib/sessionTokenUsage';
@@ -236,13 +239,13 @@ export default function SessionView({
   const {
     messages, currentAssistant, streamingInto, status, compacting: liveCompacting, runtimeOutdated, runtimeVersions, permissionMode,
     liveActivity,
-    model, fallbackModel, effort, ultracode, modelPendingApply, effortPendingApply,
+    model, fallbackModel, effort, ultracode, fastMode, fastModeVerdict, serviceTier, modelPendingApply, effortPendingApply,
     effectiveModel, liveUsage, tokenUsage, responseSpeed,
     toolCalls, toolCallCount, edits, bgTasks,
     permQueue, questionQueue, exitPlanQueue,
     prefillInput, error, isLoadingHistory, isSyncing, historyReady,
     hasMore, isLoadingMore, view: transcriptView, windowInFlight, requestWindow,
-    send: streamSend, interrupt, forceStop, setMode, setModel, setEffort, setUltracode,
+    send: streamSend, interrupt, forceStop, setMode, setModel, setEffort, setUltracode, setFastMode, setServiceTier,
     doSleep, doResume, doRestart,
     respondPermission, respondQuestion, respondExitPlan,
     clearPrefillInput, loadMoreHistory, setHistoryHold, clearError,
@@ -447,6 +450,14 @@ export default function SessionView({
           const word = arg.toLowerCase();
           if (sessionKind === 'claude' && /^ultracode(\s+(on|off))?$/.test(word)) {
             await setUltracode(!word.endsWith('off'));
+            return true;
+          }
+          if (sessionKind === 'claude' && /^fast(\s+(on|off))?$/.test(word)) {
+            await setFastMode(!word.endsWith('off'));
+            return true;
+          }
+          if (sessionKind === 'codex' && /^(standard|fast|ultrafast)$/.test(word)) {
+            await setServiceTier(word === 'standard' ? 'default' : word === 'fast' ? 'priority' : word);
             return true;
           }
           if (!isSessionEffort(sessionKind, word)) {
@@ -1166,6 +1177,8 @@ export default function SessionView({
             kind={sessionKind} accountProfile={usageProfile} profileNumber={profileNumber} vpsId={vpsId} sessionId={sessionId} endpoint={endpoint} onEndpointChanged={refreshEndpoint}
             model={model} fallbackModel={fallbackModel} effort={effort}
             ultracode={ultracode} onSetUltracode={sessionKind === 'claude' ? setUltracode : undefined}
+            fastMode={fastMode} fastModeVerdict={fastModeVerdict} onSetFastMode={sessionKind === 'claude' ? setFastMode : undefined}
+            serviceTier={serviceTier} onSetServiceTier={sessionKind === 'codex' ? setServiceTier : undefined}
             modelPendingApply={modelPendingApply} effortPendingApply={effortPendingApply}
             effectiveModel={effectiveModel}
             onSetModel={setModel} onSetEffort={setEffort}
@@ -2628,7 +2641,8 @@ function LiveUsageRings({ vpsId, profile, kind, ...rest }: {
 /** Direct choices use the same provider catalogs as the creation/settings forms. */
 function SessionRuntimePanel({
   tokenUsage, vpsName, onUsageRefresh, usageAccountLabel, kind, accountProfile = "default", profileNumber, vpsId, model, fallbackModel, effort,
-  ultracode = false, onSetUltracode,
+  ultracode = false, onSetUltracode, fastMode = false, fastModeVerdict = null, onSetFastMode,
+  serviceTier = null, onSetServiceTier,
   modelPendingApply, effortPendingApply, effectiveModel,
   onSetModel, onSetEffort, onApplyNow, sessionId, endpoint, onEndpointChanged, context, accountSwitch,
   openRequest,
@@ -2639,6 +2653,15 @@ function SessionRuntimePanel({
   /** Claude's ultracode switch beside effort (§14.56); no setter = no switch. */
   ultracode?: boolean;
   onSetUltracode?: (on: boolean) => Promise<void>;
+  /** Claude's fast mode beside effort, offered unless the CLI refused it;
+   *  no setter = no switch. */
+  fastMode?: boolean;
+  fastModeVerdict?: FastModeVerdict | null;
+  onSetFastMode?: (on: boolean) => Promise<void>;
+  /** Codex's speed tier (§14.59), offered when the model's catalog lists
+   *  tiers; no setter = no control. */
+  serviceTier?: string | null;
+  onSetServiceTier?: (tier: string | null) => Promise<void>;
   accountSwitch: AccountSwitchTarget;
   profileNumber?: number;
   accountProfile?: string;
@@ -2665,6 +2688,7 @@ function SessionRuntimePanel({
 }) {
   // The account gauges come from the usage store HERE (app/usageStore.ts).
   const usage = useUsage(vpsId, asSessionProvider(kind), accountProfile);
+  const speeds = useCodexSpeeds(vpsId, accountProfile, model || effectiveModel || '', !!onSetServiceTier);
   const [endpointOpen, setEndpointOpen] = useState(false);
   const [open, setOpen] = useState<'model' | 'effort' | null>(null);
   const [saving, setSaving] = useState(false);
@@ -2757,6 +2781,24 @@ function SessionRuntimePanel({
   // backend that applies per turn.
   const anyPending = modelPendingApply || effortPendingApply || !!endpoint.pending;
   const showUltracode = ultracode && !endpoint.active && !!onSetUltracode;
+  // Fast (Claude): on, and the CLI did not refuse it. Speed (Codex): the
+  // tier in force when the model offers it; one it does not is dropped by
+  // the CLI (standard speed), so the tag goes and the control stays.
+  const fastRow = !!onSetFastMode && !endpoint.active && (fastMode || fastModeOffered(fastModeVerdict));
+  const showFast = fastMode && fastRow && !fastModeBlocker(fastModeVerdict);
+  const speed = codexSpeedOf(serviceTier, speeds?.defaultTier);
+  const speedTier = speeds?.tiers.find((t) => t.id === speed);
+  const speedRow = !!onSetServiceTier && !endpoint.active && (!!speeds || speed !== 'default');
+  const speedTag = speedRow && speed !== 'default' && !!speedTier ? speedTier.name : null;
+  // A switch saves in place: the popover stays open on its row.
+  const saveInPlace = async (run: () => Promise<void>) => {
+    if (saving) return;
+    setSaving(true); setSaveError(null);
+    try { await run(); }
+    catch (err) { setSaveError(err instanceof Error ? err.message : 'Could not save this setting.'); }
+    finally { setSaving(false); }
+  };
+  const EffortSwitches = endpoint.active ? undefined : PROVIDER_CATALOGS[kind].EffortSwitches;
   const title = `Model: ${model ?? 'default'}${effectiveModel ? ` · effective: ${effectiveModel}` : ''}${anyPending ? ' · pending until resume' : ''}`;
   const pickerProps = { presentation: 'list' as const, disabled: saving, onChange: choose };
   const toggle = (target: 'model' | 'effort') => {
@@ -2780,7 +2822,7 @@ function SessionRuntimePanel({
             fills from the selection beside it. */}
         {hasEffortAxis(kind) && (!endpoint.active || customEfforts.length > 0) && (
           <button ref={effortButton} type="button" className={`runtime-cell runtime-effort${anyPending ? ' has-pending' : ''}`}
-            onClick={() => toggle('effort')} disabled={saving} title={`Effort: ${effort ?? 'default'}${showUltracode ? ' · ultracode on' : ''}`} aria-label="Change effort" aria-haspopup="menu" aria-expanded={open === 'effort'}>
+            onClick={() => toggle('effort')} disabled={saving} title={`Effort: ${effort ?? 'default'}${showUltracode ? ' · ultracode on' : ''}${showFast ? ' · fast on' : ''}${speedTag ? ` · speed: ${speedTag}` : ''}`} aria-label="Change effort" aria-haspopup="menu" aria-expanded={open === 'effort'}>
             <span className="runtime-value">
               <span className="runtime-effort-symbol" aria-hidden="true">✦</span>
               {endpoint.active ? <EndpointEffortSummary endpoint={endpoint.active} kind={kind} model={model || ''} effort={customEffort} /> : EffortSummary
@@ -2789,7 +2831,9 @@ function SessionRuntimePanel({
             </span>
             {/* Ultracode (§14.56) rides with effort: its badge sits right under
                 the effort it is switched from. */}
-            {showUltracode && <span className="runtime-ultracode-tag" title="Ultracode on: big tasks run as dynamic workflows of parallel agents">ultracode</span>}
+            {showUltracode && <span className="runtime-switch-tag" title="Ultracode on: big tasks run as dynamic workflows of parallel agents">ultracode</span>}
+            {showFast && <span className="runtime-switch-tag tone-info" title={CLAUDE_FAST_HINT}>fast</span>}
+            {speedTag && <span className="runtime-switch-tag tone-info" title={speedTier?.hint}>{speedTag.toLowerCase()}</span>}
           </button>
         )}
         {/* The popover kit (app.css § Popover kit): a head, then one tile per
@@ -2831,23 +2875,28 @@ function SessionRuntimePanel({
                     modelId={model || effectiveModel || ''} />;
             })()}
           </div>
-          {open === 'effort' && onSetUltracode && !endpoint.active && (() => {
-            const flip = async (on: boolean) => {
-              if (saving) return;
-              setSaving(true); setSaveError(null);
-              try { await onSetUltracode(on); }
-              catch (err) { setSaveError(err instanceof Error ? err.message : 'Could not change ultracode.'); }
-              finally { setSaving(false); }
-            };
-            return <div className={`pop-tile runtime-ultracode${ultracode ? ' on' : ''}`} onClick={() => void flip(!ultracode)}>
-              <span className="ru-ico" aria-hidden>✦</span>
-              <span className="ru-text">
-                <b>Ultracode</b>
-                <small>{providerText.ultracodeHint(kind)} Applies at the next start.</small>
-              </span>
-              <Switch checked={ultracode} onChange={(on) => void flip(on)} disabled={saving} tone="violet" size="sm" label="Ultracode" />
-            </div>;
-          })()}
+          {open === 'effort' && onSetUltracode && !endpoint.active && (
+            <SwitchRow className="pop-tile runtime-switch" label="Ultracode" glyph="✦" on={ultracode} disabled={saving}
+              hint={`${providerText.ultracodeHint(kind)} Applies at the next start.`}
+              onFlip={(on) => void saveInPlace(() => onSetUltracode(on))} />
+          )}
+          {open === 'effort' && fastRow && onSetFastMode && (
+            <SwitchRow className="pop-tile runtime-switch" label="Fast" glyph="»" tone="info" on={fastMode} disabled={saving}
+              title={CLAUDE_FAST_HINT}
+              hint={fastMode ? fastModeBlocker(fastModeVerdict) ?? 'Applies at the next start.' : 'Applies at the next start.'}
+              onFlip={(on) => void saveInPlace(() => onSetFastMode(on))} />
+          )}
+          {open === 'effort' && speedRow && onSetServiceTier && (
+            <SpeedRow className="pop-tile runtime-switch" tiers={speeds?.tiers ?? [{ id: 'default', name: 'Standard' }]}
+              value={speed} disabled={saving}
+              hint={speed !== 'default' && speeds && !speedTier ? 'Not offered by this model' : undefined}
+              onChange={(tier) => void saveInPlace(() => onSetServiceTier(tier === speeds?.defaultTier ? null : tier))} />
+          )}
+          {open === 'effort' && EffortSwitches && (
+            <EffortSwitches vpsId={vpsId} modelId={model || effectiveModel || ''} value={effort ?? ''} disabled={saving}
+              className="pop-tile runtime-switch"
+              onChange={(v) => void saveInPlace(() => onSetEffort(v || null))} />
+          )}
           {open === 'model' && endpoint.active && isOpenCodeGo(endpoint.active.baseUrl) && <p className="runtime-choice-note">Catalog: Models.dev. Go limits, promotions and time-based rates may differ.</p>}
           {saveError && <p className="runtime-choice-error" role="alert">{saveError}</p>}
           {(modelPendingApply || effortPendingApply) && !endpoint.pending && onApplyNow && <button type="button" className="runtime-apply" disabled={saving} onClick={async () => {

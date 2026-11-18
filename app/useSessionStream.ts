@@ -11,7 +11,7 @@ import { bgTasksToArray, type BgTask } from './bgTasks';
 import { publishFsChanged } from './fsChangeBus';
 import type { WorkerStatus } from '@/lib/server/hub/types';
 import type {
-  AgentSessionDetailResponse, AgentSessionMessageWindow,
+  AgentSessionDetailResponse, AgentSessionMessageWindow, FastModeVerdict,
 } from '@/lib/types/api';
 import { PROVIDERS, type SessionMode, type SessionProvider } from '@/lib/sessionCapabilities';
 import type { TranscriptView } from '@/lib/transcriptRows';
@@ -119,6 +119,12 @@ export type SessionStreamState = {
   effort: string | null;
   /** Claude's ultracode switch (§14.56); applies at the next start, like effort. */
   ultracode: boolean;
+  /** Claude's fast mode; applies at the next start, like ultracode. */
+  fastMode: boolean;
+  /** The Claude CLI's fast-mode verdict at its last init; null = unknown. */
+  fastModeVerdict: FastModeVerdict | null;
+  /** Codex's speed tier (§14.59); applies at the next turn, like effort. */
+  serviceTier: string | null;
   modelPendingApply: boolean;
   effortPendingApply: boolean;
   effectiveModel: string | null;
@@ -161,6 +167,8 @@ export type SessionStreamActions = {
   setModel(model: string | null, fallbackModel?: string | null): Promise<void>;
   setEffort(effort: string | null): Promise<void>;
   setUltracode(on: boolean): Promise<void>;
+  setFastMode(on: boolean): Promise<void>;
+  setServiceTier(tier: string | null): Promise<void>;
   doSleep(): Promise<void>;
   doResume(): Promise<void>;
   doRestart(): Promise<void>;
@@ -730,7 +738,15 @@ export function useSessionStream(
   // No overlay: the switch shows the agent's echo (`effort_changed`), which
   // lands within the request's round trip.
   const setUltracode = useCallback(async (on: boolean) => {
-    try { await sessionApi.setEffort(sessionId, effort, on); }
+    try { await sessionApi.setEffort(sessionId, effort, { ultracode: on }); }
+    catch (e) { setError({ msg: errorText(e) }); throw e; }
+  }, [sessionId, effort]);
+  const setFastMode = useCallback(async (on: boolean) => {
+    try { await sessionApi.setEffort(sessionId, effort, { fastMode: on }); }
+    catch (e) { setError({ msg: errorText(e) }); throw e; }
+  }, [sessionId, effort]);
+  const setServiceTier = useCallback(async (tier: string | null) => {
+    try { await sessionApi.setEffort(sessionId, effort, { serviceTier: tier }); }
     catch (e) { setError({ msg: errorText(e) }); throw e; }
   }, [sessionId, effort]);
 
@@ -814,7 +830,7 @@ export function useSessionStream(
     streamingInto: state.buf.streamingInto,
     status, compacting: state.compacting && status === 'thinking', runtimeOutdated: state.runtimeOutdated, runtimeVersions: state.runtimeVersions, permissionMode,
     liveActivity: status === 'thinking' ? state.activity : null,
-    model: modelPair.model, fallbackModel: modelPair.fallbackModel, effort, ultracode: state.meta.ultracode,
+    model: modelPair.model, fallbackModel: modelPair.fallbackModel, effort, ultracode: state.meta.ultracode, fastMode: state.meta.fastMode, fastModeVerdict: state.meta.fastModeVerdict, serviceTier: state.meta.serviceTier,
     modelPendingApply: state.meta.modelPendingApply, effortPendingApply: state.meta.effortPendingApply,
     effectiveModel: state.meta.effectiveModel,
     liveUsage: state.liveUsage, tokenUsage: state.tokenUsage, responseSpeed,
@@ -824,7 +840,7 @@ export function useSessionStream(
     isLoadingHistory: !state.loaded && !loadFailed,
     isSyncing, historyReady,
     hasMore: state.hasMore, isLoadingMore, view, windowInFlight,
-    send, interrupt, forceStop, setMode, setModel, setEffort, setUltracode,
+    send, interrupt, forceStop, setMode, setModel, setEffort, setUltracode, setFastMode, setServiceTier,
     doSleep, doResume, doRestart, doDelete,
     respondPermission, respondQuestion, respondExitPlan,
     clearPrefillInput, refetchHistory, requestWindow, loadMoreHistory, setHistoryHold, clearError,
@@ -832,7 +848,7 @@ export function useSessionStream(
     state, status, permissionMode, modelPair.model, modelPair.fallbackModel, effort, responseSpeed,
     toolCallCount, bgTasks, prefillInput, error, loadFailed, isSyncing, historyReady, isLoadingMore, view,
     windowInFlight,
-    send, interrupt, forceStop, setMode, setModel, setEffort, setUltracode,
+    send, interrupt, forceStop, setMode, setModel, setEffort, setUltracode, setFastMode, setServiceTier,
     doSleep, doResume, doRestart, doDelete,
     respondPermission, respondQuestion, respondExitPlan,
     clearPrefillInput, refetchHistory, requestWindow, loadMoreHistory, setHistoryHold, clearError,
