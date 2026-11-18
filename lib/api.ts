@@ -298,6 +298,9 @@ export const api = {
   // Who is reading/writing which file on this VPS, right now (§14.88).
   getFileActivity: (id: string) =>
     send<FileActivityResponse>('GET', `/api/vps/${id}/activity`, undefined, { timeoutMs: 10_000 }),
+  // What every session is doing right now (the desk; lib/sessionActivity.ts).
+  getDeskActivity: () =>
+    send<{ activity: Record<string, import('@/lib/sessionActivity').SessionActivity> }>('GET', '/api/desk/activity', undefined, { timeoutMs: 10_000 }),
 
   // ── History (agent >= 0.32.0, §14.87) ─────────────────────────────────────
   getGitLog: (id: string, cwd: string, o: { repo?: string | null; path?: string | null; limit?: number; skip?: number } = {}) =>

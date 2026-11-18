@@ -27,6 +27,7 @@ const ALL_TYPES = [
   'pending_snapshot', 'transcript_reset', 'session_resync', 'assistant_flushed', 'assistant_reopened',
   'question_delivery', 'shell_unread', 'compacting', 'runtime_outdated', 'side_question', 'side_answer',
   'live_activity',
+  'session_activity',
 ] as const satisfies readonly KnownFrameType[];
 type _Missing = Exclude<KnownFrameType, (typeof ALL_TYPES)[number]>;
 const _exhaustive: [_Missing] extends [never] ? true : _Missing = true;
@@ -40,7 +41,7 @@ const LEGACY_LOW = [
   'bg_tasks_snapshot', 'session_list_changed', 'tabs_changed', 'settings_changed', 'account_usage',
   'account_profiles_changed', 'file_activity', 'session_info', 'turn_error', 'rate_limit',
 ];
-const NEW_LOW = ['session_summary', 'pending_snapshot', 'model_notices', 'install_started', 'install_finished', 'shell_unread', 'compacting', 'runtime_outdated'];
+const NEW_LOW = ['session_summary', 'pending_snapshot', 'model_notices', 'install_started', 'install_finished', 'shell_unread', 'compacting', 'runtime_outdated', 'session_activity'];
 // C17: legacy LOW frames no browser consumes — bus subscribers only.
 const INTERNAL = ['ready', 'session_info', 'rate_limit'];
 

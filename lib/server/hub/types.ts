@@ -362,6 +362,10 @@ export type SyntheticEvent =
   // when its key changes. `null` = deleted OR archived (it leaves the list).
   // LOW (every connection).
   | { type: 'session_summary'; summary: import('@/lib/sessionSummary').SessionSummary | null }
+  // What a session is doing right now, for the desk (lib/sessionActivity.ts):
+  // a rate-capped digest of its focus-routed frames, published only while a
+  // desk watches. LOW; in memory, never persisted.
+  | { type: 'session_activity'; activity: import('@/lib/sessionActivity').SessionActivity }
   // A rewind removed a suffix of this session's transcript rows: a view
   // re-windows (focused only, like the rows it invalidates).
   | { type: 'transcript_reset'; reason: 'rollback' }

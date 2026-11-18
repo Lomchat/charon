@@ -155,6 +155,7 @@ export const FRAME_SNAPSHOT_CLASS: Record<KnownFrameType, SnapshotClass> = {
   account_usage: 'summary',
   account_profiles_changed: 'summary',
   file_activity: 'summary',
+  session_activity: 'summary',
   model_notices: 'summary',
   install_started: 'summary',
   install_finished: 'summary',

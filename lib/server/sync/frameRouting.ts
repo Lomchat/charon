@@ -108,6 +108,9 @@ export const FRAME_CLASS: Record<KnownFrameType, FrameClass> = {
   // Sync refonte additions: the cross-session summary (§14.108), the legacy
   // pending ids, model notices and the install bus.
   session_summary: LOW,
+  // The desk watches every session at once (sessionActivity.ts): the digest
+  // of what each one is doing cannot be focus-routed.
+  session_activity: LOW,
   pending_snapshot: LOW,
   model_notices: LOW,
   install_started: LOW,

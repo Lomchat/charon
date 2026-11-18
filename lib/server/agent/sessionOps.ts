@@ -51,6 +51,7 @@ import { dropTabsForRef } from '@/lib/server/hub/tabs';
 import {
   clearSessionActivity, fileFromToolUse, noteActivity, type FileActivity,
 } from '@/lib/server/hub/fileActivity';
+import { dropSessionActivity, noteSessionFrame } from '@/lib/server/hub/sessionActivity';
 import {
   compactToolInputForWire, compactToolResultForWire, deriveMessageStorage,
 } from '@/lib/server/hub/messageWire';
@@ -3427,6 +3428,15 @@ export class SessionStream {
     // so consumers know which session it came from.
     emitGlobalSession({ ...ev, sessionId: this.id } as GlobalSessionEvent);
     if (!(ev as { replay?: boolean }).replay) this._noteLive(ev);
+    // The desk's "what is it doing now" (lib/server/hub/sessionActivity.ts):
+    // these frames are focus-routed, its LOW digest is not. Never a replay.
+    // A liveness light must never break the stream it watches.
+    if (!(ev as { replay?: boolean }).replay) {
+      try {
+        const activity = noteSessionFrame(this.id, ev);
+        if (activity) emitGlobalSession({ type: 'session_activity', activity, sessionId: this.id });
+      } catch { /* the desk shows no detail for this beat */ }
+    }
   }
 
   /** Fold one LIVE frame into the session's activity (§14.124) and publish
@@ -5884,6 +5894,7 @@ export async function deleteSession(
   void purgeSessionBlobs(sessionId);
   // Nothing is happening in a session that no longer exists. §14.88
   clearSessionActivity(sessionId);
+  dropSessionActivity(sessionId);
   // The tab is a view of the session, so it goes with it — but only the tab:
   // closing a tab never deletes a session, and this is the one direction that
   // does propagate. §14.78
@@ -5938,6 +5949,7 @@ export function deleteVpsSessions(vpsId: string, deleteRows: () => void): string
     // Their rows went with the cascade: free the incremental folds (I11).
     invalidateSessionRowCaches(sessionId);
     clearSessionActivity(sessionId);
+    dropSessionActivity(sessionId);
   }
   emitGlobalSessionListChanged(vpsId);
   return ids;
