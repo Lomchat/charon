@@ -91,6 +91,7 @@ import {
   useSessionAttachments, type PendingUpload,
 } from './sessionAttachments';
 import { IconPaperclip, IconSend, IconUpload } from './icons';
+import { chatBubbleAbove } from './chatScroll';
 import { shouldShowChatRole, transcriptViewFor } from './chatVisibility';
 import { canCompactSession } from './sessionInsightState';
 import { useSessionContext } from './useSessionContext';
@@ -407,16 +408,10 @@ export default function SessionView({
   // The recap under the last answer (§14.122): shown only while the row it
   // follows is still the conversation's last word and nothing is running.
   const recap = selected.recap ?? null;
-  const shownRecap = useMemo(() => {
-    if (!recap || status === 'thinking' || status === 'starting' || currentAssistant) return null;
-    for (let i = messages.length - 1; i >= 0; i--) {
-      const m = messages[i]!;
-      if (m.role === 'user' || m.role === 'assistant' || m.role === 'external' || m.role === 'error') {
-        return m.id === rowKey(recap.afterRowId) ? recap : null;
-      }
-    }
-    return null;
-  }, [recap, messages, status, currentAssistant]);
+  const shownRecap = useMemo(
+    () => recapToShow(recap, messages, status === 'thinking' || status === 'starting' || !!currentAssistant),
+    [recap, messages, status, currentAssistant],
+  );
   // ── Charon's own `/` commands (lib/slashCommands.ts) ──────────────────────
   // The note under the composer says why one did nothing; its text then stays
   // in the box (the handler answers false).
@@ -1016,20 +1011,7 @@ export default function SessionView({
   const scrollUpToRole = useCallback((role: 'user' | 'assistant') => {
     const el = chatBodyRef.current;
     if (!el) return;
-    const containerRect = el.getBoundingClientRect();
-    const bubbles = Array.from(el.querySelectorAll<HTMLElement>(`[data-msg-role="${role}"]`));
-    let target: HTMLElement | null = null;
-    let bestGap = Infinity;
-    for (const bubble of bubbles) {
-      const r = bubble.getBoundingClientRect();
-      const gap = containerRect.top - r.top;
-      // gap > 4: bubble is at least 4px above the visible top
-      // (filters out hits on the bubble that's exactly at the limit).
-      if (gap > 4 && gap < bestGap) {
-        bestGap = gap;
-        target = bubble;
-      }
-    }
+    const target = chatBubbleAbove(el, role);
     if (target) {
       target.scrollIntoView({ block: 'start', behavior: 'smooth' });
     } else if (hasMore && !isLoadingMore) {
@@ -1699,10 +1681,24 @@ const MessageHistory = memo(function MessageHistory({
 // See CLAUDE.md §11 / §14.
 type InsertRequest = { text: string; nonce: number; block?: boolean };
 
+/** The recap to draw under the last answer (§14.122): none while a turn runs
+ *  (`busy`), nor once the row it follows is no longer the last word. Shared
+ *  with the desk's drawer (app/desk/ui/UnitTalk.tsx). */
+export function recapToShow(recap: SessionRecap | null, messages: Msg[], busy: boolean): SessionRecap | null {
+  if (!recap || busy) return null;
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const m = messages[i]!;
+    if (m.role === 'user' || m.role === 'assistant' || m.role === 'external' || m.role === 'error') {
+      return m.id === rowKey(recap.afterRowId) ? recap : null;
+    }
+  }
+  return null;
+}
+
 /** The recap under the last answer (§14.122). The whole note is its fold
  *  button (bubbleFold's store: in memory, per answer); a click that ends a
  *  text selection inside it does not fold. */
-const RecapNote = memo(function RecapNote({ recap }: { recap: SessionRecap }) {
+export const RecapNote = memo(function RecapNote({ recap }: { recap: SessionRecap }) {
   const key = `recap:${recap.afterRowId}`;
   const isFolded = useBubbleFold(key);
   const toggle = (el: HTMLElement) => {

@@ -21,6 +21,18 @@ export type AccountSwitchTarget = {
  *  (§14.91). `tasks` = the summary's count, 0 while its registry warms. */
 export type AccountSwitchWait = { kind: 'turn' } | { kind: 'background'; tasks: number };
 
+/** What a switch of this session must wait for: the rule of the session
+ *  header (SessionView § accountSwitch), off a list row. */
+export function accountSwitchWaitOf(
+  s: { liveStatus?: string | null; status: string; runningBgTasks?: number },
+): AccountSwitchWait | null {
+  const status = String(s.liveStatus ?? s.status);
+  const tasks = s.runningBgTasks ?? 0;
+  if (status === 'thinking' || status === 'starting') return { kind: 'turn' };
+  if (status === 'background' || tasks > 0) return { kind: 'background', tasks };
+  return null;
+}
+
 /** The copy both account pickers show while a switch waits (the server
  *  refuses with 409 in both cases): the popover's header `note`, and the
  *  disabled rows' tooltip detail (`row`, after "<account> — "). */

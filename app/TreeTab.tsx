@@ -15,7 +15,7 @@ import { forgeOf, type Forge } from './forgeLink';
 import { useTreeHideIgnored } from './treeHideIgnored';
 import BranchModal from './BranchModal';
 import { fmtSize } from './sessionAttachments';
-import { ago } from './desk/ui/time';
+import { ago } from './relativeTime';
 import { activityLabel, useFileActivity } from './fileActivityStore';
 import { absUnderRoot } from './fileViews';
 import { openTab as openWorkspaceTab, useTabs } from './tabStore';

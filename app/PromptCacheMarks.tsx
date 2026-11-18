@@ -7,8 +7,8 @@
 import React, { createContext, useCallback, useContext, useEffect, useId, useLayoutEffect, useRef, useState, useSyncExternalStore } from 'react';
 import { createPortal } from 'react-dom';
 import {
-  cacheHeat, cacheReading, cacheTipLines, fmtDuration, fmtSpan, fmtSpanShort, fmtTokens,
-  ledgerCachedPct, ledgerInput, ledgerIsCold, ledgerMissFactor, ledgerRelativeCost,
+  cacheHeat, cacheTipLines, fmtDuration, fmtSpan, fmtSpanShort, fmtTokens,
+  ledgerCachedPct, ledgerInput, ledgerIsCold, ledgerMissFactor, ledgerRelativeCost, sessionCacheReading,
   type CacheReading, type PromptCacheState, type TurnLedger,
 } from '@/lib/promptCache';
 import { showsTurnCost, type SessionProvider } from '@/lib/sessionCapabilities';
@@ -54,9 +54,6 @@ export function cacheClockActive(pc: PromptCacheState | null | undefined): boole
   return !!pc && pc.expiresAt > Date.now() - 60_000;
 }
 
-/** Statuses during which every request refreshes the cache. */
-const LIVE_STATUSES = new Set(['thinking', 'starting']);
-
 /** A session row's reading as of the shared clock; null = nothing to draw. */
 export function useSessionCacheReading(s: {
   promptCache?: PromptCacheState | null; liveStatus?: string | null; status: string;
@@ -64,10 +61,7 @@ export function useSessionCacheReading(s: {
 }): CacheReading | null {
   const now = useCacheTick(cacheClockActive(s.promptCache));
   if (!now) return null;
-  return cacheReading(s.promptCache, {
-    now, busy: LIVE_STATUSES.has(String(s.liveStatus ?? s.status)),
-    model: s.model ?? null, account: s.accountProfile,
-  });
+  return sessionCacheReading(s, now);
 }
 
 // ── Icons ───────────────────────────────────────────────────────────────────

@@ -101,6 +101,24 @@ export function cacheReading(
   return { ...base, phase: 'warm', level, frac, remainingMs, reason: null };
 }
 
+/** Statuses during which every request refreshes the cache. */
+export const CACHE_LIVE_STATUSES: ReadonlySet<string> = new Set(['thinking', 'starting']);
+
+/** A session row's reading as of `now`: the one rule the sidebar mark, the
+ *  focus chip and the desk share. */
+export function sessionCacheReading(
+  s: {
+    promptCache?: PromptCacheState | null; liveStatus?: string | null; status: string;
+    model?: string | null; accountProfile?: string;
+  },
+  now: number,
+): CacheReading | null {
+  return cacheReading(s.promptCache, {
+    now, busy: CACHE_LIVE_STATUSES.has(String(s.liveStatus ?? s.status)),
+    model: s.model ?? null, account: s.accountProfile,
+  });
+}
+
 export function isCacheWarm(r: CacheReading | null | undefined): boolean {
   return r?.phase === 'warm' || r?.phase === 'live';
 }

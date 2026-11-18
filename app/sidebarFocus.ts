@@ -7,7 +7,7 @@
 // "warm" is the card's flame (lib/promptCache.ts): the sessions worth
 // answering before their cache expires.
 import { attentionForRow, isUnseenFinish, rowStatus, shellAttention } from '@/lib/sessionAttention';
-import { cacheReading, isCacheWarm } from '@/lib/promptCache';
+import { isCacheWarm, sessionCacheReading } from '@/lib/promptCache';
 import { isWorkingStatus } from './sessionUnread';
 import type { SessionListItem } from '@/lib/types/api';
 
@@ -24,10 +24,7 @@ export function sessionFocusFacts(s: SessionListItem, cacheNow = 0): FocusFacts 
     // A finish that ended in an error is unread too (the red twin).
     unread: isUnseenFinish(attentionForRow(s)),
     running: isWorkingStatus(status),
-    warm: cacheNow > 0 && isCacheWarm(cacheReading(s.promptCache, {
-      now: cacheNow, busy: status === 'thinking' || status === 'starting',
-      model: s.model ?? null, account: s.accountProfile,
-    })),
+    warm: cacheNow > 0 && isCacheWarm(sessionCacheReading(s, cacheNow)),
   };
 }
 
