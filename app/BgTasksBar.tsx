@@ -245,9 +245,12 @@ function BgTasksBarImpl({ tasks, sessionId, provider, sessionStatus, vpsId, cwd 
     || (view.length > 0 && lastEndedAt > 0 && nowS - lastEndedAt < ENDED_GRACE_S);
   if (!visible) return null;
 
-  const headline = runningCount > 0
-    ? `${runningCount} background work item${runningCount > 1 ? 's' : ''} running`
-    : 'background work finished';
+  // Phone: "bg" (app.css swaps the two words at the 820px breakpoint).
+  const headline = <>
+    {runningCount > 0 && `${runningCount} `}
+    <span className="bg-long">background work</span><span className="bg-short">bg</span>
+    {runningCount > 0 ? ' running' : ' finished'}
+  </>;
   const newest = running.length > 0 ? running[running.length - 1]
     : terminals.length > 0 ? undefined : ended[0]?.t;
   const newestTerminal = terminals[terminals.length - 1];
