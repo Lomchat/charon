@@ -106,6 +106,8 @@ export type SessionStreamState = {
   status: WorkerStatus | null;
   /** The provider is summarising the conversation (only while thinking). */
   compacting: boolean;
+  /** User rows a compaction holds, in send order (§14.125). */
+  held: import('@/lib/heldInputs').HeldInputState[];
   /** Runs the agent code of before an update (§14.117); moved when idle. */
   runtimeOutdated: boolean;
   /** What that older runtime runs (null = unknown), for the header. */
@@ -828,7 +830,7 @@ export function useSessionStream(
     messages: state.messages,
     currentAssistant: state.buf.assistant,
     streamingInto: state.buf.streamingInto,
-    status, compacting: state.compacting && status === 'thinking', runtimeOutdated: state.runtimeOutdated, runtimeVersions: state.runtimeVersions, permissionMode,
+    status, compacting: state.compacting && status === 'thinking', held: state.held, runtimeOutdated: state.runtimeOutdated, runtimeVersions: state.runtimeVersions, permissionMode,
     liveActivity: status === 'thinking' ? state.activity : null,
     model: modelPair.model, fallbackModel: modelPair.fallbackModel, effort, ultracode: state.meta.ultracode, fastMode: state.meta.fastMode, fastModeVerdict: state.meta.fastModeVerdict, serviceTier: state.meta.serviceTier,
     modelPendingApply: state.meta.modelPendingApply, effortPendingApply: state.meta.effortPendingApply,

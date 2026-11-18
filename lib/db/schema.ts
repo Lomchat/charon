@@ -343,6 +343,14 @@ export const agentSessions = sqliteTable('agent_sessions', {
   // The recap after the last finished turn (lib/sessionRecap.ts, §14.122):
   // JSON `SessionRecap`. Read as `recap`.
   recapJson: text('recap'),
+  // The last context-window reading (lib/contextReading.ts): JSON
+  // `ContextReading`. What the header gauge shows before the live reading
+  // answers, and while the session sleeps. Never sent as a column.
+  contextReadingJson: text('context_reading'),
+  // Inputs sent while the provider compacts (§14.125): JSON `HeldInput[]`,
+  // persisted user rows the agent has not received yet, in send order.
+  // NULL = none. Never sent as a column (the window GET's `heldInputs`).
+  heldInputsJson: text('held_inputs'),
   // The routine whose run created this session (§14.120); NULL = a human's.
   // No foreign key (it would rebuild this table): a deleted routine clears it.
   routineId: text('routine_id'),

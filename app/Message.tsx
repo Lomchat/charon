@@ -10,7 +10,8 @@ import { TurnLedgerLine } from './PromptCacheMarks';
 import { providerName, providerText } from '@/lib/providerText';
 import { apiErrorText, providerAccountLabel, type ProviderAccount } from '@/lib/providerAccounts';
 import { useAccounts } from './accountsStore';
-import { IconAlarm, IconBullseye, IconChatSide, IconClipboard, IconImage } from './icons';
+import { IconAlarm, IconArrowsCollapse, IconBullseye, IconChatSide, IconClipboard, IconImage } from './icons';
+import type { HeldInputState } from '@/lib/heldInputs';
 import { hastText, hastCodeLanguage } from './hastText';
 import { isClaudeAuthExpired } from '@/lib/authExpired';
 import { isTurnInterrupted } from '@/lib/turnInterrupted';
@@ -120,6 +121,9 @@ type Props = {
   // it pulses like the sidebar card — green, red for a failed turn — until
   // the user acts on the session (SessionView reads it), leaves it or sends.
   finishCue?: 'unread' | 'error' | null;
+  // A user row a compaction holds (§14.125): sent when it ends; `error` = its
+  // last delivery failed (the hub retries).
+  held?: HeldInputState | null;
 };
 
 /** The bubble class of an unread finish (`.finish-cue`, app.css). */
@@ -130,7 +134,7 @@ function finishCueClass(cue: Props['finishCue']): string {
 // The roles drawn by Message's own bubble below (the others have their own component).
 const TEXT_BUBBLE_ROLES = new Set(['user', 'assistant', 'external', 'peer_status']);
 
-function Message({ m, vpsId, cwd, streaming = false, attachedResult, kind = 'claude', onReauth, onContinue, substitutedFor, onScheduleResume, onCancelScheduledResume, onContinueWithAccount, currentAccount, orphaned = false, peerSessionId, onOpenPeerSession, onPeerRequestHover, onPeerRequestJump, peerReplyTo, finishCue }: Props) {
+function Message({ m, vpsId, cwd, streaming = false, attachedResult, kind = 'claude', onReauth, onContinue, substitutedFor, onScheduleResume, onCancelScheduledResume, onContinueWithAccount, currentAccount, orphaned = false, peerSessionId, onOpenPeerSession, onPeerRequestHover, onPeerRequestJump, peerReplyTo, finishCue, held }: Props) {
   const foldKey = TEXT_BUBBLE_ROLES.has(m.role) && !streaming ? m.id : null;
   const isFolded = useBubbleFold(foldKey);
   if (m.role === 'tool_use') return <ToolUseCard m={m} attachedResult={attachedResult} orphaned={orphaned} />;
@@ -140,7 +144,7 @@ function Message({ m, vpsId, cwd, streaming = false, attachedResult, kind = 'cla
   // AskUserQuestion / ExitPlanMode tool_use above — we don't render the raw duplicate.
   if (m.role === 'user_question' || m.role === 'exit_plan_request') return null;
   if (m.role === 'thinking') return <ThinkingBubble m={m} />;
-  if (m.role === 'compaction') return <CompactionMarker m={m} kind={kind} />;
+  if (m.role === 'compaction') return <CompactionMarker m={m} kind={kind} finishCue={finishCue} />;
   if (m.role === 'scheduled_fire') return <ScheduledFireBubble m={m} />;
   if (m.role === 'side') return <SideBubble m={m} vpsId={vpsId} cwd={cwd} />;
   if (m.role === 'forkpoint') return <ForkMarker m={m} />;
@@ -178,7 +182,7 @@ function Message({ m, vpsId, cwd, streaming = false, attachedResult, kind = 'cla
     : m.peerStatus === 'failed' ? 'failed' : null;
   return (
     <div
-      className={`bubble role-${m.role}${isPeerReply ? ' peer-reply' : ''}${isAssistant && (m.assistantFinal === 0 || streaming) ? ' intermediate' : ''}${streaming ? ' streaming' : ''}${finishCueClass(finishCue)}${isFolded ? ' is-folded' : ''}`}
+      className={`bubble role-${m.role}${isPeerReply ? ' peer-reply' : ''}${isAssistant && (m.assistantFinal === 0 || streaming) ? ' intermediate' : ''}${streaming ? ' streaming' : ''}${finishCueClass(finishCue)}${held ? ` is-held${held.error ? ' is-held-error' : ''}` : ''}${isFolded ? ' is-folded' : ''}`}
       data-msg-role={m.role}
       data-peer-message-id={m.messageId ?? (isExternal ? m.id : undefined)}
       {...foldRootProps(foldKey)}
@@ -196,6 +200,14 @@ function Message({ m, vpsId, cwd, streaming = false, attachedResult, kind = 'cla
             {m.from ? `@${m.from}` : 'Peer session'}
           </PeerSessionLink>
         ) : <span className="tag">{isPeerStatus ? 'sent' : m.role}</span>}
+        {held && (
+          <span className={`held-chip${held.error ? ' is-error' : ''}`}
+            title={held.error
+              ? `Not delivered yet: ${held.error}\nRetried automatically`
+              : 'Queued: sent after the compaction, in order'}>
+            <IconArrowsCollapse aria-hidden />{held.error ? 'not sent' : 'queued'}
+          </span>
+        )}
         {isExternal && m.fromProvider && (
           <AgentLogo kind={m.fromProvider} size={12} className="bubble-agent-logo" />
         )}
@@ -643,10 +655,12 @@ export default memo(Message);
  * A rule rather than a bubble: it is a boundary between two regions of the
  * conversation, not something anyone said.
  */
-function CompactionMarker({ m, kind }: { m: Msg; kind: AgentKind }) {
+function CompactionMarker({ m, kind, finishCue }: { m: Msg; kind: AgentKind; finishCue?: Props['finishCue'] }) {
   const auto = m.content === 'auto';
+  // A turn that ended on its compaction (the button, `/compact`): the marker
+  // IS the finish, and pulses like an answer would (§14.47).
   return (
-    <div className="compaction-marker" role="separator">
+    <div className={`compaction-marker${finishCueClass(finishCue)}`} role="separator">
       <span className="cm-label">
         Conversation compacted{auto ? ' automatically' : ''} — {providerName(kind)} no longer
         remembers the messages above

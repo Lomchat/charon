@@ -18,6 +18,8 @@ type Snapshot = {
 
 const FOCUS_REFRESH_AFTER_MS = 30_000;
 const REQUEST_TIMEOUT_MS = 12_000;
+/** Spaced retries of a failed reading (2, 4, 8, 16 s at least). */
+const FAILURE_RETRIES = 4;
 
 type Inflight = { promise: Promise<void>; controller: AbortController };
 
@@ -40,6 +42,7 @@ export function useSessionContext(sessionId: string) {
   const inflight = useRef<Inflight | null>(null);
   const retryTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const retryAttempt = useRef(0);
+  const failAttempt = useRef(0);
   const lastStartedAt = useRef(0);
   const forceAfterInflight = useRef(false);
   // The one `recordedPending` re-request of the current pending streak is spent.
@@ -57,6 +60,8 @@ export function useSessionContext(sessionId: string) {
       clearTimeout(retryTimer.current);
       retryTimer.current = null;
     }
+    // An explicit refresh (turn end, compaction) earns a new retry budget.
+    if (force) failAttempt.current = 0;
     const currentGeneration = ++generation.current;
     const controller = new AbortController();
     lastStartedAt.current = Date.now();
@@ -117,12 +122,29 @@ export function useSessionContext(sessionId: string) {
         }));
       }
 
-      const recordedRetry = recordedPendingRetry(context, recordedRetried.current, requestState.shouldRetry);
+      const recordedRetry = recordedPendingRetry(context, recordedRetried.current,
+        requestState.shouldRetry || requestState.failed);
       recordedRetried.current = recordedRetry.retried;
-      if (requestState.shouldRetry) {
-        const attempt = ++retryAttempt.current;
-        const backoff = Math.min(10_000, 500 * (2 ** Math.min(5, attempt)));
-        const delay = Math.max(requestState.retryAfterMs, backoff);
+      if (!requestState.failed) failAttempt.current = 0;
+      const failRetry = requestState.failed && failAttempt.current < FAILURE_RETRIES;
+      if (requestState.shouldRetry || failRetry) {
+        let delay: number;
+        if (failRetry) {
+          // A failed reading: a few spaced retries, then the turn-end/focus
+          // refreshes take over (an offline agent after a hub restart is back
+          // within seconds; one that stays down must not be polled forever).
+          delay = Math.max(requestState.retryAfterMs, 2_000 * (2 ** failAttempt.current++));
+        } else if (requestState.waiting) {
+          // Nothing on screen yet: follow the hub's pace (it says when its
+          // shared job may be done), barely slowed — the doubling backoff left
+          // a ready reading unread for up to 8 s.
+          const attempt = ++retryAttempt.current;
+          delay = Math.max(requestState.retryAfterMs, Math.min(3_000, 500 * attempt));
+        } else {
+          // A good reading is on screen while it refreshes: no hurry.
+          const attempt = ++retryAttempt.current;
+          delay = Math.max(requestState.retryAfterMs, Math.min(10_000, 500 * (2 ** Math.min(5, attempt))));
+        }
         retryTimer.current = setTimeout(() => {
           retryTimer.current = null;
           void loadRef.current(false);
@@ -157,6 +179,7 @@ export function useSessionContext(sessionId: string) {
 
   useEffect(() => {
     retryAttempt.current = 0;
+    failAttempt.current = 0;
     forceAfterInflight.current = false;
     recordedRetried.current = false;
     void load(false);

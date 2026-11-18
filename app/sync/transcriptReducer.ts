@@ -20,6 +20,7 @@
 // invents a boundary; the legacy flush on boundary frames runs only against a
 // hub without the feature.
 
+import type { HeldInputState } from '@/lib/heldInputs';
 import type { RuntimeVersions } from '@/lib/runtimeUpdate';
 import type { LiveActivity } from '@/lib/liveActivity';
 import type {
@@ -454,8 +455,12 @@ export type TranscriptState = {
   queues: { permissions: PermissionQ[]; questions: QuestionQ[]; exitPlans: ExitPlanQ[] };
   status: WorkerStatus | null;
   /** The provider is summarising the conversation (`compacting` frame /
-   *  `liveCompacting`): the composer waits. Only meaningful while thinking. */
+   *  `liveCompacting`): what the composer sends waits. Only meaningful while
+   *  thinking. */
   compacting: boolean;
+  /** The user rows a compaction holds, in send order (`held_inputs` frame /
+   *  `heldInputs`, §14.125): their bubbles say they wait. */
+  held: HeldInputState[];
   /** Still on the agent code of before an update (`runtime_outdated` frame /
    *  `liveRuntimeOutdated`, §14.117): the header says so. */
   runtimeOutdated: boolean;
@@ -516,7 +521,7 @@ export function createTranscriptState(sessionId: string, provider?: SessionProvi
     sessionId, rows: [], messages: [], toolCalls: [], files: new Set(), edits: new Map(),
     bgTasks: new Map(), bgLaunches: new Map(),
     queues: { permissions: [], questions: [], exitPlans: [] },
-    status: null, compacting: false, runtimeOutdated: false, runtimeVersions: null, activity: null, buf: { assistant: '', streamingInto: null, thinkingOpen: '' }, thinkingKnown: 0,
+    status: null, compacting: false, held: [], runtimeOutdated: false, runtimeVersions: null, activity: null, buf: { assistant: '', streamingInto: null, thinkingOpen: '' }, thinkingKnown: 0,
     sends: new Map(), knownRowIds: new Set(), livePlans: new Map(), durablePlans: new Set(), localResolved: new Map(),
     snapshotRev: null, toolCallBase: null, toolCallIdsSince: new Set(), afterId: 0, hubBoundaries: false, hasMore: false, oldestChatId: null,
     provider: p, session: null,
@@ -750,6 +755,9 @@ export function applyFrame(s: TranscriptState, ev: SessionFrame, ctx: Transcript
       break;
     case 'compacting':
       st = { ...st, compacting: ev.active === true };
+      break;
+    case 'held_inputs':
+      st = { ...st, held: Array.isArray(ev.inputs) ? ev.inputs : [] };
       break;
     case 'runtime_outdated':
       st = { ...st, runtimeOutdated: ev.outdated === true, runtimeVersions: ev.outdated === true ? ev.versions ?? null : null };
@@ -1202,6 +1210,8 @@ export function applySnapshot(s: TranscriptState, r: SessionWindowResponse,
     queues,
     status: liveStatus,
     compacting: r.liveCompacting === true,
+    // An older hub omits it: it holds nothing.
+    held: Array.isArray(r.heldInputs) ? r.heldInputs : [],
     runtimeOutdated: r.liveRuntimeOutdated === true,
     runtimeVersions: r.liveRuntimeOutdated === true ? r.liveRuntimeVersions ?? null : null,
     activity: liveStatus !== 'thinking' ? null : r.liveActivity !== undefined ? r.liveActivity : s.activity,

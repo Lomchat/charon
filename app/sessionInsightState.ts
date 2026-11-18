@@ -50,6 +50,12 @@ export type SessionContextUsage = {
   /** The hub's recorded-usage fold is still warming (`recorded_usage` is then
    *  null, not zero); ask again shortly. */
   recordedPending?: boolean;
+  /** No live reading: the stored one (lib/contextReading.ts), taken at
+   *  `lastKnownAt` (ms). */
+  lastKnown?: boolean;
+  lastKnownAt?: number;
+  /** The session runs no CLI to ask (asleep): nothing to retry. */
+  asleep?: boolean;
   _snapshot?: {
     state?: 'loading' | 'fresh' | 'refreshing' | 'stale' | 'error';
     updated_at?: number;
@@ -59,9 +65,16 @@ export type SessionContextUsage = {
 };
 
 /** Interpret the non-blocking server snapshot envelope used by Tools/header. */
+/** Answers that a retry cannot change: no backend surface, no CLI to ask. */
+const SETTLED_REASONS = new Set(['unsupported', 'unavailable', 'asleep', 'missing']);
+
 export function insightSnapshotRequestState(value: unknown): {
   waiting: boolean;
   refreshing: boolean;
+  /** The reading failed (hub snapshot `error`, an HTTP error, a timeout):
+   *  worth a few spaced retries — an agent reconnecting after a hub restart
+   *  answers seconds later. */
+  failed: boolean;
   shouldRetry: boolean;
   retryAfterMs: number;
 } {
@@ -71,6 +84,8 @@ export function insightSnapshotRequestState(value: unknown): {
   const state = typeof snapshot.state === 'string' ? snapshot.state : '';
   const waiting = row.reason === 'loading' || state === 'loading';
   const refreshing = state === 'refreshing' || state === 'stale';
+  const failed = !waiting && !refreshing && !row.asleep && (state === 'error'
+    || (!state && row.ok === false && !SETTLED_REASONS.has(String(row.reason ?? ''))));
   const requestedDelay = Number(snapshot.retry_after_ms);
   const retryAfterMs = Number.isFinite(requestedDelay)
     ? Math.min(15_000, Math.max(500, requestedDelay))
@@ -78,6 +93,7 @@ export function insightSnapshotRequestState(value: unknown): {
   return {
     waiting,
     refreshing,
+    failed,
     shouldRetry: waiting || refreshing,
     retryAfterMs,
   };
@@ -144,7 +160,8 @@ export function contextWindowTokenLabel(context: SessionContextUsage | null): st
   return `${compactTokenCount(total)} / ${compactTokenCount(maximum)}`;
 }
 
-/** Native compaction requires an idle, loaded provider session. */
+/** Native compaction requires an idle provider session; a sleeping one is
+ *  resumed by the compact route first (as a send wakes it, §14.49). */
 export function canCompactSession(
   status: string | null | undefined,
   kind?: AgentKind,
@@ -153,7 +170,7 @@ export function canCompactSession(
   // agent used to fall through to Claude's mechanism, which sends the literal
   // string "/compact" to the model as a prompt (§14.103).
   if (kind && !supportsSessionCapability(kind, 'compact')) return false;
-  return status === 'active' || status === 'failed' || status === 'background';
+  return status === 'active' || status === 'failed' || status === 'background' || status === 'sleeping';
 }
 
 /**
@@ -167,7 +184,7 @@ export function contextUsagePresentation(
   percentage: number | null,
 ): { meta: string; empty: string | null } {
   if (typeof percentage === 'number' && Number.isFinite(percentage)) {
-    return { meta: `${Math.round(percentage)}% used`, empty: null };
+    return { meta: `${Math.round(percentage)}% used${context?.lastKnown ? ' · last known' : ''}`, empty: null };
   }
 
   let explicitFailure: string | null = null;

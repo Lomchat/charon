@@ -201,6 +201,8 @@ export function readSessionInsightSnapshot(
   return withMeta(failed, {
     state: 'error',
     updated_at: entry.lastAttemptAt || undefined,
+    // When a new attempt can start (the failure cooldown), for a retrying reader.
+    retry_after_ms: Math.max(DEFAULT_RETRY_AFTER_MS, failureRetryMs - Math.max(0, now - entry.lastAttemptAt)),
   });
 }
 

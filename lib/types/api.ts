@@ -1401,6 +1401,8 @@ export type AgentSessionDetailResponse = {
   // The provider is summarising the conversation (stream memory, frame
   // `compacting`). Optional: older hubs omit it.
   liveCompacting?: boolean;
+  // Inputs a compaction holds, in send order (§14.125). Optional: older hubs omit it.
+  heldInputs?: import('@/lib/heldInputs').HeldInputState[];
   // The session still runs the agent code of before an update (§14.117):
   // moved automatically once idle. Optional: older hubs omit it.
   liveRuntimeOutdated?: boolean;

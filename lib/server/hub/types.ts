@@ -32,9 +32,12 @@ export type BridgeEvent =
   // stream's fold of its own live frames; null = nothing (turn over). FOCUSED,
   // mirrored by the window GET's `liveActivity`.
   | { type: 'live_activity'; activity: import('@/lib/liveActivity').LiveActivity | null }
-  // The provider is summarising the conversation: the composer waits.
+  // The provider is summarising the conversation: sends are held (§14.125).
   // Stream memory, mirrored by the window GET's `liveCompacting`.
   | { type: 'compacting'; active: boolean }
+  // The inputs a compaction holds, in send order (§14.125): the WHOLE list
+  // on every change. Durable (`held_inputs`), mirrored by `heldInputs`.
+  | { type: 'held_inputs'; inputs: import('@/lib/heldInputs').HeldInputState[] }
   // The session still runs the agent code of before an update (§14.117):
   // the header says so until the agent moves it. Hub memory, mirrored by
   // the window GET's `liveRuntimeOutdated`.

@@ -1489,6 +1489,12 @@ html[data-density='small'] .cs-sub-fold { font-size: 8.5px; }
 .app-bar .bar-context-fill { display: block; height: 100%; background: var(--info); }
 .app-bar .bar-context-fill.hot { background: var(--accent-strong); }
 .app-bar .bar-context-meter b { color: var(--text); font-weight: 600; }
+/* No reading yet (`…`) or none at all (`—`): the row keeps its place and its
+   button; the figure is a placeholder, not a value. A stored reading (no live
+   CLI answered yet, or the session sleeps) is a value, dimmed. */
+.app-bar .bar-context-row.is-empty .bar-context-meter b { color: var(--text-muted); font-weight: 400; }
+.app-bar .bar-context-row.is-last-known .bar-context-fill { opacity: 0.55; }
+.app-bar .bar-context-row.is-last-known .bar-context-meter b { color: var(--text-muted); }
 /* The token count is the one part of the gauge line that may be cut: the label
    and the bar are fixed, and `compact` is `flex: none`, so without something
    shrinkable the row overflows and the button rides over its neighbours. */
@@ -2972,9 +2978,50 @@ html[data-density='small'] .cs-sub-fold { font-size: 8.5px; }
 .bubble.finish-cue.is-error {
   --finish: var(--danger);
 }
+/* A message a compaction holds (§14.125): written, not yet sent — a dashed
+   frame in the compaction's colour and a `queued` chip; red while its
+   delivery fails (the hub retries). */
+.bubble.role-user.is-held {
+  border-style: dashed; border-color: color-mix(in srgb, var(--warning) 70%, transparent);
+  background: color-mix(in srgb, var(--warning) calc(6% * var(--bubble-tint)), transparent);
+}
+.bubble.role-user.is-held.is-held-error { border-color: color-mix(in srgb, var(--danger) 70%, transparent); }
+.bubble .held-chip {
+  display: inline-flex; align-items: center; gap: 4px;
+  padding: 0 6px; border-radius: var(--radius-sm);
+  border: 1px solid color-mix(in srgb, var(--warning) 45%, transparent);
+  background: color-mix(in srgb, var(--warning) 12%, transparent);
+  color: var(--warning-strong); font: 600 9.5px/16px var(--mono); text-transform: uppercase; letter-spacing: 0.04em;
+}
+.bubble .held-chip svg { width: 10px; height: 10px; }
+.bubble .held-chip.is-error {
+  border-color: color-mix(in srgb, var(--danger) 45%, transparent);
+  background: color-mix(in srgb, var(--danger) 12%, transparent);
+  color: var(--danger-strong);
+}
+/* A turn that ended on its compaction: the marker is the finish (§14.47) — its
+   label takes the answer's halo, its rules the colour. */
+.compaction-marker.finish-cue { --finish: var(--success); color: var(--text); }
+.compaction-marker.finish-cue.is-error { --finish: var(--danger); }
+.compaction-marker.finish-cue::before,
+.compaction-marker.finish-cue::after {
+  background: linear-gradient(to right, transparent, color-mix(in srgb, var(--finish) 70%, transparent), transparent);
+}
+.compaction-marker.finish-cue .cm-label {
+  position: relative; padding: 4px 10px; border-radius: var(--radius-md);
+  border: var(--bubble-edge) solid color-mix(in srgb, var(--finish) 70%, transparent);
+}
+.compaction-marker.finish-cue .cm-label::before {
+  content: ''; position: absolute; inset: calc(-1 * var(--bubble-edge)); pointer-events: none;
+  border: var(--bubble-edge) solid var(--finish); border-radius: inherit;
+  box-shadow: 0 0 10px 2px color-mix(in srgb, var(--finish) 40%, transparent);
+  opacity: 0; animation: row-pulse 1.8s infinite ease-in-out;
+}
 @media (prefers-reduced-motion: reduce) {
   .bubble.finish-cue { border-color: var(--finish); box-shadow: 0 0 8px 1px color-mix(in srgb, var(--finish) 35%, transparent); }
   .bubble.finish-cue::before { display: none; }
+  .compaction-marker.finish-cue .cm-label { border-color: var(--finish); box-shadow: 0 0 8px 1px color-mix(in srgb, var(--finish) 35%, transparent); }
+  .compaction-marker.finish-cue .cm-label::before { display: none; }
 }
 .bubble.role-error .error-kind {
   font-family: var(--mono); font-size: 9.5px; color: var(--danger-soft); opacity: 0.8;
@@ -3400,7 +3447,7 @@ html[data-density='small'] .cs-sub-fold { font-size: 8.5px; }
   font-variant-numeric: tabular-nums;
 }
 /* Compaction: the same bar, another colour and a turning ring instead of the
-   pulse — it must not read as an ordinary turn (the composer is closed). */
+   pulse — it must not read as an ordinary turn (what is sent now waits). */
 .thinking-bar.is-compacting {
   background: linear-gradient(180deg, color-mix(in srgb, var(--warning) 12%, transparent), color-mix(in srgb, var(--warning) 4%, transparent));
 }
@@ -3412,6 +3459,9 @@ html[data-density='small'] .cs-sub-fold { font-size: 8.5px; }
   border-top-color: var(--warning-strong);
   animation: ci-spin 0.9s linear infinite;
 }
+/* The messages it holds (§14.125), in the compaction's colour. */
+.thinking-bar .t-queued { display: inline-flex; align-items: center; gap: 4px; color: var(--warning-strong); font-weight: 600; }
+.thinking-bar .t-queued svg { width: 11px; height: 11px; }
 @media (prefers-reduced-motion: reduce) {
   .thinking-bar.is-compacting .t-dot { animation-duration: 2.4s; }
   .thinking-bar .t-label, .thinking-bar .t-now { animation: none; }

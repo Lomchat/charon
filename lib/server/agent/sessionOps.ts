@@ -85,6 +85,7 @@ import { flushSummaryNow, markSummaryDirty, publish, subscribeFrames } from '@/l
 import { RECAP_MAX_CHARS, RECAP_QUESTION, type SessionRecap } from '@/lib/sessionRecap';
 import { markAsyncQuestionDelivering } from '@/lib/server/agent/asyncQuestionDelivery';
 import { providerText, providerName } from '@/lib/providerText';
+import { parseHeldInputs, publicHeldInputs, type HeldInput, type HeldInputState } from '@/lib/heldInputs';
 import {
   allowRulesOf, offeredSuggestions, parseSuggestions, type PermissionSuggestion,
 } from '@/lib/permissionSuggestions';
@@ -365,6 +366,13 @@ function withRowId<T extends object>(frame: T, rowId: number | false | null | un
 
 /** Bound of `SessionStream.recentClientMessages`. */
 const RECENT_CLIENT_MESSAGES_MAX = 200;
+/** Bound of a compaction request's hold whose `compacting` frame never came
+ *  (§14.125): its turn's `stop` normally ends it first. */
+const COMPACT_REQUEST_HOLD_MS = 120_000;
+/** First retry delay of a held input whose delivery failed, doubled for
+ *  each of at most HELD_TIMED_RETRIES timed retries (§14.125). */
+const HELD_RETRY_MS = 15_000;
+const HELD_TIMED_RETRIES = 5;
 // `SessionStream.liveToolOutput` bounds (the session GET's `streamingToolOutput`).
 const LIVE_TOOL_OUTPUT_MAX = 64 * 1024;
 const LIVE_TOOL_OUTPUT_TOOLS = 8;
@@ -936,6 +944,16 @@ export class SessionStream {
   // ≤ RECENT_CLIENT_MESSAGES_MAX): a retried POST re-sends `send_input` only
   // (the agent dedups the id) — never a second row or echo.
   private recentClientMessages = new Map<string, number>();
+  // Inputs sent while the provider compacts (§14.125), in send order: rows
+  // persisted and echoed, not yet given to the agent. Mirrored in
+  // `agent_sessions.held_inputs` (`_saveHeld`), loaded at hydration.
+  private held: HeldInput[] = [];
+  // ms the compact route asked for a compaction whose `compacting` frame has
+  // not come yet (0 = none): it holds sends too (`holdsInputs`).
+  private compactRequestedAt = 0;
+  private compactRequestTimer: ReturnType<typeof setTimeout> | null = null;
+  private releasingHeld = false;
+  private heldRetryTimer: ReturnType<typeof setTimeout> | null = null;
   // Live command/MCP output of RUNNING tools (`tool_progress`, sync refonte
   // I6 `covered`): the session GET returns it as `streamingToolOutput`, so a
   // refetch mid-command keeps what was printed so far. Tail-bounded
@@ -1043,6 +1061,7 @@ export class SessionStream {
     serviceTier?: string | null;
     effectiveModel?: string | null;
     customEndpoint?: boolean;
+    heldInputs?: HeldInput[];
   }) {
     this.id = opts.id;
     this.vpsId = opts.vpsId;
@@ -1068,6 +1087,7 @@ export class SessionStream {
     this.fastMode = opts.fastMode === true;
     this.serviceTier = opts.serviceTier ?? null;
     this.effectiveModel = opts.effectiveModel ?? null;
+    this.held = opts.heldInputs ?? [];
     // Delta providers' reasoning coalesces hub-side (one row per block).
     this.coalesceThinking = PROVIDERS[this.kind]?.thinkingDelivery === 'delta';
     // Preserve a durable failed-turn marker across a Charon reconnect. The
@@ -1188,6 +1208,8 @@ export class SessionStream {
   detach(): void {
     this._clearCodexBgChecks();
     if (this.tokenUsageTimer) { clearTimeout(this.tokenUsageTimer); this.tokenUsageTimer = null; }
+    if (this.compactRequestTimer) { clearTimeout(this.compactRequestTimer); this.compactRequestTimer = null; }
+    if (this.heldRetryTimer) { clearTimeout(this.heldRetryTimer); this.heldRetryTimer = null; }
     if (this.liveTimer) { clearTimeout(this.liveTimer); this.liveTimer = null; }
     if (!this.attached) return;
     this.attached = false;
@@ -1215,7 +1237,10 @@ export class SessionStream {
   private _setCompacting(on: boolean): void {
     if (this.compacting === on) return;
     this.compacting = on;
+    // The provider's frame takes over the compact route's hold (§14.125).
+    if (on) this._endCompactRequest(false);
     this._broadcast({ type: 'compacting', active: on });
+    if (!on) this._scheduleRelease();
   }
 
   /** Assistant text currently being accumulated (since the last flush).
@@ -1706,6 +1731,11 @@ export class SessionStream {
         // one runs (agent >= 0.125.0), any non-turn status ends it.
         if (typeof ev.compacting === 'boolean') this._setCompacting(ev.compacting && ev.status === 'thinking');
         else if (ev.status !== 'thinking') this._setCompacting(false);
+        // A gone worker ends a compaction request; any live status may free
+        // held inputs — the post-replay one after a hub restart included
+        // (§14.125). Deferred past this handler: a release shows `thinking`.
+        if (ev.status === 'sleeping' || ev.status === 'error' || ev.status === 'killed') this._endCompactRequest();
+        else this._scheduleRelease();
         // A new SDK client applies the queued config (the reducer's rule).
         if (ev.status === 'starting') { this.pendingApply.model = false; this.pendingApply.effort = false; }
         // The Claude daemon returns to idle after ResultMessage even when the
@@ -2707,7 +2737,7 @@ export class SessionStream {
         // turn, and no `stop` frame cuts the answer streaming now.
         if (this._replayPrecedesOpenAssistant()) break;
         this.liveToolOutput.clear();
-        if (!this.isReplaying) this._setCompacting(false);
+        if (!this.isReplaying) { this._setCompacting(false); this._endCompactRequest(); }
         this.peerDrivenFinish = ev.peer_request_id !== undefined
           ? !!ev.peer_request_id : this._peerTurnFromHistory();
         const assistantFlushed = this._flushAssistant();
@@ -2974,31 +3004,25 @@ export class SessionStream {
    *  failure) only re-sends `send_input` — the agent dedups it — and returns
    *  the row the first call wrote. `rowId`: a user row the caller persisted
    *  itself (scheduled resume), named on the echo. Returns the user row id
-   *  (null when none was written). */
+   *  (null when none was written). While a compaction runs (or inputs still
+   *  wait for one), the input is persisted and echoed but HELD (§14.125):
+   *  `held: true`, the agent gets it when the compaction ends. */
   async sendUserMessage(
     content: string,
     codexInputs?: Array<Record<string, unknown>>,
     opts?: { persist?: boolean; broadcastUser?: boolean; clientMessageId?: string; rowId?: number },
-  ): Promise<{ rowId: number | null }> {
+  ): Promise<{ rowId: number | null; held?: boolean }> {
     await (await loadEndpointOps()).applyPendingEndpoint(this.id);
     // A new turn is not the wrong-model one (§14.118).
     this.strictViolation = null;
 
-    const client = getAgentClientForVpsId(this.vpsId);
     const clientMessageId = opts?.clientMessageId ?? crypto.randomUUID();
+    // A retried POST of a held input: it waits like the first one did.
+    const heldEntry = this.held.find((h) => h.clientMessageId === clientMessageId);
+    if (heldEntry) return { rowId: heldEntry.rowId, held: true };
     const known = this.recentClientMessages.get(clientMessageId);
     let rowId: number | null = known ?? opts?.rowId ?? null;
-    // The optimistic `thinking` below is memory + bus only (the agent's echo
-    // writes the DB). A send that fails for good reverts it (S4, C13): left
-    // alone it stuck the session `thinking` everywhere until the agent spoke.
-    let optimisticFrom: WorkerStatus | null = null;
-    const revertOptimistic = () => {
-      if (optimisticFrom != null && optimisticFrom !== 'thinking' && this.status === 'thinking') {
-        setSessionStatusLocal(this.id, optimisticFrom, { persist: false });
-      }
-    };
     if (known == null) {
-      this.clearTerminalErrorLatch();
       if (opts?.persist !== false) {
         const persisted = this._persist('user', content);
         if (persisted !== false) {
@@ -3013,11 +3037,44 @@ export class SessionStream {
       if (opts?.broadcastUser !== false) {
         this._broadcast(withRowId({ type: 'user_echo' as const, content, createdAt: now, clientMessageId }, rowId));
       }
+      // The user is engaged with this session: whatever finish it showed is read.
+      markSessionRead(this.id);
+      // Behind a compaction, or behind inputs still waiting for one: order
+      // is the send order (§14.125).
+      if (this.holdsInputs() || this.held.length > 0) {
+        this.held.push({ rowId, clientMessageId, content, ...(codexInputs?.length ? { codexInputs } : {}) });
+        this._saveHeld();
+        this._scheduleRelease();
+        return { rowId, held: true };
+      }
+    }
+    await this._deliverInput(content, codexInputs, clientMessageId, known == null);
+    return { rowId };
+  }
+
+  /** `send_input` with its recoveries. `fresh`: a new turn's input (not a
+   *  retried POST) — it clears the last turn's error latch and shows
+   *  `thinking` at once (memory + bus; the agent's echo writes the DB). */
+  private async _deliverInput(
+    content: string,
+    codexInputs: Array<Record<string, unknown>> | undefined,
+    clientMessageId: string,
+    fresh: boolean,
+  ): Promise<void> {
+    const client = getAgentClientForVpsId(this.vpsId);
+    // A send that fails for good reverts the optimistic `thinking` (S4, C13):
+    // left alone it stuck the session `thinking` everywhere until the agent spoke.
+    let optimisticFrom: WorkerStatus | null = null;
+    const revertOptimistic = () => {
+      if (optimisticFrom != null && optimisticFrom !== 'thinking' && this.status === 'thinking') {
+        setSessionStatusLocal(this.id, optimisticFrom, { persist: false });
+      }
+    };
+    if (fresh) {
+      this.clearTerminalErrorLatch();
       optimisticFrom = this.status;
       this.status = 'thinking';
       this._broadcast({ type: 'status', status: 'thinking' });
-      // The user is engaged with this session: whatever finish it showed is read.
-      markSessionRead(this.id);
     }
     // Idempotency key (P1.1): the agent (>= 0.19.0) records the id once the
     // input was ACCEPTED and answers {duplicate:true} on a re-send — so the
@@ -3042,7 +3099,7 @@ export class SessionStream {
           revertOptimistic();
           throw retryErr;
         }
-        return { rowId };
+        return;
       }
       // Auto-recover from a status DESYNC: the agent refuses input on a
       // non-running session — session.py raises "not running (status=sleeping)"
@@ -3073,7 +3130,96 @@ export class SessionStream {
       // timed-out input may even have landed) — never a durable 'sleeping'.
       await client.call('send_input', params);
     }
-    return { rowId };
+  }
+
+  // ── Inputs held by a compaction (§14.125) ─────────────────────────────────
+  /** Sends wait: a compaction runs, or the hub just asked for one. */
+  holdsInputs(): boolean {
+    return this.compacting || this.compactRequestedAt > 0;
+  }
+
+  /** The window GET's `heldInputs` (the `held_inputs` frame's list). */
+  heldInputs(): HeldInputState[] {
+    return publicHeldInputs(this.held);
+  }
+
+  /** Persist (the queue must survive a hub restart), then publish. */
+  private _saveHeld(): void {
+    try {
+      db.update(agentSessions)
+        .set({ heldInputsJson: this.held.length ? JSON.stringify(this.held) : null })
+        .where(eq(agentSessions.id, this.id)).run();
+    } catch (e) {
+      console.error(`[session ${this.id}] held inputs not saved:`, e);
+    }
+    this._broadcast({ type: 'held_inputs', inputs: publicHeldInputs(this.held) });
+  }
+
+  /** The compact route, right before its RPC: sends are held from the
+   *  click, not from the provider's `compacting` frame a moment later. Ends
+   *  when that frame takes over, at the turn's end, or after a bound. */
+  noteCompactRequested(): void {
+    this.compactRequestedAt = Date.now();
+    if (this.compactRequestTimer) clearTimeout(this.compactRequestTimer);
+    this.compactRequestTimer = setTimeout(() => this._endCompactRequest(), COMPACT_REQUEST_HOLD_MS);
+    this.compactRequestTimer.unref?.();
+  }
+
+  /** The compact RPC answered. Failed, or nothing runs any more (a native
+   *  compaction resolves once done): the hold ends now. */
+  compactRequestSettled(ok: boolean): void {
+    if (!ok || (!this.compacting && this.status !== 'thinking')) this._endCompactRequest();
+  }
+
+  private _endCompactRequest(release = true): void {
+    if (this.compactRequestTimer) { clearTimeout(this.compactRequestTimer); this.compactRequestTimer = null; }
+    if (!this.compactRequestedAt) return;
+    this.compactRequestedAt = 0;
+    if (release) this._scheduleRelease();
+  }
+
+  /** A release after the current handler: delivering shows `thinking`, which
+   *  the frame being handled must not overwrite. */
+  private _scheduleRelease(): void {
+    if (this.held.length) queueMicrotask(() => { void this._releaseHeld(); });
+  }
+
+  /** Give the held inputs to the agent, in order, once nothing holds them.
+   *  One loop at a time; a new compaction stops it (the rest wait for that
+   *  one too). A failed delivery keeps its entry — and everything behind it —
+   *  says why on its bubble and is retried: on the next status, compaction
+   *  end, send, or after HELD_RETRY_MS. Never dropped. */
+  private async _releaseHeld(): Promise<void> {
+    if (this.releasingHeld || !this.held.length || this.holdsInputs()) return;
+    this.releasingHeld = true;
+    if (this.heldRetryTimer) { clearTimeout(this.heldRetryTimer); this.heldRetryTimer = null; }
+    try {
+      while (this.held.length && !this.holdsInputs()) {
+        const next = this.held[0]!;
+        try {
+          await this._deliverInput(next.content, next.codexInputs, next.clientMessageId, true);
+        } catch (e) {
+          next.error = String((e as { message?: unknown })?.message ?? e).slice(0, 300);
+          next.attempts = (next.attempts ?? 0) + 1;
+          this._saveHeld();
+          // Timed retries back off and stop (an archived session refuses for
+          // good); statuses and sends keep retrying it.
+          if (next.attempts <= HELD_TIMED_RETRIES) {
+            this.heldRetryTimer = setTimeout(() => {
+              this.heldRetryTimer = null;
+              void this._releaseHeld();
+            }, HELD_RETRY_MS * 2 ** (next.attempts - 1));
+            this.heldRetryTimer.unref?.();
+          }
+          return;
+        }
+        const at = this.held.indexOf(next);
+        if (at >= 0) this.held.splice(at, 1);
+        this._saveHeld();
+      }
+    } finally {
+      this.releasingHeld = false;
+    }
   }
 
   async sendInterrupt(): Promise<void> {
@@ -5141,6 +5287,9 @@ export function getOrCreateStream(sessionId: string): SessionStream | null {
     // very next assistant flush is stamped correctly (the agent won't re-emit
     // `effective_model` unless it changes).
     effectiveModel: row.effectiveModel ?? null,
+    // Inputs a compaction held when the hub went down (§14.125): released
+    // by the post-replay status of the next attach.
+    heldInputs: parseHeldInputs(row.heldInputsJson),
   });
   streams.set(sessionId, s);
   return s;

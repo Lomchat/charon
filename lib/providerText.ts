@@ -74,9 +74,9 @@ export const providerText = {
     ? `Message ${providerName(kind)}…`
     : `message to ${providerName(kind)} — drop a file anywhere or use 📎 (Enter sends, Shift/Ctrl+Enter for newline)`),
 
-  /** The closed composer during a compaction. */
+  /** The composer during a compaction: open, what it sends waits (§14.125). */
   composerCompacting: (kind: Kind) =>
-    `Compacting the conversation — you can write to ${providerName(kind)} again when it is done`,
+    `Compacting — what you send now goes to ${providerName(kind)} when it ends`,
 
   /** "<Provider>: not signed in" — a blocker line that must name its OWN
    *  backend, since several can be broken independently on one VPS. */
