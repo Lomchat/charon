@@ -39,6 +39,7 @@ const g = globalThis as unknown as {
   __charonTabState?: State;
   __charonTabSubs?: Set<() => void>;
   __charonTabMru?: string[];
+  __charonTabOpenSubs?: Set<(input: { kind: TabKind }) => void>;
 };
 // The snapshot is REPLACED, never mutated: useSyncExternalStore compares by
 // identity, so an in-place edit is a change nothing re-renders for.
@@ -268,9 +269,19 @@ export const activeTab = (): TabDTO | null => state.tabs.find((t) => t.id === st
 
 // ── Mutations ───────────────────────────────────────────────────────────────
 
+/** Every open request, as it is made (the tab may already be the active one).
+ *  The phone's tools drawer closes on a file this way (HubPanel), whichever
+ *  panel or link asked. */
+const openSubs = (g.__charonTabOpenSubs ??= new Set());
+export function onTabOpen(fn: (input: { kind: TabKind }) => void): () => void {
+  openSubs.add(fn);
+  return () => { openSubs.delete(fn); };
+}
+
 export async function openTab(input: {
   vpsId: string; path: string; kind: TabKind; ref: string; pin?: boolean;
 }): Promise<TabDTO | null> {
+  for (const fn of openSubs) fn(input);
   // Optimistic focus: the pane must switch on the click, not on the round
   // trip. The server's answer replaces the whole list a moment later.
   const existing = state.tabs.find((t) =>

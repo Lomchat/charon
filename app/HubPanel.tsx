@@ -24,7 +24,7 @@ import {
   useTabs, hydrateTabs, restoreLocalTabFocus, refreshTabs,
   openTab as openWorkspaceTab, activateTab as activateWorkspaceTab,
   pinTab as pinWorkspaceTab, closeTab as closeWorkspaceTab,
-  closeTabsWhere as closeWorkspaceTabsWhere, reorderTabs as reorderWorkspaceTabs,
+  closeTabsWhere as closeWorkspaceTabsWhere, reorderTabs as reorderWorkspaceTabs, onTabOpen,
 } from './tabStore';
 import ShellTerminal from './ShellTerminal';
 import ConfirmModal from './ConfirmModal';
@@ -499,6 +499,9 @@ export default function HubPanel({ vpsList: initialVpsList, vpsFolders: initialF
   // it is the rings beside the session title (`UsageRings`).
   const [menuOpen, setMenuOpen] = useState(false);
   const closeDrawers = useCallback(() => { setNavOpen(false); setToolsOpen(false); setMenuOpen(false); }, []);
+  // A file opened from the tools drawer (≤1100px) lands ON the file: the
+  // drawer closes by itself, whichever panel or link opened it.
+  useEffect(() => onTabOpen((t) => { if (t.kind === 'file') setToolsOpen(false); }), []);
   // Desktop side columns (app/panelLayout.ts): the grid reads each width as a
   // CSS variable and its tier as `data-side`/`data-tools`, which lay the
   // column's contents out for it. Drawers below the breakpoints ignore both.
@@ -1406,6 +1409,12 @@ export default function HubPanel({ vpsList: initialVpsList, vpsFolders: initialF
   }
   function onTabCloseClick(t: ResolvedTab) {
     closeTabsOrAsk(t.label, [t], () => closeWorkspaceTab(t.id));
+  }
+  /** The ✕ a file pane draws itself on a phone, where the strip is hidden
+   *  (≤820px): closes that pane's OWN tab exactly like the strip's ✕. */
+  function paneCloser(match: (t: ResolvedTab) => boolean): (() => void) | undefined {
+    const t = resolvedTabs.find(match);
+    return t ? () => onTabCloseClick(t) : undefined;
   }
   // Ctrl/Cmd+W closes the active tab exactly like its ✕ (an unsaved file still
   // asks). Not in a terminal (the shell's delete-word, like Ctrl+K above) nor
@@ -2526,6 +2535,7 @@ export default function HubPanel({ vpsList: initialVpsList, vpsFolders: initialF
                   // Editing or saving is a real interaction: the tab stops being a
                   // preview so the next file opened here can't evict unsaved work.
                   onInteract={() => { if (!f.pinned) void pinWorkspaceTab(f.id); }}
+                  onCloseTab={paneCloser((t) => t.id === f.id)}
                   // Go-to-definition. The target is an ABSOLUTE path from the language
                   // server; a tab is (group path, path relative to it), so anything
                   // outside this group's folder cannot be opened as a tab here.

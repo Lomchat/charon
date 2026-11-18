@@ -62,7 +62,7 @@ export function useMarkdownMargins(): [boolean, () => void] {
 export function MarkdownMarginsToggle() {
   const [margins, toggle] = useMarkdownMargins();
   return (
-    <span className="fe-view-toggle" role="group" aria-label="Document width">
+    <span className="fe-view-toggle fe-margins" role="group" aria-label="Document width">
       <button type="button" className={margins ? 'on' : ''} aria-pressed={margins} onClick={toggle}
               title={margins ? 'Margins on: a readable column — click for the full width'
                 : 'Full width — click for margins'}>

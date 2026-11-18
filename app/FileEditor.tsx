@@ -85,6 +85,8 @@ type Props = {
    * media paused.
    */
   active?: boolean;
+  /** Close this pane's tab: the phone's ✕ (≤820px, where the strip is hidden). */
+  onCloseTab?: () => void;
 };
 
 type Conflict = { serverSha: string | null };
@@ -104,7 +106,7 @@ const EMPTY_DIAGS: LspDiagnostic[] = [];
  * Media and binaries stay read-only: an editor for bytes is a different
  * feature, and pretending otherwise would let someone corrupt a PNG by typing.
  */
-export default function FileEditor({ tabId, vpsId, root, path, onInteract, onOpenLocation, active = true }: Props) {
+export default function FileEditor({ tabId, vpsId, root, path, onInteract, onOpenLocation, active = true, onCloseTab }: Props) {
   const [res, setRes] = useState<FsReadResponse | null>(null);
   // Kept apart from `res`: a media file never goes through fs_read, and the
   // header still owes the reader "these bytes live somewhere else".
@@ -558,8 +560,16 @@ export default function FileEditor({ tabId, vpsId, root, path, onInteract, onOpe
          role={expanded ? 'dialog' : undefined} aria-modal={expanded || undefined}
          aria-label={expanded ? name : undefined}>
       <header className="fe-head">
+        {onCloseTab && !expanded && (
+          <button type="button" className="pane-close" onClick={onCloseTab}
+                  title="Close this tab" aria-label="Close this tab">✕</button>
+        )}
         <span className="fe-title">
-          <span className="fe-path" title={`${root}/${path}`}>{path}</span>
+          {/* The folder gives way first: the name is what a narrow pane keeps. */}
+          <span className="fe-path fe-path-split" title={`${root}/${path}`}>
+            <span className="fe-dir">{path.slice(0, path.length - name.length)}</span>
+            <span className="fe-name">{name}</span>
+          </span>
           {/* Editing a link edits the file behind it — say which one, or the
               save lands somewhere the reader never agreed to. */}
           {link && (
@@ -570,6 +580,10 @@ export default function FileEditor({ tabId, vpsId, root, path, onInteract, onOpe
         </span>
         {dirty && <span className="fe-dirty" title="unsaved changes">●</span>}
         {res?.size != null && <span className="fe-size">{fmtSize(res.size)}</span>}
+        {/* `display: contents` on desktop. On a phone, the second and last
+            line: how the file is shown on the left, what to do on the right. */}
+        <span className="fe-actions">
+        <span className="fe-views">
         {/* Full screen is the rendered document only: no source to switch to. */}
         {!expanded && tabular && res?.content != null && !res.binary && !res.tooLarge && (
           <span className="fe-view-toggle" role="group" aria-label="CSV view">
@@ -589,6 +603,8 @@ export default function FileEditor({ tabId, vpsId, root, path, onInteract, onOpe
           </span>
         )}
         {rendered && textView?.kind === 'markdown' && <MarkdownMarginsToggle />}
+        </span>
+        <span className="fe-btns">
         {diffTarget && (
           <button className="fe-diff" onClick={() => setDiffOpen(true)}
                   title={`Open Git diff for ${diffTarget.file.path}`}>
@@ -632,6 +648,8 @@ export default function FileEditor({ tabId, vpsId, root, path, onInteract, onOpe
         <a className="fe-dl" href={rawUrl} download={name} title={`download ${name}`}>
           <IconDownload /> Download
         </a>
+        </span>
+        </span>
       </header>
 
       {note && <div className={`fe-note ${note.kind}`}>{note.text}</div>}
