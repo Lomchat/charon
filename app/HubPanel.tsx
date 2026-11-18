@@ -1416,18 +1416,21 @@ export default function HubPanel({ vpsList: initialVpsList, vpsFolders: initialF
     const t = resolvedTabs.find(match);
     return t ? () => onTabCloseClick(t) : undefined;
   }
-  // Ctrl/Cmd+W closes the active tab exactly like its ✕ (an unsaved file still
-  // asks). Not in a terminal (the shell's delete-word, like Ctrl+K above) nor
-  // behind an open dialog. A browser TAB never delivers it (the browser keeps
-  // the shortcut); an app window does, and closes itself on an unhandled one —
-  // hence preventDefault even with nothing to close. Key-repeat closes nothing.
+  // Alt+W and Ctrl/Cmd+W close the active tab exactly like its ✕ (an unsaved
+  // file still asks). Not in a terminal (the shell's own keys, like Ctrl+K
+  // above) nor behind an open dialog. Alt+W is the one a browser TAB delivers:
+  // the browser keeps Ctrl+W. An app window delivers Ctrl+W too, and closes
+  // itself on an unhandled one — hence preventDefault even with nothing to
+  // close. AltGr (= Ctrl+Alt) is neither. Key-repeat closes nothing.
   const closeActiveTabRef = useRef<() => void>(() => {});
   closeActiveTabRef.current = () => { if (activeTab) onTabCloseClick(activeTab); };
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      if (!(e.ctrlKey || e.metaKey) || e.altKey || e.shiftKey) return;
+      const ctrl = e.ctrlKey || e.metaKey;
+      if (e.shiftKey || ctrl === e.altKey) return;
       const k = e.key.toLowerCase();
-      // `code` only for non-Latin layouts: on AZERTY the KeyW position types 'z'.
+      // `code` only for non-Latin keys: on AZERTY the KeyW position types 'z';
+      // Option+W on a Mac types '∑'.
       if (k !== 'w' && (/^[a-z]$/.test(k) || e.code !== 'KeyW')) return;
       if ((e.target as Element | null)?.closest?.('.xterm')) return;
       e.preventDefault();
