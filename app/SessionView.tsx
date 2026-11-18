@@ -16,7 +16,7 @@ import { IconArrowRepeat, IconGear, IconPause, IconPlay, IconStop, IconRewind, I
 import { goalIsLive, shownGoal } from '@/lib/sessionGoal';
 import { sameModel } from '@/lib/strictModel';
 import type { SessionRecap } from '@/lib/sessionRecap';
-import { toggleBubbleFold, useBubbleFold } from './bubbleFold';
+import { FoldEdge, foldRootProps, useBubbleFold } from './bubbleFold';
 import { coldResumeShare, fmtTokens as fmtDriverTokens } from '@/lib/usageDrivers';
 import type { InsightUsage } from './SessionInsight';
 import type { TurnLedger } from '@/lib/promptCache';
@@ -1707,27 +1707,15 @@ export function recapToShow(recap: SessionRecap | null, messages: Msg[], busy: b
   return null;
 }
 
-/** The recap under the last answer (§14.122). The whole note is its fold
- *  button (bubbleFold's store: in memory, per answer); a click that ends a
- *  text selection inside it does not fold. */
+/** The recap under the last answer (§14.122). Folds like every bubble, from
+ *  its left edge (bubbleFold's store: in memory, per answer). */
 export const RecapNote = memo(function RecapNote({ recap }: { recap: SessionRecap }) {
   const key = `recap:${recap.afterRowId}`;
   const isFolded = useBubbleFold(key);
-  const toggle = (el: HTMLElement) => {
-    const sel = window.getSelection();
-    if (sel && !sel.isCollapsed && sel.anchorNode && el.contains(sel.anchorNode)) return;
-    toggleBubbleFold(el);
-  };
   const parts = recap.text.split('`');
   return (
-    <div className={`recap-bubble${isFolded ? ' is-folded' : ''}`} data-fold-key={key}
-      role="button" tabIndex={0} aria-expanded={!isFolded} aria-label="recap"
-      onClick={(e) => toggle(e.currentTarget)}
-      onKeyDown={(e) => {
-        if (e.key !== 'Enter' && e.key !== ' ') return;
-        e.preventDefault();
-        toggleBubbleFold(e.currentTarget);
-      }}>
+    <div className={`recap-bubble${isFolded ? ' is-folded' : ''}`} {...foldRootProps(key)}>
+      <FoldEdge isFolded={isFolded} />
       <span className="recap-label"><IconSparkle />recap</span>
       {isFolded
         ? <span className="recap-fold-text">{parts.join('')}</span>

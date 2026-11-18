@@ -2449,8 +2449,7 @@ html[data-density='small'] .cs-sub-fold { font-size: 8.5px; }
 .bubble.peer-reply > .bubble-edge { left: -3px; top: 0; bottom: 0; }
 .bubble.tool-use.running > .bubble-edge, .bubble.tool-use.interrupted > .bubble-edge { left: -2px; }
 @media (hover: hover) {
-  .bubble:hover > .bubble-edge, .codex-plan-card:hover > .bubble-edge { background-color: color-mix(in srgb, var(--fold-edge) 60%, transparent); }
-  .bubble > .bubble-edge:hover, .codex-plan-card > .bubble-edge:hover { width: 9px; background-color: var(--fold-edge); }
+  .bubble > .bubble-edge:hover, .codex-plan-card > .bubble-edge:hover, .recap-bubble > .bubble-edge:hover { width: 9px; background-color: var(--fold-edge); }
   .bubble.is-folded:hover, .codex-plan-card.is-folded:hover { background-color: color-mix(in srgb, var(--fold-edge) 9%, transparent); }
 }
 @media (pointer: coarse) {
@@ -2826,24 +2825,18 @@ html[data-density='small'] .cs-sub-fold { font-size: 8.5px; }
 .bubble.role-side .side-err { color: var(--danger-strong); }
 @media (max-width: 820px) { .bubble.role-side { margin-left: -6px; margin-right: 8%; } }
 /* The recap under the last answer (SessionView § RecapNote, §14.122): a note
-   asked aside after the turn, not a message — no bubble chrome; the whole
-   note is its fold button. */
+   asked aside after the turn, not a message — no bubble chrome but the fold
+   edge. */
 .recap-bubble {
+  --fold-edge: var(--info); --bubble-edge: 1px; --bubble-radius: var(--radius-md);
+  position: relative;
   margin: 4px 0 10px; padding: 7px 12px;
   border: 1px dashed color-mix(in srgb, var(--info) 45%, transparent);
   border-radius: var(--radius-md);
   background: color-mix(in srgb, var(--info) 6%, transparent);
   color: var(--text-muted); font-size: 12.5px; line-height: 1.5;
-  cursor: pointer; transition: background-color .12s, border-color .12s;
 }
-.recap-bubble:focus-visible { outline: 2px solid var(--accent-strong); outline-offset: 1px; }
-@media (hover: hover) {
-  .recap-bubble:hover {
-    background: color-mix(in srgb, var(--info) 10%, transparent);
-    border-color: color-mix(in srgb, var(--info) 65%, transparent);
-  }
-}
-.recap-bubble.is-folded { display: flex; align-items: center; gap: 8px; min-width: 0; padding-top: 3px; padding-bottom: 3px; }
+.recap-bubble.is-folded { display: flex; align-items: center; gap: 8px; min-width: 0; padding-top: 3px; padding-bottom: 3px; cursor: pointer; }
 .recap-bubble.is-folded .recap-label { flex: none; margin-bottom: 0; }
 .recap-fold-text { flex: 1 1 0; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .recap-bubble .recap-label {

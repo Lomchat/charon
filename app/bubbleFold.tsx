@@ -68,11 +68,13 @@ function toggle(bubble: HTMLElement, all: boolean) {
     });
   });
   if (!chat) return;
-  // The clicked bubble's first line stays where the eye is: in place, or at the
-  // top of the chat when its start was scrolled away. Without this the
-  // column-reverse chat (§14.92) leaves the folded line where the bubble ENDED,
-  // often below the screen, and a long unfold grows upward out of sight.
-  const want = Math.max(top, chat.getBoundingClientRect().top + 8);
+  // Folding: the line stays where the eye is, in place or at the top of the
+  // chat when its start was scrolled away (the column-reverse chat, §14.92,
+  // would leave it where the bubble ENDED, often below the screen). Unfolding:
+  // the bubble's top, header included, goes as high as the chat allows, so the
+  // whole message reads downward.
+  const chatTop = chat.getBoundingClientRect().top + 8;
+  const want = fold ? Math.max(top, chatTop) : chatTop;
   chat.scrollTop += bubble.getBoundingClientRect().top - want;
 }
 
@@ -89,12 +91,6 @@ function onFoldClickCapture(e: MouseEvent<HTMLElement>) {
   e.preventDefault();
   e.stopPropagation();
   toggle(bubble, onEdge && e.altKey);
-}
-
-/** A bubble that is its own button (the recap): same store, same scroll
- *  anchoring as an edge click. */
-export function toggleBubbleFold(bubble: HTMLElement) {
-  toggle(bubble, false);
 }
 
 /** Unfold the bubble holding `el` before a jump scrolls to it. */
