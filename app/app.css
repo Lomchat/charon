@@ -3378,16 +3378,36 @@ html[data-density='small'] .cs-sub-fold { font-size: 8.5px; }
   border-color: var(--danger);
   background: color-mix(in srgb, var(--danger-deep) 16%, transparent);
 }
-.thinking-bar .t-tool {
-  display: inline-flex; align-items: center; gap: 6px;
-  overflow: hidden; min-width: 0;
+/* The step's label is short: it keeps its width, the step text gives way. */
+.thinking-bar .t-label { flex: none; animation: tNow 0.18s ease-out; }
+/* What the turn is doing now (§14.124): the object, an aside, the step's own
+   clock and counters. The detail keeps its width; the aside gives way first. */
+.thinking-bar .t-now {
+  display: inline-flex; align-items: baseline; gap: 8px;
+  flex: 0 1 auto; min-width: 0; overflow: hidden; margin-right: 8px;
+  animation: tNow 0.18s ease-out;
 }
-.thinking-bar .t-tool .glyph { color: var(--lavender); }
-.thinking-bar .t-tool .name { color: var(--accent-strong); }
-.thinking-bar .t-tool .sum {
-  color: var(--text); opacity: 0.7;
+@keyframes tNow { from { opacity: 0; } to { opacity: 1; } }
+.thinking-bar .t-detail {
+  flex: 0 1 auto; min-width: 0;
+  color: var(--text); opacity: 0.85;
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
+.thinking-bar .t-note {
+  flex: 0 100 auto; min-width: 0;
+  color: var(--text-muted); font-style: italic;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.thinking-bar .t-since,
+.thinking-bar .t-extra {
+  flex: none; white-space: nowrap;
+  color: var(--text-muted); font-size: 11px;
+  font-variant-numeric: tabular-nums;
+}
+.thinking-bar .t-since { color: var(--accent-strong); }
+/* The turn waits for the user: the label says so in the attention colour. */
+.thinking-bar.is-gated .t-label { color: var(--warning-strong); }
+.thinking-bar.is-gated .t-dot { background: var(--warning-strong); }
 .thinking-bar .t-meta {
   flex-shrink: 0; white-space: nowrap;
   margin-left: auto;
@@ -3415,6 +3435,7 @@ html[data-density='small'] .cs-sub-fold { font-size: 8.5px; }
 }
 @media (prefers-reduced-motion: reduce) {
   .thinking-bar.is-compacting .t-dot { animation-duration: 2.4s; }
+  .thinking-bar .t-label, .thinking-bar .t-now { animation: none; }
 }
 .app-input-bar .ci-attach:disabled { opacity: 0.4; cursor: not-allowed; }
 
@@ -5845,7 +5866,9 @@ html[data-density='small'] .cs-sub-fold { font-size: 8.5px; }
   /* The ▴ pill already lands on the last agent message's start; a second,
      centred pill over a phone-width chat only hides the text under it. */
   .app-jump-msg-start-pill { display: none; }
-  .thinking-bar         { padding: 8px 12px; }
+  .thinking-bar         { padding: 8px 12px; flex-wrap: wrap; row-gap: 4px; }
+  /* A phone row has no room left for the step: it takes a line of its own. */
+  .thinking-bar .t-now  { order: 10; flex: 1 1 100%; }
   .thinking-bar .t-meta:has(.t-speed) .t-step,
   .thinking-bar .t-meta:has(.t-speed) .t-count { display: none; }
   .turn-cost            { padding: 5px 12px; }

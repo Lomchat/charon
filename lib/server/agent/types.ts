@@ -200,7 +200,15 @@ export type AgentEvent = (
   | { event: 'thinking'; session_id: string; text: string }
   // Transient cumulative text/thinking characters within one model request.
   // Zero resets the request; full assistant blocks must not be counted again.
-  | { event: 'generation_progress'; session_id: string; characters: number }
+  // agent >= 0.136.0, Claude main thread: the content `block` being generated
+  // (`null` = a new request, nothing streamed yet) — its `index`, size, tool
+  // name, first readable argument (`detail`) and reasoning `tail`. The hub's
+  // live activity reads them (lib/liveActivity.ts, §14.124).
+  | {
+      event: 'generation_progress'; session_id: string; characters: number;
+      block?: 'thinking' | 'text' | 'tool_use' | null; index?: number | null; block_chars?: number;
+      tool?: string; detail?: string; tail?: string;
+    }
   // Transient: the provider is summarising the conversation (on a CHANGE).
   | { event: 'compacting'; session_id: string; active: boolean }
   // Which runtime process runs the session (agent >= 0.127.0, §14.117).

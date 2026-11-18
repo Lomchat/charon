@@ -122,6 +122,7 @@ export const FRAME_CLASS: Record<KnownFrameType, FrameClass> = {
   assistant_reopened: FOCUSED,
   structured_output: FOCUSED,
   generation_progress: FOCUSED,
+  live_activity: FOCUSED,
   tool_use: FOCUSED,
   tool_result: FOCUSED,
   tool_progress: FOCUSED,

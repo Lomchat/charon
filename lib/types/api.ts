@@ -1389,6 +1389,9 @@ export type AgentSessionDetailResponse = {
   liveRuntimeOutdated?: boolean;
   // What the outdated runtime runs (agent >= 0.131.0): the header's "from".
   liveRuntimeVersions?: import('@/lib/runtimeUpdate').RuntimeVersions | null;
+  // What the running turn is doing (stream memory, frame `live_activity`,
+  // §14.124); null when idle. Optional: older hubs omit it.
+  liveActivity?: import('@/lib/liveActivity').LiveActivity | null;
   // "Applies at next start" flags the hub knows (window mode; a key is absent
   // when unknown since the hub's boot — keep the view's own value).
   pendingApply?: { model?: boolean; effort?: boolean };

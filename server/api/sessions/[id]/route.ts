@@ -306,6 +306,7 @@ export async function GET(req: Request, { params }: { params: Promise<{ id: stri
     // Still on the agent code of before an update (§14.117): header warning.
     liveRuntimeOutdated: isRuntimeOutdated(id),
     liveRuntimeVersions: runtimeVersionsOf(id),
+    liveActivity: stream?.liveActivity() ?? null,
     // Known "applies at next start" flags (window mode; unknown ones omitted).
     ...(since == null && stream ? pendingApplyOf(stream) : {}),
     subscribers: focusCountFor(id),

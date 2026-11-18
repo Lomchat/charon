@@ -21,6 +21,7 @@
 // hub without the feature.
 
 import type { RuntimeVersions } from '@/lib/runtimeUpdate';
+import type { LiveActivity } from '@/lib/liveActivity';
 import type {
   Msg, ToolCallEntry, EditSnapshot, PermissionRequest, PendingQuestion, PendingExitPlan,
 } from '../sessionTypes';
@@ -454,6 +455,9 @@ export type TranscriptState = {
   runtimeOutdated: boolean;
   /** What that older runtime runs (null = unknown): the header's "from". */
   runtimeVersions: RuntimeVersions | null;
+  /** What the running turn is doing (`live_activity` / `liveActivity`, the
+   *  hub's fold, §14.124): the thinking bar, whatever the view. */
+  activity: LiveActivity | null;
   buf: LiveBuffers;
   /** The highest reasoning row id this view knows as persisted
    *  (thinkingMessages.ts § ThinkingLane.known). */
@@ -506,7 +510,7 @@ export function createTranscriptState(sessionId: string, provider?: SessionProvi
     sessionId, rows: [], messages: [], toolCalls: [], files: new Set(), edits: new Map(),
     bgTasks: new Map(), bgLaunches: new Map(),
     queues: { permissions: [], questions: [], exitPlans: [] },
-    status: null, compacting: false, runtimeOutdated: false, runtimeVersions: null, buf: { assistant: '', streamingInto: null, thinkingOpen: '' }, thinkingKnown: 0,
+    status: null, compacting: false, runtimeOutdated: false, runtimeVersions: null, activity: null, buf: { assistant: '', streamingInto: null, thinkingOpen: '' }, thinkingKnown: 0,
     sends: new Map(), knownRowIds: new Set(), livePlans: new Map(), durablePlans: new Set(), localResolved: new Map(),
     snapshotRev: null, toolCallBase: null, toolCallIdsSince: new Set(), afterId: 0, hubBoundaries: false, hasMore: false, oldestChatId: null,
     provider: p, session: null,
@@ -743,6 +747,9 @@ export function applyFrame(s: TranscriptState, ev: SessionFrame, ctx: Transcript
       break;
     case 'runtime_outdated':
       st = { ...st, runtimeOutdated: ev.outdated === true, runtimeVersions: ev.outdated === true ? ev.versions ?? null : null };
+      break;
+    case 'live_activity':
+      st = { ...st, activity: ev.activity ?? null };
       break;
     case 'stop':
       st = legacyBoundary(st, nowMs);
@@ -1186,6 +1193,7 @@ export function applySnapshot(s: TranscriptState, r: SessionWindowResponse,
     compacting: r.liveCompacting === true,
     runtimeOutdated: r.liveRuntimeOutdated === true,
     runtimeVersions: r.liveRuntimeOutdated === true ? r.liveRuntimeVersions ?? null : null,
+    activity: liveStatus !== 'thinking' ? null : r.liveActivity !== undefined ? r.liveActivity : s.activity,
     buf: { assistant, streamingInto, thinkingOpen },
     thinkingKnown,
     sends: reconciled.sends,

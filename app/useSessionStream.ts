@@ -110,6 +110,8 @@ export type SessionStreamState = {
   runtimeOutdated: boolean;
   /** What that older runtime runs (null = unknown), for the header. */
   runtimeVersions: import('@/lib/runtimeUpdate').RuntimeVersions | null;
+  /** What the running turn is doing (§14.124); null when idle or unknown. */
+  liveActivity: import('@/lib/liveActivity').LiveActivity | null;
   // Claude permission mode OR Codex sandbox level (same DB field, kind-dependent).
   permissionMode: SessionMode;
   model: string | null;
@@ -811,6 +813,7 @@ export function useSessionStream(
     currentAssistant: state.buf.assistant,
     streamingInto: state.buf.streamingInto,
     status, compacting: state.compacting && status === 'thinking', runtimeOutdated: state.runtimeOutdated, runtimeVersions: state.runtimeVersions, permissionMode,
+    liveActivity: status === 'thinking' ? state.activity : null,
     model: modelPair.model, fallbackModel: modelPair.fallbackModel, effort, ultracode: state.meta.ultracode,
     modelPendingApply: state.meta.modelPendingApply, effortPendingApply: state.meta.effortPendingApply,
     effectiveModel: state.meta.effectiveModel,

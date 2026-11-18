@@ -77,7 +77,7 @@ describe('FRAME_SNAPSHOT_CLASS', () => {
 
   it('covered = what the window GET mirrors (I6)', () => {
     const covered = Object.entries(FRAME_SNAPSHOT_CLASS).filter(([, c]) => c === 'covered').map(([t]) => t).sort();
-    expect(covered).toEqual(['assistant_reopened', 'assistant_text', 'thinking', 'thinking_reopened', 'tool_progress']);
+    expect(covered).toEqual(['assistant_reopened', 'assistant_text', 'live_activity', 'thinking', 'thinking_reopened', 'tool_progress']);
   });
 
   it('frames persisting a rendered row (I15 rowId carriers) are durable; latest-value frames are live', () => {

@@ -123,6 +123,7 @@ export const FRAME_SNAPSHOT_CLASS: Record<KnownFrameType, SnapshotClass> = {
   thinking: 'covered',               // delta: streamingThinking; block: its row (durable too)
   thinking_reopened: 'covered',      // streamingThinking
   tool_progress: 'covered',          // streamingToolOutput
+  live_activity: 'covered',          // liveActivity (stream memory, set before the publish)
   // ── live: latest-value, never in a snapshot ─────────────────────────────
   plan_progress: 'live',
   edit_progress: 'live',

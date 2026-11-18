@@ -28,6 +28,10 @@ export type BridgeEvent =
   | { type: 'structured_output'; value: unknown; truncated?: boolean; rowId?: number }
   | { type: 'thinking'; text: string; replay?: boolean; rowId?: number }
   | { type: 'generation_progress'; characters: number }
+  // What the session is doing right now (lib/liveActivity.ts, §14.124): the
+  // stream's fold of its own live frames; null = nothing (turn over). FOCUSED,
+  // mirrored by the window GET's `liveActivity`.
+  | { type: 'live_activity'; activity: import('@/lib/liveActivity').LiveActivity | null }
   // The provider is summarising the conversation: the composer waits.
   // Stream memory, mirrored by the window GET's `liveCompacting`.
   | { type: 'compacting'; active: boolean }

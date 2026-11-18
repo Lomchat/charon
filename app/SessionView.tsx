@@ -66,6 +66,7 @@ import EffortPicker from './EffortPicker';
 import { PROVIDER_CATALOGS } from './modelPickers';
 import AgentLogo from './AgentLogo';
 import { MODE_SWITCH_META, providerName, providerText } from '@/lib/providerText';
+import { describeGate, describeLive, toolDetail, type LiveLine } from '@/lib/liveActivity';
 import ForkModal from './ForkModal';
 import { accountProfileId } from '@/lib/accountProfiles';
 import { copySessionNotifications } from './browserNotifications';
@@ -233,6 +234,7 @@ export default function SessionView({
   });
   const {
     messages, currentAssistant, streamingInto, status, compacting: liveCompacting, runtimeOutdated, runtimeVersions, permissionMode,
+    liveActivity,
     model, fallbackModel, effort, ultracode, modelPendingApply, effortPendingApply,
     effectiveModel, liveUsage, tokenUsage, responseSpeed,
     toolCalls, toolCallCount, edits, bgTasks,
@@ -866,7 +868,8 @@ export default function SessionView({
     return null;
   }, [messages]);
 
-  // Tool shown in the ThinkingBar = the most recent UNRESOLVED tool, but only
+  // Fallback of the ThinkingBar's line when the hub has no live activity
+  // (a hub restart mid-turn): the most recent UNRESOLVED tool, but only
   // if it belongs to the CURRENT turn. The turn guard (startedAt >= the last
   // user message) stops a tool left unresolved by a past turn — an interrupted
   // turn, or the transient gap before a refetch re-pairs results — from
@@ -881,6 +884,24 @@ export default function SessionView({
     }
     return null;
   }, [toolCalls, turnStartedAt]);
+
+  // What the ThinkingBar says the turn is doing (§14.124), tools shown or
+  // not: a blocking gate first (the turn waits for the user), then the hub's
+  // live activity, then the fallback tool.
+  const liveLine = useMemo<LiveLine | null>(() => {
+    const p = oldestPending;
+    if (p?.kind === 'permission') return describeGate({ kind: 'permission', tool: p.perm.tool, input: p.perm.input, createdAt: p.createdAt });
+    if (p?.kind === 'question') return describeGate({ kind: 'question', question: p.q.questions[0]?.question, createdAt: p.createdAt });
+    if (p?.kind === 'exit_plan') return describeGate({ kind: 'exit_plan', createdAt: p.createdAt });
+    const name = providerName(sessionKind);
+    if (liveActivity) return describeLive(liveActivity, name);
+    if (!currentTool) return null;
+    const since = currentTool.startedAt * 1000;
+    return describeLive({
+      beat: 'tool', since,
+      tool: { id: currentTool.id, name: currentTool.name, detail: toolDetail(currentTool.name, currentTool.input), since },
+    }, name);
+  }, [oldestPending, liveActivity, currentTool, sessionKind]);
 
   // ── Scroll mechanics (column-reverse, |scrollTop| ≈ 0 = visual bottom) ───
   // In column-reverse:
@@ -1392,7 +1413,7 @@ export default function SessionView({
             label={liveCompacting ? providerText.compacting(sessionKind) : providerText.thinking(sessionKind)}
             compacting={liveCompacting}
             onInterrupt={interrupt}
-            currentTool={showTools ? currentTool : null}
+            line={liveLine}
             toolCount={liveUsage?.tools ?? (showTools ? stepCount : 0)}
             startedAt={turnStartedAt}
             tokens={showTools ? (liveUsage?.output ?? null) : null}
@@ -2492,9 +2513,11 @@ function CwdSubtitle({ cwd, vpsName }: { cwd: string; vpsName?: string }) {
 }
 
 function ThinkingBar({
-  currentTool, toolCount, startedAt, tokens, responseSpeed, onInterrupt, label, compacting = false,
+  line, toolCount, startedAt, tokens, responseSpeed, onInterrupt, label, compacting = false,
 }: {
-  currentTool: ToolCallEntry | null;
+  /** What the turn is doing now (lib/liveActivity.ts); null = unknown: the
+   *  provider's generic label. */
+  line: LiveLine | null;
   /** Tool calls of this turn so far (hub-counted; tools shown or not). */
   toolCount: number;
   startedAt: number | null;
@@ -2512,23 +2535,30 @@ function ThinkingBar({
     return () => clearInterval(t);
   }, []);
   void tick;
-  const elapsed = startedAt ? Math.max(0, Math.floor(Date.now() / 1000 - startedAt)) : null;
+  const now = Date.now();
+  const elapsed = startedAt ? Math.max(0, Math.floor(now / 1000 - startedAt)) : null;
+  const step = compacting ? null : line;
+  // The step's own clock, once it lasts — and only when it is not the turn's
+  // (a turn still waiting for its first token would show the same time twice).
+  const stepElapsed = step ? Math.max(0, Math.floor((now - step.since) / 1000)) : 0;
+  const showStep = !!step && stepElapsed >= 3 && (startedAt == null || step.since / 1000 - startedAt > 2);
+  const shownLabel = step?.label ?? label;
   return (
-    <div className={`thinking-bar${compacting ? ' is-compacting' : ''}`}>
+    <div className={`thinking-bar${compacting ? ' is-compacting' : ''}${step?.gated ? ' is-gated' : ''}`}>
       <span className="t-dot" aria-hidden="true" />
-      <span className="t-label" title={label}>{label}</span>
+      <span key={shownLabel} className="t-label" title={shownLabel}>{shownLabel}</span>
       <button
         type="button"
         className="t-interrupt"
         onClick={() => { void onInterrupt(); }}
         title="Interrupt the current turn"
       >interrupt</button>
-      {!compacting && currentTool && (
-        <span className="t-tool">
-          <span className="sep">·</span>
-          <span className="glyph">⚒</span>
-          <span className="name">{currentTool.name}</span>
-          <span className="sum">{summarizeToolInput(currentTool.name, currentTool.input)}</span>
+      {step && (step.detail || step.note || showStep || step.extra.length > 0) && (
+        <span key={`${step.label}\n${step.since}`} className="t-now">
+          {step.detail && <span className="t-detail" title={step.detail}>{step.detail}</span>}
+          {step.note && <span className="t-note" title={step.note}>{step.note}</span>}
+          {showStep && <span className="t-since" title="Time spent on this step">{fmtElapsed(stepElapsed)}</span>}
+          {step.extra.map((x) => <span key={x} className="t-extra">{x}</span>)}
         </span>
       )}
       {compacting ? (

@@ -61,6 +61,7 @@ import {
 import { withBgTaskLaunchers } from '@/lib/server/hub/conversationSources';
 import { readScheduledTasks, recordScheduledTasks } from '@/lib/server/hub/scheduledTaskState';
 import { readGoal, recordGoal } from '@/lib/server/hub/goalState';
+import { createLiveFold, foldLiveFrame, type LiveActivity, type LiveFold } from '@/lib/liveActivity';
 import { ultracodeOf } from '@/lib/providerConfigFlags';
 import { dueScheduledTask, fireKey, matchFiredTask, type ScheduledTask } from '@/lib/scheduledTasks';
 import { readCodexBgState } from '@/lib/server/hub/codexBgState';
@@ -101,6 +102,10 @@ const BG_FINISH_GRACE_MS = 5_000;
 // usage rows publishes ONE frame (clients merge by `revision`, so a skipped
 // intermediate is never visible).
 const TOKEN_USAGE_BROADCAST_MS = 300;
+
+// A `live_activity` whose beat is unchanged (counters, reasoning tail, a
+// command's last line) is sent at most this often (§14.124).
+const LIVE_PROGRESS_MS = 1_000;
 
 // Resolve the effective (model, fallback_model, effort) for a new session:
 // per-session opts win, otherwise fall back to the global defaults in
@@ -995,6 +1000,12 @@ export class SessionStream {
   // at replay_end, synthetic ones included); live ones arm one trailing timer.
   private tokenUsageDirty = false;
   private tokenUsageTimer: ReturnType<typeof setTimeout> | null = null;
+  // What the session is doing now (lib/liveActivity.ts, §14.124): the fold
+  // of this stream's live frames, sent as `live_activity` — a beat at once,
+  // counters and tails at most every LIVE_PROGRESS_MS.
+  private live: LiveFold = createLiveFold();
+  private liveTimer: ReturnType<typeof setTimeout> | null = null;
+  private liveSentAt = 0;
 
   constructor(opts: {
     id: string; vpsId: string; name: string | null;
@@ -1154,6 +1165,7 @@ export class SessionStream {
   detach(): void {
     this._clearCodexBgChecks();
     if (this.tokenUsageTimer) { clearTimeout(this.tokenUsageTimer); this.tokenUsageTimer = null; }
+    if (this.liveTimer) { clearTimeout(this.liveTimer); this.liveTimer = null; }
     if (!this.attached) return;
     this.attached = false;
     try {
@@ -1896,6 +1908,14 @@ export class SessionStream {
       case 'generation_progress':
         if (!this.isReplaying && Number.isFinite(ev.characters) && ev.characters >= 0) {
           this._broadcast({ type: 'generation_progress', characters: ev.characters });
+          // The block fields feed the live activity only: browsers get the
+          // fold (`live_activity`), not a second copy of the reasoning tail.
+          if (ev.block !== undefined) {
+            this._noteLive({
+              type: 'generation_progress', block: ev.block, index: ev.index ?? null,
+              blockChars: ev.block_chars, tool: ev.tool, detail: ev.detail, tail: ev.tail,
+            });
+          }
         }
         break;
       case 'structured_output': {
@@ -3406,6 +3426,39 @@ export class SessionStream {
     // handles the fan-out + filter by connection focus. Tag with sessionId
     // so consumers know which session it came from.
     emitGlobalSession({ ...ev, sessionId: this.id } as GlobalSessionEvent);
+    if (!(ev as { replay?: boolean }).replay) this._noteLive(ev);
+  }
+
+  /** Fold one LIVE frame into the session's activity (§14.124) and publish
+   *  what changed. Never breaks the stream it describes. */
+  private _noteLive(ev: { type: string; [key: string]: unknown }): void {
+    let change;
+    try {
+      change = foldLiveFrame(this.live, ev, Date.now(), {
+        thinking: this.status === 'thinking',
+        streamsText: PROVIDERS[this.kind]?.thinkingDelivery === 'delta',
+      });
+    } catch {
+      return;
+    }
+    if (change === 'beat') this._publishLive();
+    else if (change === 'progress' && !this.liveTimer) {
+      const wait = LIVE_PROGRESS_MS - (Date.now() - this.liveSentAt);
+      if (wait <= 0) { this._publishLive(); return; }
+      this.liveTimer = setTimeout(() => this._publishLive(), wait);
+      this.liveTimer.unref?.();
+    }
+  }
+
+  private _publishLive(): void {
+    if (this.liveTimer) { clearTimeout(this.liveTimer); this.liveTimer = null; }
+    this.liveSentAt = Date.now();
+    emitGlobalSession({ type: 'live_activity', activity: this.live.current, sessionId: this.id } as GlobalSessionEvent);
+  }
+
+  /** The window GET's `liveActivity`: null once the turn is over. */
+  liveActivity(): LiveActivity | null {
+    return this.status === 'thinking' ? this.live.current : null;
   }
 
   /** A usage row was persisted: publish the session totals, debounced.

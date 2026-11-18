@@ -221,6 +221,51 @@ def _task_output_path(text: Any, task_id: str) -> str | None:
     return m.group(1) if m else None
 
 
+# The block being generated (`generation_progress.block`, hub live activity):
+# the reasoning tail kept, and how much of a tool call's JSON is searched for
+# its first readable argument.
+_GEN_TAIL_KEEP = 240
+_GEN_JSON_KEEP = 8192
+_GEN_DETAIL_MAX = 160
+_PARTIAL_DETAIL_RE = re.compile(
+    r'"(file_path|notebook_path|command|pattern|url|query|description|path)"\s*:\s*"((?:[^"\\]|\\.)*)"')
+
+
+def _generation_block(cb: Any, index: Any) -> dict[str, Any] | None:
+    """`content_block_start.content_block` → {kind, index, tool?} (None: a
+    block kind the live activity does not describe)."""
+    if not isinstance(cb, dict):
+        return None
+    ctype = cb.get("type")
+    if ctype in ("thinking", "redacted_thinking"):
+        kind = "thinking"
+    elif ctype == "text":
+        kind = "text"
+    elif ctype in ("tool_use", "server_tool_use", "mcp_tool_use"):
+        kind = "tool_use"
+    else:
+        return None
+    block: dict[str, Any] = {"kind": kind, "index": index if isinstance(index, int) else None}
+    name = cb.get("name")
+    if kind == "tool_use" and isinstance(name, str) and name:
+        block["tool"] = name[:120]
+    return block
+
+
+def _partial_tool_detail(partial_json: str) -> str | None:
+    """The first COMPLETE readable argument of a tool call still being
+    streamed (`{"file_path": "app/x.ts", "content": "…` → `app/x.ts`)."""
+    m = _PARTIAL_DETAIL_RE.search(partial_json)
+    if not m:
+        return None
+    try:
+        value = json.loads('"' + m.group(2) + '"')
+    except ValueError:
+        return None
+    value = " ".join(str(value).split())
+    return value[:_GEN_DETAIL_MAX] or None
+
+
 _TURN_OPENERS = ("AssistantMessage", "StreamEvent", "UserMessage")
 _LOCAL_COMMAND_ECHO = re.compile(r"\s*<local-command-(?:stdout|stderr)>")
 INTERRUPT_TIMEOUT_SECONDS = 5.0
@@ -713,6 +758,7 @@ class AgentSession:
         self._generation_characters = 0
         self._generation_last_emit = 0.0
         self._generation_last_sent = 0
+        self._gen_reset(None)
         self._claude_stderr_lines: list[str] = []
         # A SystemMessage can veto a prompt before it ever reaches the model
         # (notably an SDK callback-hook timeout). Claude Code still follows
@@ -1438,6 +1484,31 @@ class AgentSession:
         }
 
     # ── Internals ────────────────────────────────────────────────────────────
+    def _gen_reset(self, block: dict[str, Any] | None) -> None:
+        """A new content block (None: a new request, nothing streamed yet)."""
+        self._gen_block = block
+        self._gen_block_chars = 0
+        self._gen_tail = ""
+        self._gen_json = ""
+        self._gen_detail: str | None = None
+
+    def _generation_event(self) -> dict[str, Any]:
+        """`generation_progress`: the request's text/thinking characters (as
+        before) + the main thread's block being generated (agent >= 0.136.0)."""
+        ev: dict[str, Any] = {"event": "generation_progress", "characters": self._generation_characters}
+        block = self._gen_block
+        ev["block"] = block["kind"] if block else None
+        if block:
+            ev["index"] = block["index"]
+            ev["block_chars"] = self._gen_block_chars
+            if block.get("tool"):
+                ev["tool"] = block["tool"]
+            if self._gen_detail:
+                ev["detail"] = self._gen_detail
+            if block["kind"] == "thinking" and self._gen_tail:
+                ev["tail"] = self._gen_tail
+        return ev
+
     def _emit(self, event: str, **fields: Any) -> None:
         msg = {"event": event, "session_id": self.session_id}
         msg.update(fields)
@@ -2161,11 +2232,13 @@ class AgentSession:
                 raw = getattr(ev, "event", None)
                 if isinstance(raw, dict):
                     rtype = raw.get("type")
+                    main_thread = not getattr(ev, "parent_tool_use_id", None)
                     if rtype == "message_start":
-                        if not getattr(ev, "parent_tool_use_id", None):
+                        if main_thread:
                             self._generation_characters = self._generation_last_sent = 0
                             self._generation_last_emit = 0.0
-                            out.append({"event": "generation_progress", "characters": 0})
+                            self._gen_reset(None)
+                            out.append(self._generation_event())
                         mo = raw.get("message")
                         u = mo.get("usage") if isinstance(mo, dict) else None
                         u = u if isinstance(u, dict) else {}
@@ -2185,18 +2258,43 @@ class AgentSession:
                                 uncached=u.get("input_tokens"),
                                 ttl_s=prompt_cache.anthropic_ttl_s(u),
                             )
+                    elif rtype == "content_block_start":
+                        # The block now being generated: the hub's live
+                        # activity says "thinking", "writing" or "preparing
+                        # Write app/x.ts" instead of one opaque "thinking".
+                        if main_thread:
+                            self._gen_reset(_generation_block(raw.get("content_block"), raw.get("index")))
+                            if self._gen_block is not None:
+                                self._generation_last_emit = time.monotonic()
+                                self._generation_last_sent = self._generation_characters
+                                out.append(self._generation_event())
                     elif rtype == "content_block_delta":
                         delta = raw.get("delta")
                         delta = delta if isinstance(delta, dict) else {}
-                        text = delta.get("text") if delta.get("type") == "text_delta" else (
-                            delta.get("thinking") if delta.get("type") == "thinking_delta" else None)
-                        if isinstance(text, str) and text and not getattr(ev, "parent_tool_use_id", None):
+                        dtype = delta.get("type")
+                        text = delta.get("text") if dtype == "text_delta" else (
+                            delta.get("thinking") if dtype == "thinking_delta" else None)
+                        part = delta.get("partial_json") if dtype == "input_json_delta" else None
+                        moved = found = False
+                        if isinstance(text, str) and text and main_thread:
                             self._generation_characters += len(text)
+                            self._gen_block_chars += len(text)
+                            if dtype == "thinking_delta":
+                                self._gen_tail = (self._gen_tail + text)[-_GEN_TAIL_KEEP:]
+                            moved = True
+                        elif isinstance(part, str) and part and main_thread and self._gen_block is not None:
+                            self._gen_block_chars += len(part)
+                            if self._gen_detail is None and len(self._gen_json) < _GEN_JSON_KEEP:
+                                self._gen_json += part
+                                self._gen_detail = _partial_tool_detail(self._gen_json)
+                                found = self._gen_detail is not None
+                            moved = True
+                        if moved:
                             now = time.monotonic()
-                            if now - self._generation_last_emit >= 0.3:
+                            if found or now - self._generation_last_emit >= 0.3:
                                 self._generation_last_emit = now
                                 self._generation_last_sent = self._generation_characters
-                                out.append({"event": "generation_progress", "characters": self._generation_characters})
+                                out.append(self._generation_event())
                     elif rtype == "message_delta":
                         u = raw.get("usage")
                         u = u if isinstance(u, dict) else {}
@@ -2208,9 +2306,9 @@ class AgentSession:
                                         "output_tokens": self._usage_committed_out + self._usage_cur_out,
                                         "input_tokens": self._usage_in})
                     elif rtype == "message_stop":
-                        if not getattr(ev, "parent_tool_use_id", None) and self._generation_characters != self._generation_last_sent:
+                        if main_thread and self._generation_characters != self._generation_last_sent:
                             self._generation_last_sent = self._generation_characters
-                            out.append({"event": "generation_progress", "characters": self._generation_characters})
+                            out.append(self._generation_event())
                         self._usage_committed_out += self._usage_cur_out
                         self._usage_cur_out = 0
                         out.append({"event": "usage",
@@ -2437,6 +2535,7 @@ class AgentSession:
         self._turn_cache = prompt_cache.new_turn_cache()
         self._generation_characters = self._generation_last_sent = 0
         self._generation_last_emit = 0.0
+        self._gen_reset(None)
         self._blocking_turn_error = None
         self.status = "thinking"
         self._emit("status", status="thinking")
