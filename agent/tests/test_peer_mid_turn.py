@@ -76,6 +76,40 @@ class PeerMidTurnTestCase(unittest.TestCase):
             self.assertIsNone(stop["peer_request_id"])
             self.assertFalse([k for p in wire for k in p if k.startswith("_peer")])
 
+    def test_a_notice_is_delivered_and_nothing_goes_back(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            server = Server(socket_path=base / "agent.sock", state_path=base / "state.json")
+            server.sessions["s"] = _Fake("s", "src", "active")
+            server.sessions["t"] = _Fake("t", "tgt", "thinking")
+            source_wire, target_wire = [], []
+            server.subscribers["s"] = {_Sink(source_wire)}
+            server.subscribers["t"] = {_Sink(target_wire)}
+
+            async def run():
+                res = await server.dispatch("peer_send", {
+                    "source_session_id": "s", "handle": "tgt", "message": "fyi",
+                    "expects_reply": False}, None)
+                mid = res["message_id"]
+                server._emit({"event": "assistant_text", "session_id": "t", "delta": "work for the human",
+                              "_peer_request_id": mid})
+                server._emit({"event": "stop", "session_id": "t", "subtype": "success",
+                              "_peer_request_id": mid, "_peer_shared": True})
+                await asyncio.sleep(0.05)
+                return mid
+
+            mid = asyncio.run(run())
+            self.assertIn('expects-reply="false"', server.sessions["t"].inputs[0][0])
+            row = server.peer_messages[mid]
+            self.assertEqual(row["status"], "delivered")
+            self.assertNotIn("reply", row)
+            self.assertNotIn("t", server.peer_target_active)
+            inbound = next(p for p in target_wire if p.get("event") == "external_message")
+            self.assertIs(inbound["expects_reply"], False)
+            self.assertFalse([p for p in source_wire if p.get("event") == "external_message"])
+            self.assertEqual([p["status"] for p in source_wire if p.get("event") == "peer_message_status"],
+                             ["accepted", "delivered"])
+
     def test_claude_correlates_to_the_turn_that_reads_the_message(self):
         events = []
         s = AgentSession("t", cwd="/tmp", name=None, permission_mode="default",

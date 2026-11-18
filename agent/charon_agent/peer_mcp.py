@@ -22,7 +22,8 @@ PEER_MODEL_INSTRUCTIONS = (
     "the user mentions an @handle or asks you to contact another Charon session, "
     "you MUST call list_sessions and then send_message; do not use provider-native "
     "collaboration tools and never claim a handle is unavailable without listing. "
-    "send_message confirms acceptance, not a reply. Use get_message_status, "
+    "send_message confirms acceptance, not a reply; pass expects_reply false when "
+    "no answer is wanted (information, coordination). Use get_message_status, "
     "get_conversation or list_inbox when asked whether a peer answered. Charon "
     "automatically returns the target turn's final answer, so an incoming peer "
     "request should be answered normally; do not send a redundant acknowledgement. "
@@ -93,6 +94,14 @@ _TOOLS = [
                     "type": "string",
                     "description": "Optional existing conversation id for an explicit follow-up",
                 },
+                "expects_reply": {
+                    "type": "boolean",
+                    "description": (
+                        "Default true: the target's answer comes back to you. False = information "
+                        "only: the target is told not to answer and nothing comes back. Use false "
+                        "whenever you would write \"no need to reply\"."
+                    ),
+                },
             },
             "required": ["handle", "message"],
             "additionalProperties": False,
@@ -146,7 +155,8 @@ _TOOLS = [
         "name": "get_message_status",
         "description": (
             "Get the authoritative state of one sent or received peer message: "
-            "accepted, processing, replied, failed or timed_out."
+            "accepted, processing, replied, delivered (read; no reply expected), "
+            "failed or timed_out."
         ),
         "inputSchema": {
             "type": "object",
@@ -255,6 +265,7 @@ def _handle(request: dict[str, Any], source_session_id: str, socket_path: str) -
                     "handle": args.get("handle"),
                     "message": args.get("message"),
                     "conversation_id": args.get("conversation_id"),
+                    "expects_reply": args.get("expects_reply") is not False,
                 })
             elif name == "start_sub_session":
                 spawn = {"source_session_id": source_session_id}

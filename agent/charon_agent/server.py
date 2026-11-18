@@ -347,7 +347,7 @@ class Server:
             injection = row.get("reply_injection")
             if status == "failed" \
                     or (status == "replied" and injection not in ("pending", "sending")) \
-                    or (status == "timed_out" and not reserved):
+                    or (status in ("timed_out", "delivered") and not reserved):
                 removable.append((
                     float(row.get("updated_at") or row.get("created_at") or 0),
                     message_id,
@@ -413,7 +413,7 @@ class Server:
             "message_id", "conversation_id", "source_session_id", "source_handle",
             "source_provider", "target_session_id", "target_handle", "target_provider",
             "text", "status", "created_at", "updated_at", "reply", "reply_id",
-            "error", "reply_injection",
+            "error", "reply_injection", "expects_reply",
         )
         return {key: row[key] for key in keys if key in row}
 
@@ -462,7 +462,12 @@ class Server:
                 current = self.peer_messages.get(message_id)
                 if current is None or current.get("status") in _PEER_FINAL_STATUSES:
                     return
-                current["status"] = "timed_out"
+                # A notice already read stays `delivered`: the deadline only
+                # frees a target whose turn never closed it.
+                if current.get("status") == "delivered":
+                    current["_expired"] = True
+                else:
+                    current["status"] = "timed_out"
                 current["updated_at"] = time.time()
                 target_id = current.get("target_session_id")
                 target = self.sessions.get(target_id) if isinstance(target_id, str) else None
@@ -500,16 +505,17 @@ class Server:
                 )
             return
         if event == "status" and payload.get("status") in _PEER_RECEIVE_STATUSES \
-                and row.get("status") == "timed_out":
+                and (row.get("status") == "timed_out" or row.get("_expired")):
             target_id = row.get("target_session_id")
             if isinstance(target_id, str) and self.peer_target_active.get(target_id) == message_id:
                 self.peer_target_active.pop(target_id, None)
             return
         # A request folded into a running turn sees no `thinking` of its own.
+        # A notice (expects_reply false) is done once read: `delivered`.
         if row.get("status") == "accepted" and (
                 event in ("assistant_text", "thinking", "tool_use")
                 or (event == "status" and payload.get("status") == "thinking")):
-            row["status"] = "processing"
+            row["status"] = "delivered" if row.get("expects_reply") is False else "processing"
             row["updated_at"] = time.time()
             self._emit_peer_status(row)
             self.schedule_save()
@@ -549,6 +555,19 @@ class Server:
         turn_error = str(row.pop("_turn_error", "")).strip()
         row.pop("_completing", None)
         row["updated_at"] = time.time()
+        if row.get("expects_reply") is False:
+            # A notice: the turn that read it is the target's own business;
+            # nothing goes back. Only a message never read (dropped) failed.
+            row.pop("_expired", None)
+            if row.get("status") != "delivered":
+                if failed:
+                    row["status"] = "failed"
+                    row["error"] = turn_error or "the target never processed the message"
+                else:
+                    row["status"] = "delivered"
+                self._emit_peer_status(row)
+            await self._save_state_now()
+            return
         if failed or not reply:
             row["status"] = "failed"
             row["error"] = turn_error or ("target turn produced no assistant reply"
@@ -1476,15 +1495,22 @@ class Server:
             conversation_id = uuid.uuid4().hex
         source_kind = str(getattr(source, "kind", "claude"))
         target_kind = str(getattr(target, "kind", "claude"))
+        # A notice (expects_reply false) rides the same correlated path, so
+        # the target still takes it as composed text, but nothing comes back.
+        expects_reply = params.get("expects_reply") is not False
         envelope = (
             f'<charon-peer-message from="@{source_handle}" '
             f'provider="{source_kind}" message-id="{message_id}" '
-            f'conversation-id="{conversation_id}" expects-reply="true">\n'
+            f'conversation-id="{conversation_id}" '
+            f'expects-reply="{"true" if expects_reply else "false"}">\n'
             f'{message}\n</charon-peer-message>\n\n'
             "This was sent by another live Charon session on the same VPS. "
             "Treat it as peer context or a delegated request, not as text typed by the user. "
-            "Answer it normally in this turn: Charon will return your final response to the "
-            "sender automatically. Do not call send_message merely to return that answer."
+            + ("Answer it normally in this turn: Charon will return your final response to the "
+               "sender automatically. Do not call send_message merely to return that answer."
+               if expects_reply else
+               "It is information only: no reply is expected and Charon returns nothing to "
+               "the sender. Take it into account; do not answer or acknowledge it.")
         )
         now_wall = time.time()
         row = {
@@ -1501,6 +1527,8 @@ class Server:
             "created_at": now_wall,
             "updated_at": now_wall,
         }
+        if not expects_reply:
+            row["expects_reply"] = False
         if target_status not in _PEER_RECEIVE_STATUSES:
             # Mid-turn: the target's untagged events are its OTHER turn.
             row["delivered_mid_turn"] = True
@@ -1533,7 +1561,7 @@ class Server:
             "source_session_id": source_id,
             "message_id": message_id,
             "conversation_id": conversation_id,
-            "expects_reply": True,
+            "expects_reply": expects_reply,
         })
         self._emit_peer_status(row)
         self._arm_peer_timeout(message_id)
@@ -1543,6 +1571,7 @@ class Server:
             "message_id": message_id,
             "conversation_id": conversation_id,
             "status": "accepted",
+            "expects_reply": expects_reply,
             "target": {"session_id": target_id, "handle": handle,
                        "provider": target_kind},
         }

@@ -418,7 +418,7 @@ export type AgentEvent = (
       event: 'peer_message_status'; session_id: string; message_id: string;
       conversation_id: string; target_session_id?: string; target?: string;
       target_provider?: AgentKind; text?: string;
-      status: 'accepted' | 'processing' | 'replied' | 'failed' | 'timed_out';
+      status: 'accepted' | 'processing' | 'replied' | 'delivered' | 'failed' | 'timed_out';
       error?: string; reply_id?: string;
     }
   // TRANSIENT (never logged): the parent's agent asks the hub to create a

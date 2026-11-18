@@ -178,6 +178,7 @@ function Message({ m, vpsId, cwd, streaming = false, attachedResult, kind = 'cla
   const peerStatusLabel = m.peerStatus === 'accepted' ? 'accepted'
     : m.peerStatus === 'processing' ? 'processing'
     : m.peerStatus === 'replied' ? 'replied'
+    : m.peerStatus === 'delivered' ? 'delivered'
     : m.peerStatus === 'timed_out' ? 'timed out'
     : m.peerStatus === 'failed' ? 'failed' : null;
   return (

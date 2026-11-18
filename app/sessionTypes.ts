@@ -44,7 +44,7 @@ export type Msg = {
   messageId?: string | null;
   conversationId?: string | null;
   replyTo?: string | null;
-  peerStatus?: 'accepted' | 'processing' | 'replied' | 'failed' | 'timed_out' | null;
+  peerStatus?: 'accepted' | 'processing' | 'replied' | 'delivered' | 'failed' | 'timed_out' | null;
   peerTarget?: string | null;
   peerTargetSessionId?: string | null;
   peerError?: string | null;

@@ -186,7 +186,7 @@ export type BridgeEvent =
   | {
       type: 'peer_message_status'; messageId: string; conversationId: string;
       targetSessionId?: string; target?: string; targetProvider?: SessionProvider;
-      text?: string; status: 'accepted' | 'processing' | 'replied' | 'failed' | 'timed_out';
+      text?: string; status: 'accepted' | 'processing' | 'replied' | 'delivered' | 'failed' | 'timed_out';
       error?: string; replyId?: string; rowId?: number;
     }
   // turn_error (agent >= 0.36.0) = typed turn failure off AssistantMessage

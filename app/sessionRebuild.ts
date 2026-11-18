@@ -192,7 +192,7 @@ export function rebuildStateFromMessages(
           });
         }
         if (ev.type === 'peer_message_status' && typeof ev.messageId === 'string') {
-          const peerStatus = ['accepted', 'processing', 'replied', 'failed', 'timed_out']
+          const peerStatus = ['accepted', 'processing', 'replied', 'delivered', 'failed', 'timed_out']
             .includes(String(ev.status)) ? ev.status : 'failed';
           replaceLiveMessage({
             id: `peer:${ev.messageId}`, role: 'peer_status',
