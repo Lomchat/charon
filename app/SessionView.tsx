@@ -12,7 +12,7 @@ import EndpointEffortPicker, { EndpointEffortSummary } from './EndpointEffortPic
 import { isOpenCodeGo } from '@/lib/opencodeModels';
 
 import SessionSettingsModal from './SessionSettingsModal';
-import { IconGear, IconPause, IconPlay, IconStop, IconRewind, IconGitBranch, IconBullseye, IconChatSide, IconSparkle } from './icons';
+import { IconArrowRepeat, IconGear, IconPause, IconPlay, IconStop, IconRewind, IconGitBranch, IconBullseye, IconChatSide, IconSparkle } from './icons';
 import { goalIsLive, shownGoal } from '@/lib/sessionGoal';
 import { sameModel } from '@/lib/strictModel';
 import type { SessionRecap } from '@/lib/sessionRecap';
@@ -1115,26 +1115,33 @@ export default function SessionView({
             {/* `display: contents` on desktop; the phone's one-line title. */}
             <span className="bar-title">
             <span className="bar-name">{selected.name || '(unnamed)'}</span>
-            {/* The addressing form of the same identity. Shown next to the
-                name because it is what ANOTHER agent on this machine types to
-                reach this session — knowing it requires seeing it. */}
-            {handle && (
-              <span
-                className="bar-handle"
-                title={`Stable Charon address on ${selectedVps?.name ?? 'this machine'} (${selected.addressable ? 'currently reachable' : 'not currently reachable'})`}
-              >@{handle}</span>
-            )}
-            {parentSessionId && onOpenSession && (
-              <ParentChip parentId={parentSessionId} onOpen={onOpenSession} />
-            )}
-            {/* The agent was updated under this session (§14.117): it still
-                runs the previous versions, and moves itself to the new ones the
-                next time it is idle. Nothing to do — but worth knowing which. */}
-            {runtimeOutdated && (
-              <span className="bar-outdated" role="note" aria-label="Agent update pending"
-                title={[...pendingUpdateRows(runtimeVersions, selectedVps),
-                  'Applied by itself the next time this session is idle'].join('\n')}
-              >⚠<span className="bar-outdated-text"> update pending</span></span>
+            {/* `@parent › @handle ↻`: one row under the name on desktop,
+                `display: contents` in the phone's title line. */}
+            {(handle || parentSessionId || runtimeOutdated) && (
+              <span className="bar-handle-line">
+                {parentSessionId && onOpenSession && (
+                  <ParentChip parentId={parentSessionId} onOpen={onOpenSession} beforeHandle={!!handle} />
+                )}
+                {/* The addressing form of the same identity. Shown next to the
+                    name because it is what ANOTHER agent on this machine types to
+                    reach this session — knowing it requires seeing it. */}
+                {handle && (
+                  <span
+                    className="bar-handle"
+                    title={`Stable Charon address on ${selectedVps?.name ?? 'this machine'} (${selected.addressable ? 'currently reachable' : 'not currently reachable'})`}
+                  >@{handle}</span>
+                )}
+                {/* The agent was updated under this session (§14.117): it still
+                    runs the previous versions, and moves itself to the new ones
+                    the next time it is idle. Nothing to do: a sign, the versions
+                    in its tooltip. */}
+                {runtimeOutdated && (
+                  <span className="bar-outdated" role="img" aria-label="Agent update pending"
+                    title={[...pendingUpdateRows(runtimeVersions, selectedVps),
+                      'Applied by itself the next time this session is idle'].join('\n')}
+                  ><IconArrowRepeat /></span>
+                )}
+              </span>
             )}
             {/* Phone only: its hit area spans the whole title line. */}
             <button type="button" className="bar-expand" aria-expanded={barExpanded}
@@ -1724,10 +1731,11 @@ export const RecapNote = memo(function RecapNote({ recap }: { recap: SessionReca
   );
 });
 
-/** "sub-session of @parent": read from the summary store (a sleeping parent is
- *  not in `siblings`), as a string so only this chip re-renders. */
-const ParentChip = memo(function ParentChip({ parentId, onOpen }: {
-  parentId: string; onOpen: (id: string) => void;
+/** The `@parent ›` crumb before a sub-session's handle: read from the summary
+ *  store (a sleeping parent is not in `siblings`), as a string so only this
+ *  crumb re-renders. */
+const ParentChip = memo(function ParentChip({ parentId, onOpen, beforeHandle }: {
+  parentId: string; onOpen: (id: string) => void; beforeHandle: boolean;
 }) {
   const label = useSyncExternalStore(subscribeSummaries, () => {
     const p = getSummary(parentId);
@@ -1735,11 +1743,13 @@ const ParentChip = memo(function ParentChip({ parentId, onOpen }: {
   }, () => null);
   if (label === null) return null;
   return (
-    <button type="button" className="bar-parent"
-      title={`Sub-session of ${label}: open the session that spawned it`}
-      aria-label={`sub-session of ${label}`}
-      onClick={() => onOpen(parentId)}
-    >↳ {label}</button>
+    <>
+      <button type="button" className="bar-parent" title="Parent session"
+        aria-label={`Open parent session ${label}`}
+        onClick={() => onOpen(parentId)}
+      >{label}</button>
+      {beforeHandle && <span className="bar-crumb-sep" aria-hidden>›</span>}
+    </>
   );
 });
 

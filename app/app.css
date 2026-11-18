@@ -8823,25 +8823,28 @@ html:not([data-file-icons='mono']) .tt-row:not(.ignored) > .tt-ico.fi { opacity:
    A session's name is what a human reads; the handle is what ANOTHER agent on
    the same machine types to reach it. Shown wherever the name is, because a
    handle nobody can see is a handle nobody can use. */
-.bar-parent {
-  flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
-  padding: 0 6px; border: 1px solid var(--border); border-radius: var(--radius-sm);
-  background: transparent; color: var(--text-muted); font-family: var(--mono); font-size: 10px; cursor: pointer;
-}
-.app-bar .bar-parent { text-transform: none; letter-spacing: normal; } /* a handle is case-exact */
-.bar-parent:hover { color: var(--accent-strong); border-color: var(--accent); }
+/* `@parent › @handle ↻` — one row under the name; the phone's title line
+   flattens it (`display: contents`). The parent crumb gives way first. */
+.app-bar .bar-handle-line { display: flex; align-items: center; min-width: 0; }
 .bar-handle {
   margin-left: 6px; font-size: 11px; color: var(--violet);
   opacity: 0.85; white-space: nowrap; cursor: default;
 }
-/* Still on the agent code of before an update (§14.117). */
-.bar-outdated {
-  flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
-  width: fit-content; max-width: 100%; /* never stretched by the column layout */
-  margin-left: 6px; padding: 0 6px; border: 1px solid color-mix(in srgb, var(--warning) 45%, transparent);
-  border-radius: var(--radius-sm); color: var(--warning); font-size: 10px; cursor: default;
+.app-bar .bar-handle-line .bar-handle { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+/* Outranks the header's generic `.app-bar button`: a crumb, not a button. */
+.app-bar .bar-parent {
+  flex: 0 1000 auto; min-width: 0; margin-left: 6px; padding: 0;
+  border: 0; border-radius: 0; background: none; color: var(--text-muted);
+  font-family: var(--body); font-size: 11px; line-height: inherit;
+  letter-spacing: normal; text-transform: none; /* a handle is case-exact */
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis; cursor: pointer;
 }
-.app-bar .bar-outdated { text-transform: none; letter-spacing: normal; }
+.app-bar .bar-parent:hover { text-decoration: underline; text-underline-offset: 2px; }
+.bar-crumb-sep { flex: none; margin: 0 4px; font-size: 11px; color: var(--text-faint); }
+.bar-crumb-sep + .bar-handle { margin-left: 0; }
+/* Still on the agent code of before an update (§14.117): the sign alone. */
+.bar-outdated { flex: none; display: inline-grid; place-items: center; margin-left: 5px; color: var(--warning); cursor: default; }
+.bar-outdated svg { width: 11px; height: 11px; }
 .cs-card-handle {
   color: var(--violet); opacity: 0.8; margin-right: 6px;
   white-space: nowrap; flex: none;
@@ -9380,11 +9383,12 @@ html:not([data-file-icons='mono']) .tt-row:not(.ignored) > .tt-ico.fi { opacity:
   .app-bar .bar-ident { display: grid; grid-template-columns: minmax(0, 1fr) auto auto; align-items: center; column-gap: 0; row-gap: 2px; }
   .app-bar .bar-title { position: relative; display: flex; align-items: center; min-width: 0; grid-column: 1 / -1; grid-row: 1; }
   .app-bar .bar-title .bar-name { flex: 0 1 auto; min-width: 0; }
-  /* The handle gives way first: the name is what a human reads. */
+  /* The handle row joins the title line. The handle gives way first: the
+     name is what a human reads. The parent crumb shrinks WITH the name, so
+     its `›` never stands alone. */
+  .app-bar .bar-title .bar-handle-line { display: contents; }
   .app-bar .bar-title .bar-handle { flex: 0 1000 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
-  /* The title line has no room for words: the sign alone, never squeezed. */
-  .app-bar .bar-title .bar-outdated { flex: none; }
-  .app-bar .bar-title .bar-outdated-text { display: none; }
+  .app-bar .bar-title .bar-parent { flex: 0 1 auto; }
   .app-bar .bar-expand {
     position: static; display: inline-flex; align-items: center; justify-content: center; flex: none;
     width: 22px; height: 22px; margin-left: 2px; padding: 0; border: 0; background: none;
