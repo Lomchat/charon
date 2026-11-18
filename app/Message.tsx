@@ -20,6 +20,7 @@ import { describeSchedule, parseScheduledFire, scheduledTaskBody, scheduledTaskT
 import { resolveResetAtMs } from '@/lib/rateLimitReset';
 import { formatMessageTime, useTodayStart } from './messageTime';
 import { findTextLinks, messageFileTarget, remarkCodeUrls, remarkFilePaths } from './messageLinks';
+import { rehypeTrimBlockEdges } from './rehypeTrimBlockEdges';
 import { openTab as openWorkspaceTab } from './tabStore';
 import { revealLine, revealView } from './revealLine';
 import { peerRequestTarget } from './peerMessageLinks';
@@ -40,6 +41,7 @@ const MermaidDiagram = dynamic(() => import('./MermaidDiagram'), {
   loading: () => <p className="mermaid-status" role="status">Rendering diagram…</p>,
 });
 export const MARKDOWN_REHYPE_PLUGINS: NonNullable<React.ComponentProps<typeof ReactMarkdown>['rehypePlugins']> = [
+  rehypeTrimBlockEdges,
   [rehypeHighlight, { detect: true, ignoreMissing: true }],
 ];
 // An `http:` image on the `https:` hub is mixed content: the browser upgrades it
