@@ -94,7 +94,10 @@ html[data-density='small'] .files-list .f-actions { margin-top: 5px; }
   html[data-density='small'] .cs-add-btn,
   html[data-density='small'] .cs-chip-face { min-height: 32px; }
   html[data-density='small'] .app-bar { padding: 8px 12px; }
-  html[data-density='small'] .app-chat { padding: 10px; }
+  html[data-density='small'] .app-chat { padding: 10px; font-size: 12px; }
+  html[data-density='small'] .bubble .content.md :is(code, pre) { font-size: 10.5px; }
+  html[data-density='small'] .recap-bubble { font-size: 10px; }
+  html[data-density='small'] .recap-bubble code { font-size: 9px; }
   html[data-density='small'] .app-input-bar { padding: 8px 10px; padding-bottom: max(10px, env(safe-area-inset-bottom)); }
   /* One line at rest, like app.css's phone box (padding here is 8px). */
   html[data-density='small'] .app-input-bar textarea { font-size: 16px; min-height: calc(1.4em + 18px); }
