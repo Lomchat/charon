@@ -1,6 +1,7 @@
 import { requireApiSession } from '@/lib/server/session';
 import { syncAfter } from '@/lib/server/sync/sessionSummaries';
-import { getOrCreateStream } from '@/lib/server/agent/sessionOps';
+import { emitGlobalTabsChanged, getOrCreateStream } from '@/lib/server/agent/sessionOps';
+import { pinTabForRef } from '@/lib/server/hub/tabs';
 
 // POST /api/sessions/[id]/exit-plan
 // Body: { id: qid, decision: 'approve' | 'reject', feedback?: string }
@@ -17,6 +18,8 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
   if (!qid) return Response.json({ error: 'qid required' }, { status: 400 });
   try {
     await stream.respondExitPlan(qid, decision, feedback);
+    // Answering is working in the session: its tab stops being a preview (§14.78).
+    if (pinTabForRef('session', id)) emitGlobalTabsChanged();
     return Response.json({ ok: true, sync: syncAfter([id]) });
   } catch (e: any) {
     return Response.json({ error: e?.message ?? String(e) }, { status: 500 });

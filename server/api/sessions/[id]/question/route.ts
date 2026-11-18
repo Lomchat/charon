@@ -1,6 +1,7 @@
 import { requireApiSession } from '@/lib/server/session';
 import { syncAfter } from '@/lib/server/sync/sessionSummaries';
-import { getOrCreateStream } from '@/lib/server/agent/sessionOps';
+import { emitGlobalTabsChanged, getOrCreateStream } from '@/lib/server/agent/sessionOps';
+import { pinTabForRef } from '@/lib/server/hub/tabs';
 
 // POST /api/sessions/[id]/question
 // Body: { id: qid, answers: Record<string,string> | null }
@@ -16,6 +17,8 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
   const answers = body.answers && typeof body.answers === 'object' ? body.answers : null;
   try {
     await stream.respondQuestion(qid, answers);
+    // Answering is working in the session: its tab stops being a preview (§14.78).
+    if (pinTabForRef('session', id)) emitGlobalTabsChanged();
     return Response.json({ ok: true, sync: syncAfter([id]) });
   } catch (e: any) {
     return Response.json({ error: e?.message ?? String(e) }, { status: 500 });

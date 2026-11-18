@@ -1,6 +1,7 @@
 import { requireApiSession } from '@/lib/server/session';
 import { syncAfter } from '@/lib/server/sync/sessionSummaries';
-import { getOrCreateStream } from '@/lib/server/agent/sessionOps';
+import { emitGlobalTabsChanged, getOrCreateStream } from '@/lib/server/agent/sessionOps';
+import { pinTabForRef } from '@/lib/server/hub/tabs';
 
 // POST /api/sessions/[id]/permission
 // Body: { id: permId, allow: bool, always?: bool, suggestion?: int }
@@ -23,6 +24,8 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
     await stream.respondPermission(
       permId, Boolean(body.allow), Boolean(body.always), suggestion ?? undefined,
     );
+    // Answering is working in the session: its tab stops being a preview (§14.78).
+    if (pinTabForRef('session', id)) emitGlobalTabsChanged();
     return Response.json({ ok: true, sync: syncAfter([id]) });
   } catch (e: any) {
     return Response.json({ error: e?.message ?? String(e) }, { status: 500 });

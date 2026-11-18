@@ -12,8 +12,9 @@ import fs from 'node:fs';
 //   * re-opening something already open must NOT evict the group's preview
 //     (the preview might be that very tab);
 //   * pinning is additive — a new pinned tab never displaces the preview;
-//   * closing the active tab stays in its group: same-group browser history,
-//     then left/right neighbour, or no active pane when the group empties;
+//   * closing the active tab goes back to the previous tab of the browser's
+//     focus history, any group; without one, left/right neighbour in the
+//     group, or no active pane when the group empties;
 //   * at most one row is active, always.
 
 process.env.DATABASE_URL = path.join(
@@ -69,21 +70,23 @@ describe('client close focus', () => {
     expect(TabStore.chooseNextFocusAfterClosing([a, b, c], ['c', 'a', 'b'], c)).toBe('a');
   });
 
-  it('uses the left neighbour when the immediately previous tab is in another group', () => {
+  it('goes back to the previous tab even in another group, skipping closed ones', () => {
     const a = tab('a', VPS, P, 0);
     const b = tab('b', VPS, P, 1);
     const c = tab('c', VPS, P, 2);
     const other = tab('other', OTHER, Q, 0);
-    // `a` is older same-group history and must not be searched past `other`.
+    // The previous tab wins over same-group history and over the neighbour.
     expect(TabStore.chooseNextFocusAfterClosing(
-      [a, b, c, other], ['c', 'other', 'a'], c,
-    )).toBe('b');
+      [a, b, c, other], ['c', 'gone', 'other', 'a'], c,
+    )).toBe('other');
   });
 
-  it('returns no focus when the closing tab is the last in its group', () => {
-    const c = tab('c', VPS, P, 0);
+  it('without history: the left neighbour, or no focus when the group empties', () => {
+    const b = tab('b', VPS, P, 0);
+    const c = tab('c', VPS, P, 1);
     const other = tab('other', OTHER, Q, 0);
-    expect(TabStore.chooseNextFocusAfterClosing([c, other], ['c', 'other'], c)).toBeNull();
+    expect(TabStore.chooseNextFocusAfterClosing([b, c, other], ['c'], c)).toBe('b');
+    expect(TabStore.chooseNextFocusAfterClosing([c, other], ['c'], c)).toBeNull();
   });
 
   it('keeps local focus when a shared snapshot names another active tab', () => {
@@ -207,19 +210,12 @@ describe('closing', () => {
     expect(T.closeTab(b.id, 'a-tab-that-no-longer-exists').nextActiveId).toBe(a.id);
   });
 
-  it('rejects a preferred tab from another group and uses the left neighbour', () => {
+  it('honours a preferred tab from another group', () => {
     const other = T.openTab({ vpsId: OTHER, path: Q, kind: 'file', ref: 'z.ts', pin: true });
-    const a = T.openTab({ vpsId: VPS, path: P, kind: 'file', ref: 'a.ts', pin: true });
+    T.openTab({ vpsId: VPS, path: P, kind: 'file', ref: 'a.ts', pin: true });
     const b = T.openTab({ vpsId: VPS, path: P, kind: 'file', ref: 'b.ts', pin: true });
-    expect(T.closeTab(b.id, other.id).nextActiveId).toBe(a.id);
-    expect(T.getActiveTab()?.id).toBe(a.id);
-  });
-
-  it('rejects another-group preference and stays empty when the group empties', () => {
-    const other = T.openTab({ vpsId: OTHER, path: Q, kind: 'file', ref: 'z.ts', pin: true });
-    const here = T.openTab({ vpsId: VPS, path: P, kind: 'file', ref: 'a.ts', pin: true });
-    expect(T.closeTab(here.id, other.id).nextActiveId).toBeNull();
-    expect(T.getActiveTab()).toBeNull();
+    expect(T.closeTab(b.id, other.id).nextActiveId).toBe(other.id);
+    expect(T.getActiveTab()?.id).toBe(other.id);
   });
 
   it('closing an inactive tab leaves focus alone', () => {
@@ -255,7 +251,7 @@ describe('closing', () => {
     expect(T.getActiveTab()).not.toBeNull();
   });
 
-  it('bulk-closing the active group does not focus another group', () => {
+  it('bulk-closing the active group clears the legacy active bit', () => {
     T.openTab({ vpsId: OTHER, path: Q, kind: 'file', ref: 'other.ts', pin: true });
     T.openTab({ vpsId: VPS, path: P, kind: 'file', ref: 'a.ts', pin: true });
     T.openTab({ vpsId: VPS, path: P, kind: 'file', ref: 'b.ts', pin: true });

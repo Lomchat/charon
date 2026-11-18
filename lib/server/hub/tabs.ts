@@ -237,10 +237,10 @@ export function dropTabsForRef(kind: TabKind, ref: string): boolean {
 /**
  * Close one tab. Returns the tab that should take focus, if this one had it.
  *
- * A client-preferred tab wins only when it belongs to the same `(VPS, path)`
- * group. Otherwise focus falls to the left neighbour, then the right one. The
- * final tab of a group leaves no active pane; closing must never jump to
- * another project or machine.
+ * The client-preferred tab (the one it was on before, from its focus history)
+ * wins whenever it still exists, in any group. Otherwise focus falls to the
+ * left neighbour, then the right one; the final tab of a group leaves no
+ * active pane.
  */
 export function closeTab(id: string, preferredNextId?: string | null): { closed: boolean; nextActiveId: string | null } {
   const [r] = db.select().from(tabs).where(eq(tabs.id, id)).limit(1).all();
@@ -257,12 +257,9 @@ export function closeTab(id: string, preferredNextId?: string | null): { closed:
   if (!wasActive) return { closed: true, nextActiveId: null };
   // The CLIENT's focus history wins when it names a tab that still exists:
   // only the browser knows which tab you were actually on before this one.
-  // It is deliberately group-scoped; the neighbour walk below is the fallback
-  // for a caller that didn't say or named a tab in another group.
+  // The neighbour walk below is the fallback for a caller that didn't say.
   if (preferredNextId) {
-    const [pref] = db.select().from(tabs).where(and(
-      eq(tabs.id, preferredNextId), eq(tabs.vpsId, r.vpsId), eq(tabs.path, r.path),
-    )).limit(1).all();
+    const [pref] = db.select().from(tabs).where(eq(tabs.id, preferredNextId)).limit(1).all();
     if (pref) {
       setActive(pref.id);
       return { closed: true, nextActiveId: pref.id };
@@ -284,11 +281,9 @@ export function closeTabsWhere(filter: { vpsId?: string; path?: string; exceptId
   db.transaction((tx) => {
     for (const r of rows) tx.delete(tabs).where(eq(tabs.id, r.id)).run();
   });
-  if (hadActive) {
-    // A group/VPS close removes the active group's final visible tab by
-    // construction. Do not jump into another group behind the user's back.
-    setActive(null);
-  }
+  // The legacy bit only: current clients go back to their own previous tab
+  // (app/tabStore.ts § setTabs), which the server cannot know.
+  if (hadActive) setActive(null);
   return rows.length;
 }
 

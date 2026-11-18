@@ -100,6 +100,6 @@ describe('tab store: optimistic focus vs older layouts', () => {
     await store.openTab({ vpsId: 'v', path: '/two', kind: 'session', ref: 'b' });
     await flush();
     expect(api.listTabs).toHaveBeenCalledTimes(2);
-    expect(store.activeTab()?.path).toBe('/two');   // fell back within the group
+    expect(active()).toBe('a');   // back on the tab the click came from
   });
 });

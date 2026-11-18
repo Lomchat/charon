@@ -57,14 +57,18 @@ if (!(Object.prototype.hasOwnProperty.call(state, 'activeId'))) {
 const subs = (g.__charonTabSubs ??= new Set<() => void>());
 export const ACTIVE_TAB_STORAGE_KEY = 'hub.tabs.active.v1';
 /**
- * Focus history, most-recent-first. NOT in the snapshot — nothing renders it.
+ * Focus history, most-recent-first: the current tab and the
+ * `FOCUS_HISTORY_DEPTH` tabs focused before it. NOT in the snapshot — nothing
+ * renders it.
  *
  * It exists so that closing a tab returns you to the one you were ACTUALLY on,
  * not to whichever neighbour happens to sit next to the hole. Open a file from
  * tab 1, close it, and you belong back on tab 1 — "the last tab in the row" is
  * only ever right by accident. Browser-side like `lastByGroup`: which tab you
- * were looking at is a per-screen fact.
+ * were looking at is a per-screen fact. In memory only: a page load starts it
+ * over from the restored tab.
  */
+const FOCUS_HISTORY_DEPTH = 5;
 const mru = (g.__charonTabMru ??= []);
 
 function touchMru(id: string | null | undefined) {
@@ -72,27 +76,26 @@ function touchMru(id: string | null | undefined) {
   const i = mru.indexOf(id);
   if (i !== -1) mru.splice(i, 1);
   mru.unshift(id);
-  if (mru.length > 60) mru.length = 60;
+  if (mru.length > FOCUS_HISTORY_DEPTH + 1) mru.length = FOCUS_HISTORY_DEPTH + 1;
 }
 
 /** The tab focus should fall to when `closing` goes away.
  *
- * Focus never escapes the closing tab's `(VPS, path)` group. Within that
- * group, return to the immediately previous tab only if it belongs to that
- * group. If that previous tab belongs elsewhere (or there is no history), use
- * the visual neighbour (left first, then right). Closing the group's final tab
- * deliberately leaves the workspace without an active pane even when another
- * group still has tabs.
+ * Back to the tab you were on before: the most recent one in the focus history
+ * that still exists, whatever its machine or folder. Only with no usable
+ * history (a fresh page load, a run of closes that used it up) does focus fall
+ * to the closing tab's visual neighbour in its `(VPS, path)` group — left
+ * first, then right — and to no active pane when that group empties.
  */
 export function chooseNextFocusAfterClosing(
   tabs: TabDTO[], focusHistory: readonly string[], closing: TabDTO,
 ): string | null {
+  const live = new Set(tabs.filter((t) => t.id !== closing.id).map((t) => t.id));
+  const previous = focusHistory.find((id) => live.has(id));
+  if (previous) return previous;
   const siblings = tabs
     .filter((t) => t.vpsId === closing.vpsId && t.path === closing.path)
     .slice().sort((a, b) => a.position - b.position);
-  const liveById = new Map(tabs.filter((t) => t.id !== closing.id).map((t) => [t.id, t]));
-  const previous = focusHistory.map((id) => liveById.get(id)).find((t) => t !== undefined);
-  if (previous?.vpsId === closing.vpsId && previous.path === closing.path) return previous.id;
   const idx = siblings.findIndex((t) => t.id === closing.id);
   return siblings[idx - 1]?.id ?? siblings[idx + 1]?.id ?? null;
 }
@@ -126,7 +129,7 @@ function setTabs(tabs: TabDTO[], requestedActiveId?: string | null) {
   const ids = new Set(tabs.map((t) => t.id));
   let activeId = requestedActiveId === undefined ? state.activeId : requestedActiveId;
   // A shared layout change may close/evict the tab this browser was viewing.
-  // Fall back locally within the old group; never adopt the sender's active.
+  // Fall back to THIS browser's previous tab; never adopt the sender's active.
   if (activeId && !ids.has(activeId)) {
     const closing = state.tabs.find((t) => t.id === activeId);
     const context = closing
@@ -320,8 +323,8 @@ export async function pinTab(id: string): Promise<void> {
 export async function closeTab(id: string): Promise<void> {
   const closing = state.tabs.find((t) => t.id === id);
   const wasActive = closing?.id === state.activeId;
-  // Decide the next focus BEFORE the row disappears: immediate history when
-  // it stays in-group, otherwise the row's left/right geometry.
+  // Decide the next focus BEFORE the row disappears: the previous tab from
+  // the focus history, else the row's left/right geometry.
   const next = wasActive && closing ? nextFocusAfterClosing(closing) : null;
   setTabs(state.tabs.filter((t) => t.id !== id), wasActive ? next : state.activeId);
   await mutate(() => api.closeTab(id, next ?? undefined), (res) => setTabs(res.tabs));

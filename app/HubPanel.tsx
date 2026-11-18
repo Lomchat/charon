@@ -1407,6 +1407,27 @@ export default function HubPanel({ vpsList: initialVpsList, vpsFolders: initialF
   function onTabCloseClick(t: ResolvedTab) {
     closeTabsOrAsk(t.label, [t], () => closeWorkspaceTab(t.id));
   }
+  // Ctrl/Cmd+W closes the active tab exactly like its ✕ (an unsaved file still
+  // asks). Not in a terminal (the shell's delete-word, like Ctrl+K above) nor
+  // behind an open dialog. A browser TAB never delivers it (the browser keeps
+  // the shortcut); an app window does, and closes itself on an unhandled one —
+  // hence preventDefault even with nothing to close. Key-repeat closes nothing.
+  const closeActiveTabRef = useRef<() => void>(() => {});
+  closeActiveTabRef.current = () => { if (activeTab) onTabCloseClick(activeTab); };
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (!(e.ctrlKey || e.metaKey) || e.altKey || e.shiftKey) return;
+      const k = e.key.toLowerCase();
+      // `code` only for non-Latin layouts: on AZERTY the KeyW position types 'z'.
+      if (k !== 'w' && (/^[a-z]$/.test(k) || e.code !== 'KeyW')) return;
+      if ((e.target as Element | null)?.closest?.('.xterm')) return;
+      e.preventDefault();
+      if (e.repeat || document.querySelector('.app-modal-bg, .split-diff-modal-backdrop, [aria-modal="true"]')) return;
+      closeActiveTabRef.current();
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, []);
   // Both group closes drop the browse override when it pointed at what was
   // just closed — the local store picks the next active tab, and an override left
   // behind would hold the strip on a machine or folder with nothing in it.
