@@ -9,26 +9,37 @@ import { useEffect } from 'react';
 import SessionView from '@/app/SessionView';
 import type { SessionSummary } from '@/lib/sessionSummary';
 import type { Vps } from '@/lib/types/api';
-import { MOOD_COLOR, MOOD_WORD, agentName, moodOf } from '../game/model';
+import { MOOD_COLOR, MOOD_WORD, agentName, moodOf, ownColour } from '../game/model';
+import type { DrawerHost, DrawerSibling } from './drawerHost';
+import { CHARON_LAYER } from './drawerHost';
 import Portrait from './Portrait';
 
-type Sibling = { id: string; name: string | null; handle: string; confirmed?: boolean; status: string };
+type Sibling = DrawerSibling;
 
 type Props = {
   session: SessionSummary;
   vps: Vps | null;
   siblings: Sibling[];
   onClose: () => void;
-  onOpenSession: (sessionId: string) => void;
+  onOpenSession: (sessionId: string, hint?: { vpsId: string; cwd: string }) => void;
   onSessionsChanged: () => void;
+  /** The drawer's own hosts (drawerHost.ts): sign-in, `/clear`, `/routine`. */
+  onReauth: (sessionId: string) => void;
+  onNewSessionIn: (vpsId: string, cwd: string) => void;
+  onNewRoutine: DrawerHost['newRoutine'];
 };
 
-export default function SessionModal({ session, vps, siblings, onClose, onOpenSession, onSessionsChanged }: Props) {
+export default function SessionModal({
+  session, vps, siblings, onClose, onOpenSession, onSessionsChanged, onReauth, onNewSessionIn, onNewRoutine,
+}: Props) {
   const mood = moodOf(session);
 
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
       if (event.key !== 'Escape') return;
+      // A dialog, popover or picker over the full view takes this Escape: one
+      // layer per press.
+      if (event.defaultPrevented || document.querySelector(CHARON_LAYER)) return;
       const field = event.target as HTMLElement | null;
       const tag = field?.tagName;
       // Escape in a field means "cancel what I type", not "close" — but an
@@ -46,7 +57,7 @@ export default function SessionModal({ session, vps, siblings, onClose, onOpenSe
       <div className="dk-veil" onClick={onClose} />
       <div className="dk-frame">
         <header className="dk-frame-head">
-          <Portrait kind={session.kind} mood={mood} chest={session.color} scale={1.5} />
+          <Portrait kind={session.kind} mood={mood} chest={ownColour(session)} scale={1.5} />
           <b>{agentName(session)}</b>
           <span>{vps ? vps.name : 'unknown machine'}</span>
           <span className="dk-frame-cwd">{session.cwd}</span>
@@ -73,8 +84,11 @@ export default function SessionModal({ session, vps, siblings, onClose, onOpenSe
             usageAccountLabel={null}
             onKilled={() => { onClose(); onSessionsChanged(); }}
             onAfterRevert={onSessionsChanged}
-            onOpenSession={(id) => onOpenSession(id)}
+            onOpenSession={(id, hint) => onOpenSession(id, hint)}
             onImportError={() => onSessionsChanged()}
+            onReauth={() => onReauth(session.id)}
+            onNewSessionIn={onNewSessionIn}
+            onNewRoutine={onNewRoutine}
           />
         </div>
       </div>

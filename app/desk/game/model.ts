@@ -2,6 +2,7 @@
 // predicate here asks Charon (lib/sessionAttention.ts, app/sessionUnread.ts):
 // a robot can never say "needs you" while the sidebar says "working".
 import { attentionForRow, rowStatus } from '@/lib/sessionAttention';
+import { colorToHex } from '@/lib/rowColors';
 import { isWorkingStatus } from '@/app/sessionUnread';
 import type { SessionSummary } from '@/lib/sessionSummary';
 import type { Vps, VpsFolder } from '@/lib/types/api';
@@ -128,8 +129,7 @@ export const HEAT: Record<1 | 2 | 3 | 4, { ember: string; core: string }> = {
 };
 /** The colour a session was given in Charon, when it is one a canvas can paint. */
 export function ownColour(s: Pick<DeskSession, 'color'>): string | null {
-  const c = typeof s.color === 'string' ? s.color.trim() : '';
-  return /^#[0-9a-f]{6}$/i.test(c) ? c : null;
+  return colorToHex(typeof s.color === 'string' ? s.color.trim() : null);
 }
 
 /** Rug colours that read on a wooden deck, for a team whose lead wears none. */

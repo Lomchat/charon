@@ -27,6 +27,7 @@
 // Charon's own UI calls, behind Charon's own guards.
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { FileLinkContext } from '@/app/Message';
 import {
   initSyncPosition, isDegraded, setFocus, subscribeAll, subscribeReconnect,
 } from '@/app/globalEventStream';
@@ -35,21 +36,27 @@ import {
 } from '@/app/sync/summaryStore';
 import { createRerunner } from '@/app/sync/revResource';
 import ConfirmModal from '@/app/ConfirmModal';
+import dynamic from '@/app/dynamic';
 import { getDraft, subscribeDrafts } from '@/app/inputDraftStore';
 import NewSessionWizard from '@/app/NewSessionWizard';
 import { useCacheTick } from '@/app/PromptCacheMarks';
+import { useStableCallback } from '@/app/useStable';
 import PromptModal from '@/app/PromptModal';
 import SessionContextMenu from '@/app/SessionContextMenu';
 import TabNotificationBadge from '@/app/TabNotificationBadge';
+import { writeWorkspacePanelTab } from '@/app/workspacePanelState';
 import { canResumeSession, canSleepSession } from '@/app/sessionBulkActions';
+import { useShowHidden } from '@/app/showPaused';
 import { sidebarPathKey } from '@/app/sidebarPathGroups';
+import { accountProfileId, DEFAULT_ACCOUNT_PROFILE } from '@/lib/accountProfiles';
 import { api } from '@/lib/api';
 import { isCacheWarm, sessionCacheReading } from '@/lib/promptCache';
 import { attentionForRow } from '@/lib/sessionAttention';
+import { asSessionProvider, type SessionProvider } from '@/lib/sessionCapabilities';
 import type { SessionActivity } from '@/lib/sessionActivity';
 import type { SessionSummary } from '@/lib/sessionSummary';
 import type { SyncStamp } from '@/lib/sync/protocol';
-import type { Vps, VpsFolder, VpsPath } from '@/lib/types/api';
+import type { AgentKind, Vps, VpsFolder, VpsPath } from '@/lib/types/api';
 import { dropActivity, putActivity, replaceActivities } from './activityStore';
 import { readBest, useArcade } from './arcadeStore';
 import { Game, type Pick, type Scene } from './game/game';
@@ -64,10 +71,16 @@ import LimitsPanel from './ui/LimitsPanel';
 import QuestLog from './ui/QuestLog';
 import SessionModal from './ui/SessionModal';
 import TopBar, { type Tally } from './ui/TopBar';
+import { CHARON_LAYER, type DrawerHost, type DrawerSibling } from './ui/drawerHost';
+import { makeDeskFileLinks } from './ui/fileLinks';
 import UnitPanel from './ui/UnitPanel';
 
 // The safety net keeps Charon's own rhythm (§14.24): 60 s, 15 s on a hub too
 // old to publish summaries.
+// Rare dialogs, in their own chunks (as HubPanel loads them).
+const AccountLoginModal = dynamic(() => import('@/app/AccountLoginModal'), { ssr: false });
+const RoutinesModal = dynamic(() => import('@/app/RoutinesModal'), { ssr: false });
+
 const POLL_MS = 60_000;
 const POLL_DEGRADED_MS = 15_000;
 /** A beat older than this is state, not news: no effect is replayed for it. */
@@ -99,8 +112,17 @@ function keep(key: string, value: boolean): void {
 
 const SCENE_KEY = 'desk.scene';
 
-/** A touch screen: focusing a field there opens a keyboard over the board. */
-const coarsePointer = typeof window !== 'undefined' && window.matchMedia?.('(pointer: coarse)').matches === true;
+/** Charon's own layers over the board (its modals, the runtime popover, a
+ *  picker list, the upload gate): while one is in the DOM, every key is its. */
+/** The permission card the drawer SHOWS (unfolded). Y / N click its own
+ *  buttons, so the key can only answer what is on screen. */
+const SHOWN_PERMISSION = '.dk-unit .dk-sv .pz-wrap.permission:not(.is-collapsed) .ip-actions';
+/** A just-made session (a fork) is waited for this long, then given up. */
+const GO_WAIT_MS = 10_000;
+/** A second Y / N on the same gate within this is the first one's echo, not a retry. */
+const ANSWER_GUARD_MS = 3_000;
+
+type RoutineDraft = { vpsId: string; cwd: string; kind: AgentKind; prompt: string };
 
 function recall(key: string): string | null {
   try { return localStorage.getItem(key); } catch { return null; }
@@ -121,7 +143,8 @@ export default function Desk({ vpsList, folders, vpsPaths = [], initialSummaries
   const stageRef = useRef<HTMLDivElement | null>(null);
   const headRef = useRef<HTMLDivElement | null>(null);
   const minimapRef = useRef<HTMLCanvasElement | null>(null);
-  const orderRef = useRef<HTMLTextAreaElement | null>(null);
+  // The drawer's order box = Charon's composer textarea (SessionView `composerRef`).
+  const composerRef = useRef<HTMLTextAreaElement | null>(null);
   const gameRef = useRef<Game | null>(null);
   // The same game, as state: the selector's miniatures attach to it once it exists.
   const [game, setGame] = useState<Game | null>(null);
@@ -157,11 +180,21 @@ export default function Desk({ vpsList, folders, vpsPaths = [], initialSummaries
   // The wizard for a new agent: on that machine, in that folder (null: to be chosen).
   const [recruit, setRecruit] = useState<{ vpsId: string | null; cwd: string | null } | null>(null);
   const [busy, setBusy] = useState<ReadonlySet<string>>(() => new Set());
+  // The session whose @handle is being changed (Charon's PromptModal).
+  const [handling, setHandling] = useState<string | null>(null);
+  // Charon's sign-in, for one session's account; `n` remounts it on each ask.
+  const [loginFor, setLoginFor] = useState<{ n: number; provider: SessionProvider; accountId: string | null } | null>(null);
+  // `/routine`: Charon's Routines modal on a new routine prefilled from the drawer.
+  const [routineDraft, setRoutineDraft] = useState<RoutineDraft | null>(null);
+  // A robot asked for before its summary landed (a fork just made).
+  const [pendingGo, setPendingGo] = useState<{ id: string; full: boolean } | null>(null);
+  // The hub sidebar's own hidden switch (one setting, one meaning): on = the
+  // hidden robots ONLY, off = none of them (§14.118).
+  const [hiddenShown, toggleHidden] = useShowHidden();
 
-  // Hidden sessions stay out of every list but the eye view (§14.118).
   const sessions = useMemo(
-    () => all.filter((s) => s.hidden !== 1 && (showSleeping || moodOf(s) !== 'sleep')),
-    [all, showSleeping],
+    () => all.filter((s) => (s.hidden === 1) === hiddenShown && (showSleeping || moodOf(s) !== 'sleep')),
+    [all, showSleeping, hiddenShown],
   );
   const byId = useMemo(() => new Map(sessions.map((s) => [s.id, s] as const)), [sessions]);
   const quests = useMemo(() => questsOf(sessions), [sessions]);
@@ -197,7 +230,7 @@ export default function Desk({ vpsList, folders, vpsPaths = [], initialSummaries
   const [scene, setScene] = useState<Scene | null>(() => {
     const remembered = recall(SCENE_KEY);
     if (remembered === 'map') return { kind: 'map' };
-    const home = homeIsland(islandsOf(initialSummaries.filter((s) => s.hidden !== 1), vpsList, folders), remembered);
+    const home = homeIsland(islandsOf(initialSummaries.filter((s) => (s.hidden === 1) === hiddenShown), vpsList, folders), remembered);
     return home ? { kind: 'island', id: home } : null;
   });
   const sceneRef = useRef(scene);
@@ -210,7 +243,8 @@ export default function Desk({ vpsList, folders, vpsPaths = [], initialSummaries
   const menuSession = menu ? byId.get(menu.id) ?? null : null;
   const renamingSession = renaming ? byId.get(renaming) ?? null : null;
   const deletingSession = deleting ? byId.get(deleting) ?? null : null;
-  const modal = Boolean(open || help || recruit || renaming || deleting);
+  const handlingSession = handling ? byId.get(handling) ?? null : null;
+  const modal = Boolean(open || help || recruit || renaming || deleting || handlingSession || loginFor || routineDraft);
   // The selected robot's team (sub-sessions): who it works for, who works for
   // it, and the colour of their rug — its root's, as on the board.
   const selectedLead = selected?.parentSessionId ? byId.get(selected.parentSessionId) ?? null : null;
@@ -365,6 +399,19 @@ export default function Desk({ vpsList, folders, vpsPaths = [], initialSummaries
     gameRef.current?.setScene(scene, slideRef.current);
     slideRef.current = 0;
   }, [scene]);
+
+  // The eye turned (or its stored state just arrived): an island left without
+  // a robot is not where to stand while others have some.
+  const eyeSeen = useRef(hiddenShown);
+  useEffect(() => {
+    if (eyeSeen.current === hiddenShown) return;
+    eyeSeen.current = hiddenShown;
+    const now = sceneRef.current;
+    if (now?.kind !== 'island' || islands.some((i) => i.id === now.id && i.total > 0)) return;
+    const home = homeIsland(inhabited, null);
+    if (home) travel({ kind: 'island', id: home });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [hiddenShown]);
 
   // A machine that left the fleet cannot stay on stage.
   useEffect(() => {
@@ -560,12 +607,6 @@ export default function Desk({ vpsList, folders, vpsPaths = [], initialSummaries
       .then(() => { cleared(); refreshIfDegraded(); }, (e) => { overlay.fail(); fail('read', e); });
   }, [during, cleared, refreshIfDegraded, fail]);
 
-  const onOrder = useCallback(async (id: string, text: string) => {
-    await api.sendSessionInput(id, text, crypto.randomUUID());
-    sfx.act();
-    refreshIfDegraded();
-  }, [refreshIfDegraded]);
-
   const lifecycle = useCallback((action: 'sleep' | 'resume' | 'stop', id: string) => {
     const call = action === 'sleep' ? api.sleepSession : action === 'resume' ? api.resumeSession : api.interruptSession;
     void call(id).then(() => refreshIfDegraded(), (e: unknown) => fail(action, e));
@@ -590,6 +631,33 @@ export default function Desk({ vpsList, folders, vpsPaths = [], initialSummaries
     setRenaming(null);
     refreshIfDegraded();
   }, [refreshIfDegraded]);
+
+  // The menu's other items: HubPanel's handlers (setColor, setHidden,
+  // updateSessionHandle), single target.
+  /** Throws, so the PromptModal stays open on a 409 (§14.80). The route
+   *  normalizes the handle: the overlay carries ITS answer. */
+  const applyHandle = useCallback(async (id: string, value: string) => {
+    const updated = await api.updateSessionHandle(id, value);
+    addOverlay(id, { handle: updated?.handle ?? null } as Partial<SessionSummary>).ack(updated?.sync);
+    setHandling(null);
+    refreshIfDegraded();
+  }, [refreshIfDegraded]);
+
+  const applyColour = useCallback((id: string, color: string | null) => {
+    const overlay = addOverlay(id, { color });
+    void api.patchAgentSession(id, { color })
+      .then((r) => { overlay.ack(r?.sync); refreshIfDegraded(); }, (e: unknown) => { overlay.fail(); fail('colour', e); });
+  }, [refreshIfDegraded, fail]);
+
+  /** Hide / show back (§14.118): the session keeps running, its sub-sessions
+   *  follow it (the route's `ids`). A robot that leaves the eye's view leaves
+   *  the board, so it is let go of first. */
+  const applyHidden = useCallback((id: string, hidden: boolean) => {
+    if (hidden !== hiddenShown && id === selectedId) select(null);
+    const overlay = addOverlay(id, { hidden: hidden ? 1 : 0 });
+    void api.setSessionHidden(id, hidden)
+      .then((r) => { overlay.ack(r?.sync); refreshIfDegraded(); }, (e: unknown) => { overlay.fail(); fail(hidden ? 'hide' : 'show', e); });
+  }, [hiddenShown, selectedId, select, refreshIfDegraded, fail]);
 
   const openSession = useCallback((id: string) => {
     const session = byId.get(id);
@@ -646,10 +714,6 @@ export default function Desk({ vpsList, folders, vpsPaths = [], initialSummaries
     if (back) travel({ kind: 'island', id: back });
   }, [islands, travel]);
 
-  const selectedPermission = useMemo(
-    () => (selectedId ? quests.find((q) => q.sessionId === selectedId && q.kind === 'permission') ?? null : null),
-    [quests, selectedId],
-  );
   const selectedMood = selected ? moodOf(selected) : null;
   const canRead = selected != null && (selectedMood === 'done' || (selectedMood === 'error' && wantsYou('error', selected)));
 
@@ -657,21 +721,145 @@ export default function Desk({ vpsList, folders, vpsPaths = [], initialSummaries
   // effect keyed on it, and this page re-renders often.
   const closeMenu = useCallback(() => setMenu(null), []);
 
+  /* ─────────────────────────────────────────────────────────── the drawer ── */
+
+  // What the board lends the drawer (ui/drawerHost.ts): stable functions in
+  // one object that never changes, so the context re-renders nobody.
+  /** Show a robot: on the board ⇒ its island, selected (or its full view when
+   *  `full`); known but off the board ⇒ its full view. False = not known yet. */
+  const land = useStableCallback((id: string, full: boolean): boolean => {
+    if (byId.has(id)) {
+      if (full) openSession(id); else visit(id);
+      return true;
+    }
+    if (all.some((s) => s.id === id)) { setOpenId(id); return true; }
+    return false;
+  });
+  const goTo = useStableCallback((id: string, hint?: { vpsId: string; cwd: string }) => {
+    // Unknown with a hint = just made (a fork): go once its summary lands.
+    if (!land(id, false) && hint) { setPendingGo({ id, full: false }); refresh(); }
+  });
+  /** The full view's own "go to": it stays a full view; an unknown id is
+   *  waited for, hint or not. */
+  const goToFull = useStableCallback((id: string) => {
+    if (!land(id, true)) { setPendingGo({ id, full: true }); refresh(); }
+  });
+  const openFull = useStableCallback((id: string) => openSession(id));
+  const nextRobot = useStableCallback((back: boolean) => nextQuest(back));
+  const drawerLifecycle = useStableCallback((action: 'sleep' | 'resume' | 'stop', id: string) => lifecycle(action, id));
+  const readOne = useStableCallback((id: string) => onRead(id));
+  const openMenu = useStableCallback((id: string, x: number, y: number) => setMenu({ id, x, y }));
+  const deselect = useStableCallback(() => select(null));
+  // Sign in again = the hub sign-in for that session's account
+  // (app/loginModals.tsx § hubLogin: the default profile is no account id).
+  const reauth = useStableCallback((id: string) => {
+    const s = all.find((row) => row.id === id);
+    if (!s) return;
+    const profile = accountProfileId(s);
+    setLoginFor((was) => ({
+      n: (was?.n ?? 0) + 1,
+      provider: asSessionProvider(s.kind),
+      accountId: profile === DEFAULT_ACCOUNT_PROFILE ? null : profile,
+    }));
+  });
+  const newSessionIn = useStableCallback((vpsId: string, cwd: string) => setRecruit({ vpsId, cwd }));
+  const newRoutine = useStableCallback((draft: Parameters<DrawerHost['newRoutine']>[0]) => setRoutineDraft(draft));
+  const openTools = useStableCallback((id: string, tab?: 'git' | 'calls') => {
+    // The full view's Tools panel opens on the tab that was asked for (`/diff`, `/mcp`).
+    const s = tab ? byId.get(id) ?? all.find((x) => x.id === id) : null;
+    if (s && tab) writeWorkspacePanelTab(s.vpsId, s.cwd, tab);
+    openSession(id);
+  });
+  const sessionsChanged = useStableCallback(() => refreshIfDegraded());
+  const killed = useStableCallback((_id: string) => { select(null); refreshIfDegraded(); });
+  const host = useMemo<DrawerHost>(() => ({
+    composerRef, goTo, openFull, next: nextRobot, lifecycle: drawerLifecycle, read: readOne, openMenu, deselect,
+    reauth, newSessionIn, newRoutine, openTools, sessionsChanged, killed,
+  }), [goTo, openFull, nextRobot, drawerLifecycle, readOne, openMenu, deselect, reauth, newSessionIn, newRoutine,
+    openTools, sessionsChanged, killed]);
+
+  // File links in the drawer and the full view: `/view` in a new tab, else the path copied.
+  const fileLinks = useMemo(() => makeDeskFileLinks((t) => setError(t)), []);
+
+  // A robot asked for before its summary: shown once it lands, given up after
+  // GO_WAIT_MS (then the banner says so).
+  useEffect(() => {
+    if (pendingGo && land(pendingGo.id, pendingGo.full)) setPendingGo(null);
+  }, [pendingGo, all, byId, land]);
+  useEffect(() => {
+    if (!pendingGo) return undefined;
+    const timer = setTimeout(() => { setPendingGo(null); setError('not on the desk'); }, GO_WAIT_MS);
+    return () => clearTimeout(timer);
+  }, [pendingGo]);
+
   /* ──────────────────────────────────────────────────────────── keyboard ── */
+
+  // Keys Charon's layers own. Marked in the CAPTURE phase, before any other
+  // listener runs: a layer's own handler may close it before the board's
+  // listener would look. The game's keys (pan, zoom) obey the same verdict.
+  const modalRef = useRef(modal);
+  modalRef.current = modal;
+  const yielded = useRef(new WeakSet<Event>());
+  useEffect(() => {
+    const onCapture = (e: KeyboardEvent) => {
+      const layer = document.querySelector(CHARON_LAYER) != null;
+      if (layer) yielded.current.add(e);
+      gameRef.current?.setInputEnabled(!modalRef.current && !layer);
+    };
+    document.addEventListener('keydown', onCapture, true);
+    return () => document.removeEventListener('keydown', onCapture, true);
+  }, []);
+
+  // The card a Y / N just answered: its POST is on its way and the card stays
+  // until it settles (§14.18) — the same GATE again within a moment is not a
+  // second answer. Keyed by the gate's id (two cards can read the same), and
+  // short: after it, a press is a retry of an answer that failed.
+  const answered = useRef<{ key: string; at: number } | null>(null);
+  const answerShown = useCallback((allow: boolean, gateId: string | null): boolean => {
+    const actions = document.querySelector(SHOWN_PERMISSION);
+    const button = actions?.querySelector<HTMLButtonElement>(allow ? 'button.allow' : 'button.deny');
+    if (!actions || !button || button.disabled) return false;
+    const card = actions.closest('.pz-wrap');
+    const key = gateId ?? ['.ip-head', '.ip-input', '.ip-reason']
+      .map((sel) => card?.querySelector(sel)?.textContent ?? '').join('\n');
+    const last = answered.current;
+    if (last && last.key === key && Date.now() - last.at < ANSWER_GUARD_MS) return true;
+    answered.current = { key, at: Date.now() };
+    button.click();
+    return true;
+  }, []);
+
+  /** `/`: the order box, else what holds its place (the gate card, the Resume button). */
+  const focusOrder = useCallback(() => {
+    if (composerRef.current) { composerRef.current.focus(); return; }
+    // A folded card: its grip (the only control left there).
+    document.querySelector<HTMLElement>(
+      '.dk-unit .dk-sv .app-pending-zone:not([hidden]) button, .dk-unit .dk-sv .app-disconnect-cta button, '
+      + '.dk-unit .dk-sv .pz-wrap.is-collapsed .pz-toggle',
+    )?.focus();
+  }, []);
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
+      // Handled already (Charon's menus, the quote key, a picker), or a Charon
+      // layer is open: never also a shortcut of the board.
+      if (e.defaultPrevented || yielded.current.has(e)) return;
       // A run of the mini-game owns the keyboard (the board routes it).
       if (modal || arcade.on || e.metaKey || e.ctrlKey || e.altKey) return;
-      if (isTyping(e.target)) {
-        if (e.key === 'Escape') (e.target as HTMLElement).blur();
+      const target = e.target as HTMLElement | null;
+      // The session menu is the top layer: Escape closes it, and nothing under it.
+      if (e.key === 'Escape' && menu) { setMenu(null); return; }
+      if (isTyping(target)) {
+        if (e.key === 'Escape') target!.blur();
         return;
       }
       const key = e.key.length === 1 ? e.key.toLowerCase() : e.key;
+      // Tab from a control of the drawer walks the drawer's controls (a gate
+      // card's options, the runtime cells): the board's Tab is for the board.
+      if (key === 'Tab' && target && target !== document.body && target.closest?.('.dk-unit')) return;
       // Enter / Space on a focused control (a button, a link, the recap that
       // folds) is that control's own: not also a shortcut of the board.
-      if ((key === 'Enter' || key === ' ')
-        && (e.defaultPrevented || (e.target as HTMLElement | null)?.closest?.('button, a[href], [role="button"]'))) return;
+      if ((key === 'Enter' || key === ' ') && target?.closest?.('button, a[href], [role="button"]')) return;
       const game = gameRef.current;
       switch (key) {
         case 'Tab':
@@ -683,7 +871,9 @@ export default function Desk({ vpsList, folders, vpsPaths = [], initialSummaries
           if (selectedId) { e.preventDefault(); openSession(selectedId); }
           break;
         case 'Escape':
-          if (menu) setMenu(null);
+          // A control of the drawer lets go first: the keys come back to the board.
+          if (target && target !== document.body && target.closest?.('.dk-unit')) target.blur();
+          else if (menu) setMenu(null);
           else select(null);
           break;
         case 'f':
@@ -702,27 +892,37 @@ export default function Desk({ vpsList, folders, vpsPaths = [], initialSummaries
           stepIsland(key === 'PageUp' ? -1 : 1);
           break;
         case '/':
-          if (selectedId) { e.preventDefault(); orderRef.current?.focus(); }
+          if (selectedId) { e.preventDefault(); focusOrder(); }
           break;
         case 'y':
-          if (selectedPermission && !busy.has(selectedPermission.key)) onPermission(selectedPermission, true);
-          break;
-        case 'n':
-          // "No" to the permission of the selected robot; with none pending,
-          // "new": an agent on the island on stage (beside the selected robot).
-          if (selectedPermission) {
-            if (!busy.has(selectedPermission.key)) onPermission(selectedPermission, false);
-          } else {
+        case 'n': {
+          // Inside a gate card (an option button) the letters are not answers.
+          if (target?.closest?.('.dk-sv .pz-wrap')) break;
+          // Y / N answer only the permission card on screen; key repeat never.
+          if (document.querySelector(SHOWN_PERMISSION)) {
+            if (!e.repeat) {
+              // The card shown is the oldest blocking gate (Charon's order): its id, when it is a permission.
+              const oldest = (selected?.gates ?? []).filter((g) => g.blocking)
+                .sort((a, b) => (a.createdAt ?? 0) - (b.createdAt ?? 0))[0];
+              answerShown(key === 'y', oldest?.kind === 'permission' ? oldest.id : null);
+            }
+            break;
+          }
+          // No card shown: N is "new", an agent on the island on stage (beside
+          // the selected robot), unless that robot waits on a gate.
+          if (key === 'n' && !selected?.gates?.some((g) => g.blocking)) {
             const here = sceneRef.current?.kind === 'island' ? sceneRef.current.id : null;
             const cwd = selected && selected.vpsId === here ? sidebarPathKey(selected.cwd) : null;
             setRecruit({ vpsId: here, cwd: cwd === '~' ? null : cwd });
           }
           break;
+        }
         case 'r':
           if (selectedId && canRead) onRead(selectedId);
           break;
         case 'x':
-          if (selectedId && selectedMood === 'work') lifecycle('stop', selectedId);
+          // The head's Stop rule (UnitHead § stoppable).
+          if (selectedId && (selectedMood === 'work' || (selectedMood === 'blocked' && selected?.liveStatus === 'thinking'))) lifecycle('stop', selectedId);
           break;
         case '?':
           setHelp(true);
@@ -735,20 +935,23 @@ export default function Desk({ vpsList, folders, vpsPaths = [], initialSummaries
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [modal, arcade.on, menu, selectedId, selected, selectedPermission, selectedMood, canRead, busy, inhabited, nextQuest, openSession,
-    select, onPermission, onRead, lifecycle, travel, stepIsland, toggleMap, play]);
+  }, [modal, arcade.on, menu, selectedId, selected, selectedMood, canRead, inhabited, nextQuest, openSession,
+    select, onRead, lifecycle, travel, stepIsland, toggleMap, play, focusOrder, answerShown]);
 
   /* ─────────────────────────────────────────────────────────────── render ── */
 
-  const siblings = useMemo(() => {
-    if (!open) return [];
+  // The `@` menu of the session shown (full view, else drawer): its machine's sessions.
+  const shown = open ?? selected;
+  const siblings = useMemo<DrawerSibling[]>(() => {
+    if (!shown) return [];
     return all
-      .filter((s) => s.vpsId === open.vpsId && s.id !== open.id && s.handle)
+      .filter((s) => s.vpsId === shown.vpsId && s.id !== shown.id && s.handle)
       .map((s) => ({ id: s.id, name: s.name ?? null, handle: s.handle as string, status: String(s.liveStatus ?? s.status) }));
-  }, [all, open]);
+  }, [all, shown]);
 
 
   return (
+    <FileLinkContext.Provider value={fileLinks}>
     <div className={`desk${arcade.on ? ' is-arcade' : ''}${selected && !open ? ' has-drawer' : ''}`}>
       {/* The board mounts its canvas and its labels in here. */}
       <div className="dk-stage" ref={stageRef} />
@@ -772,6 +975,8 @@ export default function Desk({ vpsList, folders, vpsPaths = [], initialSummaries
             onFit={() => gameRef.current?.fit()}
             onSound={toggleSound}
             onSleeping={() => setShowSleeping((on) => { keep('desk.sleeping', !on); return !on; })}
+            hiddenShown={hiddenShown}
+            onHidden={toggleHidden}
             onHelp={() => setHelp(true)}
           />
           <IslandBar islands={islands} scene={scene} game={game} onScene={travel} onStep={stepIsland} />
@@ -829,27 +1034,13 @@ export default function Desk({ vpsList, folders, vpsPaths = [], initialSummaries
           <UnitPanel
             session={selected}
             vps={vpsById.get(selected.vpsId) ?? null}
-            permission={selectedPermission}
             lead={selectedLead}
             crew={selectedCrew}
             teamTint={selectedTint}
-            onVisit={visit}
-            busy={selectedPermission ? busy.has(selectedPermission.key) : busy.has(`${selected.id}:read`)}
-            orderRef={orderRef}
-            // Every robot, a permission pending or not (Y / N then need Esc
-            // first, or a click on Allow / Deny). A finger gets no on-screen
-            // keyboard it did not ask for.
-            autoFocus={!coarsePointer}
-            onNext={nextQuest}
-            onOpen={() => openSession(selected.id)}
-            onOrder={(text) => onOrder(selected.id, text)}
-            onStop={() => lifecycle('stop', selected.id)}
-            onSleep={canSleepSession(selected) ? () => lifecycle('sleep', selected.id) : undefined}
-            onResume={canResumeSession(selected) ? () => lifecycle('resume', selected.id) : undefined}
-            onRead={canRead ? () => onRead(selected.id) : undefined}
-            onPermission={onPermission}
-            onMore={(x, y) => setMenu({ id: selected.id, x, y })}
-            onClose={() => select(null)}
+            siblings={siblings}
+            canRead={canRead}
+            reading={busy.has(`${selected.id}:read`)}
+            host={host}
           />
         )}
 
@@ -871,10 +1062,14 @@ export default function Desk({ vpsList, folders, vpsPaths = [], initialSummaries
           subtitle={menuSession.cwd || undefined}
           x={menu.x}
           y={menu.y}
-          showColor={false}
+          currentColor={menuSession.color ?? null}
           onRename={() => setRenaming(menuSession.id)}
+          onEditHandle={() => setHandling(menuSession.id)}
+          onColor={(color) => { if ((menuSession.color ?? null) !== color) applyColour(menuSession.id, color); }}
           onSleep={canSleepSession(menuSession) ? () => lifecycle('sleep', menuSession.id) : undefined}
           onResume={canResumeSession(menuSession) ? () => lifecycle('resume', menuSession.id) : undefined}
+          onHide={() => applyHidden(menuSession.id, menuSession.hidden !== 1)}
+          hideLabel={menuSession.hidden === 1 ? 'Show (unhide)' : undefined}
           onDelete={() => setDeleting(menuSession.id)}
           onClose={closeMenu}
         />
@@ -890,6 +1085,21 @@ export default function Desk({ vpsList, folders, vpsPaths = [], initialSummaries
           icon="✎"
           onSubmit={(value) => applyRename(renamingSession.id, value)}
           onClose={() => setRenaming(null)}
+        />
+      )}
+
+      {handlingSession && (
+        <PromptModal
+          title="Change session address"
+          hint={<>Stable on this VPS and independent from the display name. You may type it with or without <code>@</code>; spaces and accents are normalized.</>}
+          initial={handlingSession.handle ?? ''}
+          placeholder="api-worker"
+          confirmLabel="change address"
+          busyLabel="changing…"
+          icon="@"
+          validate={(value) => (value.replace(/^@/, '').trim() ? null : 'a handle is required')}
+          onSubmit={(value) => applyHandle(handlingSession.id, value)}
+          onClose={() => setHandling(null)}
         />
       )}
 
@@ -937,12 +1147,37 @@ export default function Desk({ vpsList, folders, vpsPaths = [], initialSummaries
           vps={vpsById.get(open.vpsId) ?? null}
           siblings={siblings}
           onClose={() => setOpenId(null)}
-          onOpenSession={openSession}
+          onOpenSession={goToFull}
           onSessionsChanged={refreshIfDegraded}
+          onReauth={reauth}
+          onNewSessionIn={newSessionIn}
+          onNewRoutine={newRoutine}
+        />
+      )}
+
+      {/* Mounted here, not in the drawer: they outlive a deselection. */}
+      {loginFor && (
+        <AccountLoginModal
+          key={loginFor.n}
+          provider={loginFor.provider}
+          accountId={loginFor.accountId}
+          onClose={() => setLoginFor(null)}
+        />
+      )}
+
+      {routineDraft && (
+        <RoutinesModal
+          vpsList={vps}
+          vpsPaths={vpsPaths}
+          sessions={all}
+          initial={routineDraft}
+          onOpenSession={goTo}
+          onClose={() => setRoutineDraft(null)}
         />
       )}
 
       {help && <Help onClose={() => setHelp(false)} />}
     </div>
+    </FileLinkContext.Provider>
   );
 }

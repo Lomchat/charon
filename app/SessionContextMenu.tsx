@@ -1,27 +1,10 @@
 'use client';
 import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from 'react';
 import { positionContextMenu } from './contextMenuPosition';
+import { ROW_COLORS, type RowColor } from '@/lib/rowColors';
 
-// Color palette to mark a row in the sidebar.
-// "transparent" = no marker (default option, neutralizes an existing marker).
-export const ROW_COLORS = [
-  { token: null,        css: 'transparent', label: 'none' },
-  { token: 'gold',      css: '#d8a85a',     label: 'gold' },
-  { token: 'green',     css: '#6cbf6c',     label: 'green' },
-  { token: 'cyan',      css: '#7ac4c4',     label: 'cyan' },
-  { token: 'blue',      css: '#6a9bd8',     label: 'blue' },
-  { token: 'purple',    css: '#c8a2c8',     label: 'purple' },
-  { token: 'red',       css: '#d97a6b',     label: 'red' },
-  { token: 'pink',      css: '#e6a4c8',     label: 'pink' },
-] as const;
-
-export type RowColor = (typeof ROW_COLORS)[number]['token'];
-
-export function colorToCss(token: string | null | undefined): string {
-  if (!token) return 'transparent';
-  const entry = ROW_COLORS.find((c) => c.token === token);
-  return entry?.css ?? token; // tolerates a hex passed directly
-}
+export { ROW_COLORS, colorToCss } from '@/lib/rowColors';
+export type { RowColor } from '@/lib/rowColors';
 
 type Props = {
   title: string;                     // shown at the top of the menu (item name)

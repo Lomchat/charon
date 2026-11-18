@@ -140,6 +140,11 @@ export async function viewPage(load: TemplateLoader, req: Request): Promise<Resp
   const vpsId = sp.get('vps') ?? '';
   const root = sp.get('root') ?? '';
   const path = sp.get('path') ?? '';
+  // `code=1`: the file's text, read-only, through the same fs route as the pane
+  // (this page reads nothing itself). Absent ⇒ every answer is as before.
+  const code = sp.get('code') === '1';
+  const lineN = Number(sp.get('line'));
+  const line = Number.isSafeInteger(lineN) && lineN > 0 ? lineN : undefined;
   const name = path.split('/').pop() || path;
   const title = name ? `${name} — Charon` : 'Charon';
   const refuse = (refusal: string) => renderPage(load, 'view', req, { title, seed: { refusal } });
@@ -148,10 +153,11 @@ export async function viewPage(load: TemplateLoader, req: Request): Promise<Resp
   }
   const [v] = db.select({ id: vpsTable.id }).from(vpsTable).where(eq(vpsTable.id, vpsId)).all();
   if (!v) return refuse('this VPS is no longer in Charon');
-  if (isLiveHtmlName(path)) {
+  if (!code && isLiveHtmlName(path)) {
     const m = mintLivePreview(vpsId, root, path, s.sessionId);
     return m.ok ? redirect(m.url) : refuse(m.error);
   }
+  if (code) return renderPage(load, 'view', req, { title, seed: { vpsId, root, path, code: true, ...(line ? { line } : {}) } });
   if (!hasStandaloneView(name)) return refuse('this file has no rendered view — open it in Charon');
   return renderPage(load, 'view', req, { title, seed: { vpsId, root, path } });
 }

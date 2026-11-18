@@ -6,7 +6,7 @@ import StandaloneFileView from '@/app/StandaloneFileView';
 
 // `/view?vps=&root=&path=` — one file, full window (server/http/pages.ts §
 // viewPage): the file's rendered view, or why there is none.
-type Seed = { refusal: string } | { vpsId: string; root: string; path: string };
+type Seed = { refusal: string } | { vpsId: string; root: string; path: string; code?: true; line?: number };
 
 const seed = readSeed<Seed>();
 mount('refusal' in seed
@@ -15,4 +15,4 @@ mount('refusal' in seed
       <div className="dvm-note err">{seed.refusal}</div>
     </div>
   )
-  : <StandaloneFileView vpsId={seed.vpsId} root={seed.root} path={seed.path} />);
+  : <StandaloneFileView vpsId={seed.vpsId} root={seed.root} path={seed.path} code={seed.code} line={seed.line} />);

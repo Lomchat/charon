@@ -1,21 +1,27 @@
 'use client';
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { api } from '@/lib/api';
 import { fmtSize } from './sessionAttachments';
 import { IconDownload, IconFullscreen, IconFullscreenExit } from './icons';
 import CsvViewer from './CsvViewer';
 import { BytesView, LogViewer, TextView } from './FileViewers';
 import { viewerFor } from './fileViews';
+import CodeEditor from './CodeEditor';
 import { MarkdownMarginsToggle } from './markdownMargins';
 
 /** Same cadence as the pane's change probe (FileEditor). */
 const POLL_MS = 10_000;
+const noop = () => {};
 
 type Props = {
   vpsId: string;
   root: string;
   /** Relative to `root`. */
   path: string;
+  /** Read-only source view (`code=1`), whatever the file's kind. */
+  code?: boolean;
+  /** 1-based line to bring into view (code view). */
+  line?: number;
 };
 
 /**
@@ -24,14 +30,14 @@ type Props = {
  * it to its live view (§14.110). Read-only but for a workbook's own save;
  * follows the file on the VPS like the pane does (a recompiled PDF reloads).
  */
-export default function StandaloneFileView({ vpsId, root, path }: Props) {
+export default function StandaloneFileView({ vpsId, root, path, code = false, line }: Props) {
   const name = path.split('/').pop() || path;
-  const spec = viewerFor(name);
+  const spec = code ? null : viewerFor(name);
   const bytesKind = spec?.source === 'bytes' ? spec.kind : null;
   const textKind = spec?.source === 'text' ? spec.kind : null;
-  const tabular = !spec && /\.(csv|tsv)$/i.test(name);
+  const tabular = !code && !spec && /\.(csv|tsv)$/i.test(name);
   // The log view reads ranges itself; every other text view needs the text.
-  const needsText = tabular || (!!textKind && textKind !== 'log');
+  const needsText = code || tabular || (!!textKind && textKind !== 'log');
 
   const [text, setText] = useState<string | null>(null);
   const [truncated, setTruncated] = useState(false);
@@ -39,6 +45,7 @@ export default function StandaloneFileView({ vpsId, root, path }: Props) {
   const [err, setErr] = useState<string | null>(null);
   const [note, setNote] = useState<string | null>(null);
   const [rev, setRev] = useState(0);
+  const [textRev, setTextRev] = useState(0);
   const [dirty, setDirty] = useState(false);
   const versionRef = useRef<string | null>(null);
 
@@ -53,6 +60,7 @@ export default function StandaloneFileView({ vpsId, root, path }: Props) {
       setErr(null);
       setTruncated(!!r.truncated);
       setText(r.content);
+      setTextRev((n) => n + 1);
     } catch (e: unknown) {
       setErr(e instanceof Error ? e.message : String(e));
     }
@@ -114,6 +122,9 @@ export default function StandaloneFileView({ vpsId, root, path }: Props) {
 
   // The browser's own full screen, on top of the full window. iOS has none
   // for a page: the button is not offered there.
+  // One jump to the asked line per document: a new object each render would
+  // jump (and take the focus) again on every state change of this page.
+  const reveal = useMemo(() => (line ? { line, nonce: 1 } : null), [line]);
   const [canFull, setCanFull] = useState(false);
   const [full, setFull] = useState(false);
   useEffect(() => {
@@ -166,7 +177,11 @@ export default function StandaloneFileView({ vpsId, root, path }: Props) {
         {needsText && text != null && !err && (
           <>
             {truncated && <div className="dvm-note warn">⚠ only the first part of this file is shown</div>}
-            {tabular
+            {code
+              ? <CodeEditor doc={text} docKey={`${vpsId}:${root}:${path}:${textRev}`} filename={name} readOnly
+                            onChange={noop} onSave={noop}
+                            reveal={reveal} />
+              : tabular
               ? <CsvViewer text={text} filename={name} storageKey={`${vpsId}:${root}:${path}`} />
               : textKind && <TextView kind={textKind} props={{ vpsId, root, path, name, text, active: true }} />}
           </>

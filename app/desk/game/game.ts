@@ -106,6 +106,13 @@ type Tag = Placard & { name: HTMLElement; cap: HTMLElement; heat: HTMLElement; l
 const WALK = 30;          // pixels per second
 const MIN_ZOOM = 1;
 const MAX_ZOOM = 6;
+/**
+ * The zooms the board offers (the owner's call: between the far view and the
+ * close one it was "either too far or too close"): quarter steps up to 2×,
+ * wider ones beyond. A step that is not a whole number of device pixels per
+ * world pixel is shown through `present` — enlarged hard, reduced smooth.
+ */
+const ZOOMS = [MIN_ZOOM, 1.25, 1.5, 1.75, 2, 2.5, 3, 4, 5, MAX_ZOOM];
 /** Names stop being readable under this: an island never opens smaller. */
 const READABLE_ZOOM = 1.5;
 /** Framing a small island does not blow it up past this. */
@@ -116,6 +123,15 @@ export class Game {
   private hooks: GameHooks;
   private canvas: HTMLCanvasElement;
   private g: CanvasRenderingContext2D;
+  /** What is shown at a zoom between two whole pixel sizes (`present`): the
+   *  stage in DEVICE pixels, drawn from `mid`, the frame enlarged hard-edged. */
+  private sharp: HTMLCanvasElement;
+  private sharpG: CanvasRenderingContext2D;
+  private mid: HTMLCanvasElement;
+  private midG: CanvasRenderingContext2D;
+  /** The canvas' sub-pixel offset of this frame, CSS pixels (scroll remainder, shake). */
+  private shiftX = 0;
+  private shiftY = 0;
   private labels: HTMLElement;
   private model: DeskModel | null = null;
   private world: World | null = null;
@@ -181,11 +197,17 @@ export class Game {
     this.canvas = document.createElement('canvas');
     this.canvas.className = 'dk-canvas';
     this.g = this.canvas.getContext('2d', { alpha: false })!;
+    this.sharp = document.createElement('canvas');
+    this.sharp.className = 'dk-canvas dk-canvas-sharp';
+    this.sharp.style.display = 'none';
+    this.sharpG = this.sharp.getContext('2d', { alpha: false })!;
+    this.mid = document.createElement('canvas');
+    this.midG = this.mid.getContext('2d', { alpha: false })!;
     this.labels = document.createElement('div');
     this.labels.className = 'dk-labels';
     this.labels.dataset.zoom = '2';
     this.dpr = window.devicePixelRatio || 1;
-    host.append(this.canvas, this.labels);
+    host.append(this.canvas, this.sharp, this.labels);
     this.observer = new ResizeObserver(() => this.resize());
     this.observer.observe(host);
     this.resize();
@@ -211,6 +233,7 @@ export class Game {
     this.observer.disconnect();
     for (const off of this.disposers) off();
     this.canvas.remove();
+    this.sharp.remove();
     this.labels.remove();
   }
 
@@ -557,11 +580,12 @@ export class Game {
   private resize(): void {
     const rect = this.host.getBoundingClientRect();
     this.size = { w: Math.max(1, rect.width), h: Math.max(1, rect.height) };
-    // Another monitor, or the browser's own zoom: keep the pixels whole.
+    // Another monitor, or the browser's own zoom: a run keeps its pixels
+    // whole; the board keeps its zoom (`present` shows it as it must).
     const dpr = window.devicePixelRatio || 1;
     if (dpr !== this.dpr) {
       this.dpr = dpr;
-      this.cam.zoom = this.snapZoom(this.cam.zoom, 'near');
+      if (this.arcade) this.cam.zoom = this.snapZoom(this.cam.zoom, 'near');
       this.afterZoom();
     }
     this.labelsDirty = true;
@@ -646,8 +670,11 @@ export class Game {
     if (!box) return;
     const safe = this.safeRect();
     const floor = this.scene?.kind === 'map' ? MIN_ZOOM : READABLE_ZOOM;
-    let zoom = this.snapZoom(Math.min(MAX_FRAME_ZOOM, safe.w / box.w, safe.h / box.h), 'down');
-    if (zoom < floor) zoom = this.snapZoom(floor, 'up');
+    const fit = Math.min(MAX_FRAME_ZOOM, safe.w / box.w, safe.h / box.h);
+    // The largest step that holds the scene (both floors are steps).
+    let zoom = ZOOMS[0];
+    for (const z of ZOOMS) if (z <= fit + 1e-6) zoom = z;
+    if (zoom < floor) zoom = floor;
     // Centre what fits; pin the start of what does not.
     const along = (start: number, length: number, from: number, room: number, half: number) => (length * zoom <= room
       ? start + length / 2 - (from + room / 2 - half) / zoom
@@ -688,7 +715,11 @@ export class Game {
 
   get zoom(): number { return this.cam.zoom; }
 
-  /** A zoom is crisp when one world pixel is a whole number of DEVICE pixels. */
+  /**
+   * The nearest zoom at which one world pixel is a whole number of DEVICE
+   * pixels. A run of the mini-game plays at those only; the board itself
+   * moves along `ZOOMS`.
+   */
   private snapZoom(zoom: number, how: 'down' | 'up' | 'near'): number {
     const k = zoom * this.dpr;
     const whole = how === 'down' ? Math.floor(k + 1e-6) : how === 'up' ? Math.ceil(k - 1e-6) : Math.round(k);
@@ -703,12 +734,15 @@ export class Game {
     this.hooks.onZoom?.(zoom);
   }
 
-  /** One step in or out (a device pixel, two on very dense screens), around a point of the stage. */
+  /** One step in or out along `ZOOMS`, around a point of the stage. */
   zoomBy(dir: number, aroundX = this.size.w / 2, aroundY = this.size.h / 2): void {
     if (this.arcade) return;
-    const step = Math.max(1, Math.round(this.dpr / 2)) / this.dpr;
-    const next = this.snapZoom(this.cam.zoom + (dir > 0 ? step : -step), 'near');
-    if (next === this.cam.zoom) return;
+    // From wherever the zoom stands (a run may have left it off the steps).
+    const now = this.cam.zoom;
+    const next = dir > 0
+      ? ZOOMS.find((z) => z > now + 1e-6) ?? now
+      : [...ZOOMS].reverse().find((z) => z < now - 1e-6) ?? now;
+    if (next === now) return;
     // Keep the world point under the cursor where it is.
     const before = this.view();
     const wx = before.left + aroundX / this.cam.zoom;
@@ -1082,9 +1116,11 @@ export class Game {
         if (this.arcade.key(e, true)) e.preventDefault();
         return;
       }
-      if (!this.inputEnabled || e.metaKey || e.ctrlKey || e.altKey || typing(e.target)) return;
+      // Handled already (Charon's `q` quote, a menu): never also a pan.
+      if (e.defaultPrevented || !this.inputEnabled || e.metaKey || e.ctrlKey || e.altKey || typing(e.target)) return;
       const key = e.key.length === 1 ? e.key.toLowerCase() : e.key;
-      if (PAN_KEYS.has(key)) { this.keys.add(key); this.goal = null; e.preventDefault(); }
+      // A repeat of a key whose first press was not ours (it quoted, it closed a menu) is not a pan.
+      if (PAN_KEYS.has(key)) { if (e.repeat && !this.keys.has(key)) return; this.keys.add(key); this.goal = null; e.preventDefault(); }
       else if (key === '+' || key === '=') this.zoomBy(1);
       else if (key === '-' || key === '_') this.zoomBy(-1);
     });
@@ -1266,6 +1302,51 @@ export class Game {
   /* ───────────────────────────────────────────────────────────── draw ─── */
 
   private draw(): void {
+    this.paint();
+    this.present();
+  }
+
+  /**
+   * Show the frame just painted. At a whole number of device pixels per world
+   * pixel the low-resolution canvas IS the picture (stretched, pixels whole).
+   * In between (1.25×, 1.5×…) a plain stretch would make its pixels uneven:
+   * the frame is enlarged to the next whole size, hard-edged (`mid`), then
+   * drawn reduced, smoothly, into a canvas that is the stage in DEVICE pixels
+   * — every pixel keeps an even width and a clean heart. That canvas is shown
+   * 1:1, never scaled or shifted by CSS: a compositor that resamples a scaled
+   * canvas draws seams along the edges of whatever lies over it (a menu, a
+   * panel).
+   */
+  private present(): void {
+    const { canvas, sharp, mid } = this;
+    const scale = this.cam.zoom * this.dpr;
+    const k = Math.abs(scale - Math.round(scale)) < 0.02 ? 0 : Math.ceil(scale);
+    if (!k) {
+      if (sharp.style.display !== 'none') { sharp.style.display = 'none'; canvas.style.visibility = ''; }
+      return;
+    }
+    const mw = canvas.width * k;
+    const mh = canvas.height * k;
+    if (mid.width !== mw || mid.height !== mh) { mid.width = mw; mid.height = mh; }
+    // A resize resets a context: say how to sample again each frame.
+    this.midG.imageSmoothingEnabled = false;
+    this.midG.drawImage(canvas, 0, 0, canvas.width, canvas.height, 0, 0, mw, mh);
+    const sw = Math.ceil(this.size.w * this.dpr);
+    const sh = Math.ceil(this.size.h * this.dpr);
+    if (sharp.width !== sw || sharp.height !== sh) {
+      sharp.width = sw;
+      sharp.height = sh;
+      sharp.style.width = `${sw / this.dpr}px`;
+      sharp.style.height = `${sh / this.dpr}px`;
+    }
+    if (sharp.style.display === 'none') { sharp.style.display = ''; canvas.style.visibility = 'hidden'; }
+    this.sharpG.imageSmoothingEnabled = true;
+    // The scroll's sub-pixel remainder is part of the drawing, not a CSS shift.
+    this.sharpG.drawImage(mid, 0, 0, mw, mh,
+      this.shiftX * this.dpr, this.shiftY * this.dpr, canvas.width * scale, canvas.height * scale);
+  }
+
+  private paint(): void {
     // A run on the 3D stage: it is drawn over a board left as it was — still
     // drawn for the instant the stage takes to fade in over it.
     if (this.arcade?.staged) {
@@ -1290,7 +1371,9 @@ export class Game {
     const shake = this.time < this.shakeUntil ? this.shakeBy : 0;
     const jx = shake ? Math.round((Math.random() * 2 - 1) * shake) : 0;
     const jy = shake ? Math.round((Math.random() * 2 - 1) * shake) : 0;
-    this.canvas.style.transform = `translate(${(jx - (view.left - vx)) * zoom}px, ${(jy - (view.top - vy)) * zoom}px)`;
+    this.shiftX = (jx - (view.left - vx)) * zoom;
+    this.shiftY = (jy - (view.top - vy)) * zoom;
+    this.canvas.style.transform = `translate(${this.shiftX}px, ${this.shiftY}px)`;
     g.setTransform(1, 0, 0, 1, -vx, -vy);
     g.imageSmoothingEnabled = false;
 

@@ -25,8 +25,14 @@ What exists in Charon is **imported, never copied**:
 | `useSessionList()`, `useVpsRuntime()`, `addOverlay` | `app/sync/summaryStore.ts` |
 | `sidebarPathKey` (a deck = a sidebar path group) | `app/sidebarPathGroups.ts` |
 | `canSleepSession`, `canResumeSession` | `app/sessionBulkActions.ts` |
-| `SessionView`, `SessionContextMenu`, `NewSessionWizard`, `ConfirmModal`, `PromptModal` | `app/*` |
-| every action (`respondPermission`, `sendSessionInput`, `markSessionRead`, …) | `lib/api.ts` |
+| `SessionView` (the drawer: `compact`, `composerRef`, `onEmptyComposerKey`) | `app/SessionView.tsx` |
+| `FileLinkContext` (where a file link in a message goes) | `app/Message.tsx` |
+| `colorToHex` (a session's colour as a chest, a rug) | `lib/rowColors.ts` |
+| `useShowHidden` (the hub sidebar's own hidden switch) | `app/showPaused.ts` |
+| `AccountLoginModal` + `hubLogin`'s rule (default profile = no account id) | `app/loginModals.tsx`, `lib/accountProfiles.ts` |
+| `RoutinesModal`, `SessionContextMenu`, `NewSessionWizard`, `ConfirmModal`, `PromptModal` | `app/*` |
+| `standaloneViewUrl` (`/view`, `code=1[&line=N]` for source) | `app/fileViews.ts` |
+| every action (`respondPermission`, `markSessionRead`, `patchAgentSession`, …) | `lib/api.ts` |
 
 Every state a robot shows goes through `game/model.ts § moodOf`, which only
 asks those predicates: a robot can never say "needs you" while the sidebar says
@@ -56,7 +62,8 @@ app/desk/
   quests.ts         what waits on the user, in order
   arcadeStore.ts    the mini-game's HUD readings and best score
   sound.ts          the board's four synthesised cues, off by default
-  desk.css          everything `dk-`; the session modal keeps Charon's theme
+  desk.css          everything `dk-`; the drawer's session pane restyles Charon's
+                    classes under `.desk .dk-sv`; the session modal keeps Charon's theme
   game/             the board — no React
     model.ts        mood, name, level (= context): derived from a summary, never invented
     layout.ts       model → folders, islands, decks, stations (pure)
@@ -81,8 +88,13 @@ app/desk/
       mainland.ts   the immense island north of them: ground with a relief
       models.ts     every model, as boxes; voxels.ts builds them
       fx.ts         bursts, bullets, flashes      hud.ts  the instruments
-  ui/               TopBar, IslandBar, QuestLog, LimitsPanel, UnitPanel,
-                    AccountSwitch, HeatIcon, Portrait, SessionModal, ArcadeHud, Help
+  ui/               TopBar, IslandBar, QuestLog, LimitsPanel, AccountSwitch, HeatIcon,
+                    Portrait, SessionModal, ArcadeHud, Help
+    UnitPanel.tsx   the drawer: UnitHead over UnitSession, inside the host's provider
+    UnitHead.tsx    the desk's head: portrait, name, state, account, team, commands
+    UnitSession.tsx Charon's SessionView, compact (desk.css § the drawer's session pane)
+    drawerHost.ts   what the board lends the drawer: ONE stable object
+    fileLinks.ts    file links → `/view` in a new tab, else the path copied
 ```
 
 ## The board
@@ -97,9 +109,14 @@ app/desk/
 
 One low-resolution canvas (CSS size ÷ zoom), shifted by the sub-pixel remainder
 for smooth scrolling; names and captions are DOM text on top (`.dk-labels`),
-which never takes a click — the board picks by position. A zoom is **crisp**:
-one world pixel is a whole number of DEVICE pixels (so 1.5× exists on a dense
-screen, not on a plain one).
+which never takes a click — the board picks by position. The zoom moves
+along fixed steps (`ZOOMS`: quarter steps up to 2×, wider beyond). Where one
+world pixel is a whole number of DEVICE pixels the low-resolution canvas is
+shown as is, stretched; in between (1.25×, 1.5× on a plain screen) the frame
+is enlarged hard-edged to the next whole size, then drawn reduced, smoothly,
+into a canvas that is the stage in device pixels, shown 1:1 (`Game.present`)
+— even pixels, not the uneven ones of a plain stretch, and nothing for the
+browser's compositor to resample.
 
 ### One island at a time
 
@@ -109,7 +126,7 @@ its robot's state and plays nothing.
 
 - **Framing** (`Game.frame`): the island is centred in what the HUD leaves free
   (`setSafeArea`: under the two top rows, right of the open quest log), at the
-  largest crisp zoom that holds it, never below a readable one — an island too
+  largest zoom step that holds it, never below a readable one — an island too
   big for that opens on its top-left corner, and the minimap appears. Islands
   are packed wide on purpose (`layout.ts § pack`): they are looked at alone, on
   a wide stage. The framing follows resizes and the HUD until the user moves
@@ -188,7 +205,8 @@ portrait, hovering the level explains it with that robot's numbers.
 
 - **Top bar**: one counter per state across the fleet (a click visits the next
   robot in it, on its island), the warm caches (a click goes to the one that
-  goes cold first), zoom — and the mini-game's `PLAY` button with its best
+  goes cold first), zoom, the eye (Charon's hidden switch: on = only hidden
+  robots, as in the sidebar) — and the mini-game's `PLAY` button with its best
   score.
 - **Limits** (foot of the left column, always there): one row per hub account,
   its rate-limit windows as gauges — how full, the pace mark, when it empties,
@@ -200,32 +218,39 @@ portrait, hovering the level explains it with that robot's numbers.
   `TabNotificationBadge`, by `attentionForRow`, like the hub's tab.
 - **Quests**: every pending gate and every unread finish, oldest first within
   blocking → async → failed → done. A permission is answered in place
-  (pessimistic: the card leaves when the summary says the gate is gone).
+  (pessimistic: the card leaves when the summary says the gate is gone); a
+  question, a plan, an async question: "Answer" selects the robot, its card is
+  in the drawer.
 - **The robot's drawer** (a robot is selected; `ui/UnitPanel.tsx`): on the
-  right, under the two top rows. From the top: its head; where it runs and its
-  cache; **its conversation**; what it is doing or waits for; its commands; an
-  order at the foot. The board keeps the selected robot clear of it
-  (`Game.reveal`), and goes back once nothing is selected; on a narrow screen
-  the drawer lies at the foot instead.
-  - **The conversation** (`ui/UnitTalk.tsx`) is the one part that scrolls:
-    the messages and no tool, the last one at the foot (its recap under it, as
-    in Charon), the answer being written streaming in, older ones on the way
-    up. On its side, Charon's pills: ↑ lands on the top of the last message,
-    then walks up the agent's messages (`app/chatScroll.ts`); ↓ comes back to
-    the foot. It is Charon's transcript — `useSessionStream` in its `conversation`
-    view, `Message` bubbles — so a selected robot is FOCUSED like an open
-    session: leaving it reads its finish (§14.47).
-  - Its **account** is a chip: the list under it moves the robot to another
-    account of the same provider (Charon's switch: a restart, the same
-    conversation; it waits for a running turn or background tasks).
-  - **The order** (`ui/UnitOrder.tsx`) IS the session's composer draft
-    (`useInputDraft`): it waits for its robot across selections, islands and
-    the full session view, and a robot holding one wears a pencil. Selecting a
-    robot puts the caret in it (not on a touch screen); Esc gives the keys
-    back. An image pasted (or a file dropped) in it is attached the way
-    Charon's composer does it (`useSessionAttachments`): uploaded beside the
-    session's code, its path spliced at the caret; nothing is sent while one
-    is on its way.
+  right, under the two top rows. The desk's **head** (`ui/UnitHead.tsx`), then
+  **Charon's session view in compact form** (`ui/UnitSession.tsx`). The board
+  keeps the selected robot clear of it (`Game.reveal`), and goes back once
+  nothing is selected; on a narrow screen the drawer lies at the foot instead.
+  - **The head**: portrait (chest in the session's colour) and level, name,
+    state and turn clock, @handle; one line with its account chip, machine and
+    folder; its team line (`▲` lead, `▼` crew) if it has one; ONE row of
+    commands — Open ⏎, Got it R, Stop X, Sleep/Wake, ⋯ (the session menu).
+    The account chip moves the robot to another account of the same provider
+    (Charon's switch: a restart, the same conversation).
+  - **The session** is `<SessionView compact>`, the hub's own: model and effort
+    cells, the context row, the transcript (no tools), the bars (thinking,
+    background tasks, schedules, goal), the gate cards, and the composer with
+    its mode chip, `/` and `@` menus, aside, attachments. One stream, one
+    draft (`useInputDraft`: a robot holding one wears a pencil), Charon's
+    rules throughout: asleep ⇒ its Resume in the composer's place; acting in
+    the drawer reads a finished robot (§14.47); a file dropped anywhere
+    attaches to the selected robot. `compact` = no Tools panel, header
+    unfolded, no composer grip; the drawer's CSS hides the title row and the
+    usage cell. An empty composer: Enter opens the full view, Tab the next
+    robot.
+  - **Its hosts** (`ui/drawerHost.ts`): a peer's @handle or a team chip goes
+    to that robot (its island; else its full view; a fork just made, once it
+    lands); "Sign in" opens Charon's login for that session's account;
+    `/clear` the new-agent wizard; `/routine` Charon's Routines; `/diff` and
+    `/mcp` the full view; `/shell` is refused (no terminal here).
+  - **File links** (`FileLinkContext`, `ui/fileLinks.ts`) open `/view` in a
+    new tab — rendered if the file has a view, else read-only source at the
+    cited line (`code=1&line=N`); a path outside an absolute root is copied.
 - **Feed**, bottom right — and the minimap, only while the scene is larger
   than the stage.
 

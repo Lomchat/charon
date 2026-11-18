@@ -21,6 +21,7 @@ import { describeSchedule, parseScheduledFire, scheduledTaskBody, scheduledTaskT
 import { resolveResetAtMs } from '@/lib/rateLimitReset';
 import { formatMessageTime, useTodayStart } from './messageTime';
 import { findTextLinks, messageFileTarget, remarkCodeUrls, remarkFilePaths } from './messageLinks';
+import type { MessageFileTarget } from './messageLinks';
 import { rehypeTrimBlockEdges } from './rehypeTrimBlockEdges';
 import { openTab as openWorkspaceTab } from './tabStore';
 import { revealLine, revealView } from './revealLine';
@@ -32,6 +33,17 @@ import { FoldEdge, FoldLine, foldRootProps, foldText, useBubbleFold } from './bu
 // to preserve historical imports (`import { Msg } from './Message'`).
 import type { Msg } from './sessionTypes';
 export type { Msg };
+
+/** Where a file link goes, for a host without Charon's explorer (the desk).
+ *  No provider (the hub) = today's explorer reveal. A context, not a prop, so
+ *  the shared MessageMarkdown tree cache stays host-neutral (§14.38). */
+export type FileLinkHandler = {
+  /** A page for this file, opened in a new browser tab; null = no page. */
+  hrefFor: (file: MessageFileTarget) => string | null;
+  /** A plain click on a file that has no page (`hrefFor` gave null). */
+  onUnavailable?: (file: MessageFileTarget) => void;
+};
+export const FileLinkContext = React.createContext<FileLinkHandler | null>(null);
 
 // Stable plugin/component identities. Besides avoiding small allocations on
 // every bubble render, this lets react-markdown reuse more of its processing
@@ -412,9 +424,16 @@ export function LinkifiedText({ text, vpsId, cwd }: { text: string; vpsId?: stri
 export function MessageLink({ href, vpsId, cwd, ...props }: React.ComponentProps<'a'> & {
   vpsId?: string; cwd?: string | null;
 }) {
+  const links = React.useContext(FileLinkContext);
   const file = messageFileTarget(href ?? '', vpsId, cwd);
   if (!file) return <a {...props} href={href} target="_blank" rel="noopener noreferrer" />;
   const abs = `${file.root.replace(/\/$/, '')}/${file.path}${file.line ? `:${file.line}` : ''}`;
+  if (links) {
+    const url = links.hrefFor(file);
+    if (url) return <a title={abs} {...props} href={url} target="_blank" rel="noopener" />;
+    return <a title={abs} {...props} href={href}
+      onClick={(e) => { e.preventDefault(); links.onUnavailable?.(file); }} />;
+  }
   return <a title={`Open ${abs} in the explorer`} {...props} href={href} onClick={(event) => {
     event.preventDefault();
     // A line means the source at that line; a bare file is opened to be READ:

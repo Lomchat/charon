@@ -208,7 +208,13 @@ export function hasStandaloneView(name: string): boolean {
 }
 
 /** The `/view` URL of a file: `path` is relative to `root`, like the fs routes. */
-export function standaloneViewUrl(vpsId: string, root: string, path: string): string {
+export function standaloneViewUrl(
+  vpsId: string, root: string, path: string, opts?: { code?: boolean; line?: number },
+): string {
   const q = new URLSearchParams({ vps: vpsId, root, path });
+  if (opts?.code) {
+    q.set('code', '1');
+    if (opts.line && opts.line > 0) q.set('line', String(Math.floor(opts.line)));
+  }
   return `/view?${q.toString()}`;
 }

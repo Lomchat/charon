@@ -60,6 +60,9 @@
   transform-origin: 0 0;
   will-change: transform;
 }
+/* The frame at a zoom between two whole pixel sizes: the stage in device
+   pixels, shown 1:1 (game.ts § present) — never scaled or shifted here. */
+.dk-canvas-sharp { image-rendering: auto; transform: none; will-change: auto; }
 
 /* Crisp text over the pixels. It never takes a click: the board picks by
    position, and a name passing under the cursor must not steal the gesture. */
@@ -583,7 +586,7 @@
   -webkit-box-orient: vertical;
   overflow: hidden;
 }
-.dk-quest-preview, .dk-unit-gate pre {
+.dk-quest-preview {
   margin: 6px 0 0;
   padding: 5px 7px;
   max-height: 62px;
@@ -678,8 +681,8 @@
 .dk-gauge[data-sev='crit'] .dk-gauge-fill { animation: dk-blink 0.9s steps(2, jump-none) infinite; }
 
 /* ── the selected robot: a drawer on the right ──
-   Under the two top rows, down to the foot of the stage: its head, a body
-   that scrolls, its commands, and the order at the bottom. */
+   Under the two top rows, down to the foot of the stage: the desk's head
+   (ui/UnitHead.tsx), then Charon's session view, compact (ui/UnitSession.tsx). */
 
 .dk-unit {
   --dk-mood: var(--dk-idle);
@@ -713,7 +716,7 @@
   border-bottom: 2px solid var(--dk-line);
 }
 .dk-unit-face { flex: none; display: flex; flex-direction: column; align-items: center; gap: 6px; width: 84px; }
-/* A low screen: a smaller portrait (UnitPanel draws it at 3×), the height
+/* A low screen: a smaller portrait (UnitHead draws it at 2×), the height
    goes to the conversation. */
 .dk-unit[data-low] .dk-unit-head { padding-top: 8px; padding-bottom: 8px; }
 .dk-unit[data-low] .dk-unit-face { width: 64px; }
@@ -826,61 +829,6 @@
 .dk-unit-info { flex: none; padding: 10px 12px; }
 .dk-unit-info > :first-child { margin-top: 0 !important; }
 
-/* Its conversation (ui/UnitTalk.tsx): Charon's reversed column and bubbles
-   (`.app-chat`, app.css), on Charon's dark tokens (`data-theme` on the box).
-   The one part of the drawer that scrolls — its foot is the last message, and
-   the wheel here is its own, not the board's zoom. */
-/* Its box: what takes the height the rest leaves, and what the side pills
-   are placed in. */
-.dk-talk-wrap { flex: 1 1 0; min-height: 0; position: relative; display: flex; flex-direction: column; border-top: 2px solid var(--dk-line); }
-/* Charon's own pills (app.css), sized for a drawer: ↑ to the top of the last
-   message then up the agent's messages, ↓ back to the foot. Each keeps its
-   place whether the other shows or not. */
-.dk-talk-wrap .app-scroll-pill, .dk-talk-wrap .app-scroll-up-pill { right: 16px; width: 32px; height: 32px; font-size: 15px; }
-.dk-talk-wrap .app-scroll-pill { bottom: 10px; }
-.dk-talk-wrap .app-scroll-up-pill { bottom: 50px; }
-.dk-unit .dk-talk {
-  flex: 1 1 0;
-  min-height: 0;
-  padding: 10px 8px 12px 12px;
-  gap: 8px;
-  background: rgba(5, 8, 15, 0.55);
-  font: 400 12.5px/1.5 var(--dk-text);
-  color: var(--text);
-  overscroll-behavior: contain;
-  user-select: text;
-}
-.dk-talk::-webkit-scrollbar { width: 6px; height: 6px; }
-.dk-talk::-webkit-scrollbar-track { background: var(--dk-edge); }
-.dk-talk::-webkit-scrollbar-thumb { background: var(--dk-line); }
-.dk-talk::-webkit-scrollbar-thumb:hover { background: var(--dk-dim); }
-.dk-talk .bubble { padding: 7px 10px; min-width: 0; }
-/* The header already carries the time and the copy button: no mirror at the
-   foot of every message in a column this narrow. */
-.dk-talk .bubble-f { display: none; }
-.dk-talk .bubble .bubble-h { flex-wrap: wrap; row-gap: 2px; }
-/* Headings sized for the drawer's text, not for a full-width chat. */
-.dk-talk .bubble .content.md h1 { font-size: 15px; }
-.dk-talk .bubble .content.md h2 { font-size: 14px; }
-.dk-talk .bubble .content.md h3 { font-size: 13px; }
-.dk-talk-note {
-  flex: none;
-  align-self: center;
-  margin: 4px 0 !important;
-  font: 400 11px/1.3 var(--dk-mono);
-  color: var(--dk-faint);
-  user-select: none;
-}
-/* Alone in the box (loading, nothing said yet): in its middle. */
-.dk-talk-note:only-child { margin: auto !important; }
-.dk-talk-note button { padding: 3px 8px; background: none; border: 1px solid var(--dk-line); color: var(--dk-dim); }
-.dk-talk-note button:hover { border-color: var(--dk-ink); color: var(--dk-ink); }
-
-/* Right now: what it is doing, what it waits for — between the conversation
-   and the commands. */
-.dk-unit-now { flex: none; max-height: 34%; overflow-y: auto; padding: 8px 12px; border-top: 2px solid var(--dk-line); }
-.dk-unit-now > :first-child { margin-top: 0 !important; }
-.dk-unit-now .dk-unit-doing { flex-direction: row; align-items: baseline; gap: 8px; }
 .dk-unit-title { flex: 1; min-width: 0; display: flex; flex-direction: column; align-items: flex-start; gap: 7px; }
 .dk-unit-title h2 {
   margin: 0;
@@ -907,34 +855,9 @@
 .dk-unit-state i { width: 7px; height: 7px; background: var(--dk-mood); }
 .dk-unit-state b { color: var(--dk-ink); letter-spacing: 0; }
 .dk-unit-state em { font-style: normal; color: var(--dk-gold); letter-spacing: 0; }
-.dk-unit p { margin: 0; }
-.dk-unit-where { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 12px; margin-top: 4px !important; font-size: 11px; color: var(--dk-dim); }
+.dk-unit-where { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 12px; font-size: 11px; color: var(--dk-dim); }
 .dk-unit-where > span { white-space: nowrap; }
 .dk-unit-cwd { overflow: hidden; text-overflow: ellipsis; max-width: 100%; color: var(--dk-faint); }
-.dk-unit-cache { display: flex; flex-wrap: wrap; align-items: center; gap: 3px 7px; margin-top: 7px !important; font: 600 11px/1.3 var(--dk-mono); min-width: 0; }
-.dk-unit-cache b { font-weight: 600; white-space: nowrap; }
-.dk-unit-cache span { white-space: nowrap; font-weight: 400; color: var(--dk-faint); }
-.dk-unit-cache[data-cold] { color: var(--dk-faint); }
-.dk-unit-doing { display: flex; flex-direction: column; gap: 3px; margin-top: 10px !important; font-size: 12px; min-width: 0; }
-.dk-unit-doing b { flex: none; font-weight: 600; }
-.dk-unit-doing code {
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  font: 400 11.5px/1.3 var(--dk-mono);
-  color: var(--dk-ink);
-}
-.dk-unit-note, .dk-unit-goal {
-  margin-top: 8px !important;
-  font: 400 12px/1.45 var(--dk-text);
-  color: var(--dk-ink);
-  user-select: text;
-}
-.dk-unit-note { white-space: pre-wrap; overflow-wrap: anywhere; }
-.dk-unit-goal { display: -webkit-box; -webkit-box-orient: vertical; overflow: hidden; }
-.dk-unit-goal { color: var(--dk-dim); -webkit-line-clamp: 2; }
-.dk-unit-goal i { margin-right: 6px; font-style: normal; color: var(--dk-gold); }
 /* Its team (sub-sessions): ▲ the one it works for, ▼ the ones that work for
    it — each a way to go there, edged in the colour of their rug on the board. */
 .dk-unit-team { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 6px; margin-top: 7px; min-width: 0; }
@@ -957,17 +880,6 @@
 .dk-mate:hover { border-color: var(--dk-ink); border-left-color: var(--dk-team, var(--dk-ink)); }
 .dk-mate > i { flex: none; width: 6px; height: 6px; background: var(--dk-mood); }
 .dk-mate > span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.dk-unit-gate { margin-top: 8px; font-size: 12px; color: var(--dk-ink); }
-.dk-unit-gate b { color: var(--dk-ask); }
-
-.dk-unit-cmds {
-  flex: none;
-  display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 6px;
-  padding: 8px 12px;
-  border-top: 2px solid var(--dk-line);
-}
 .dk-cmd {
   display: flex;
   align-items: center;
@@ -1001,48 +913,6 @@
   border: 0;
 }
 .dk-unit-close:hover { color: #fff; }
-
-.dk-order {
-  flex: none;
-  display: flex;
-  flex-wrap: wrap;
-  align-items: flex-end;
-  gap: 8px;
-  padding: 8px 12px 10px;
-  border-top: 2px solid var(--dk-line);
-  background: var(--dk-edge);
-}
-.dk-order > span { align-self: flex-start; padding-top: 6px; font: 700 13px/1 var(--dk-mono); color: var(--dk-gold); }
-/* Two lines that grow with what is typed (UnitOrder sets its height): the
-   room is the conversation's. */
-.dk-order textarea {
-  flex: 1;
-  min-width: 0;
-  height: 42px;
-  max-height: 220px;
-  padding: 5px 4px;
-  font: 400 12.5px/1.3 var(--dk-mono);
-  color: var(--dk-ink);
-  background: none;
-  border: 0;
-  outline: 0;
-  resize: none;
-  user-select: text;
-}
-.dk-order textarea::placeholder { color: var(--dk-faint); }
-.dk-order:focus-within { box-shadow: inset 0 2px 0 var(--dk-gold); }
-.dk-order-error { flex-basis: 100%; margin: 0; font-size: 11px; color: var(--dk-fail); }
-/* A file held over the order: it will be attached. */
-.dk-order[data-over] { box-shadow: inset 0 0 0 2px var(--dk-gold); }
-/* Attachments on their way (pasted images): one line each, gone once the
-   path is in the order; a failure stays until dismissed. */
-.dk-order-files { flex-basis: 100%; display: flex; flex-direction: column; gap: 3px; margin: 0; padding: 0; list-style: none; }
-.dk-order-files li { display: flex; align-items: baseline; gap: 8px; min-width: 0; font: 400 11px/1.3 var(--dk-mono); color: var(--dk-dim); }
-.dk-order-files b { flex: none; max-width: 50%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 600; color: var(--dk-gold); }
-.dk-order-files span { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.dk-order-files li[data-failed] b, .dk-order-files li[data-failed] span { color: var(--dk-fail); }
-.dk-order-files button { flex: none; padding: 0 5px; background: none; border: 1px solid var(--dk-line); color: var(--dk-dim); }
-.dk-order-files button:hover { border-color: var(--dk-ink); color: var(--dk-ink); }
 
 /* ── corner: the feed over the minimap ── */
 
@@ -1383,13 +1253,383 @@
      what the rest leaves, and would fold to nothing in a box sized by content. */
   .dk-unit { top: auto; left: 10px; right: 10px; width: auto; height: 68%; z-index: 2; border-right: 2px solid var(--dk-line); border-top: 4px solid var(--dk-mood); }
   .dk-unit-face { width: auto; }
-  .dk-unit-cmds { grid-template-columns: repeat(3, 1fr); }
   .dk-unit-level .dk-tip, .dk-acct-pop { width: min(300px, calc(100vw - 60px)); }
   .dk-help-cols { grid-template-columns: 1fr; }
-  .dk-order textarea { font-size: 16px; }
 }
 
 @media (prefers-reduced-motion: reduce) {
   .dk-float > span, .dk-chip i, .dk-unit, .dk-feed li, .dk-isle-card[data-alert]::before, .dk-gauge-fill { animation: none !important; }
   .dk-game-banner { animation: none !important; }
 }
+
+/* ─────────────────────────────────────────── the drawer's head (sizes) ──
+   ui/UnitHead.tsx. One class deeper than the drawer rules above, so these
+   win wherever they differ. Budget at 1280x720 (data-low): head 64 + info 20
+   + commands 28 = 112 (+20 with a team); at 1080p: 96 + 22 + 28. */
+
+.desk .dk-unit .dk-unit-head,
+.desk .dk-unit .dk-unit-info,
+.desk .dk-unit .dk-unit-cmdrow { box-sizing: border-box; }
+
+.desk .dk-unit .dk-unit-head {
+  height: 96px;
+  padding: 6px 30px 6px 12px;
+  gap: 10px;
+  align-items: stretch;
+}
+.desk .dk-unit[data-low] .dk-unit-head { height: 64px; padding: 4px 30px 4px 12px; }
+
+.desk .dk-unit .dk-unit-face { width: 60px; gap: 4px; justify-content: center; }
+.desk .dk-unit[data-low] .dk-unit-face { width: 40px; gap: 2px; }
+.desk .dk-unit .dk-portrait { box-sizing: content-box; border: 0; }
+.desk .dk-unit .dk-unit-level { gap: 4px; height: 8px; }
+.desk .dk-unit .dk-unit-level > b { font-size: 7px; }
+.desk .dk-unit .dk-unit-level > span { height: 4px; }
+
+.desk .dk-unit .dk-unit-title { gap: 4px; justify-content: center; }
+.desk .dk-unit .dk-unit-title h2 { font-size: 16px; line-height: 1.2; -webkit-line-clamp: 2; }
+.desk .dk-unit[data-low] .dk-unit-title { gap: 3px; }
+.desk .dk-unit[data-low] .dk-unit-title h2 { font-size: 15px; -webkit-line-clamp: 1; }
+.desk .dk-unit .dk-unit-handle { font-size: 10.5px; line-height: 1.1; }
+.desk .dk-unit .dk-unit-close { top: 4px; right: 4px; }
+
+/* Info line: account chip, machine, folder. The folder gives way first. No
+   overflow clip on the row: the account list hangs from it. */
+.desk .dk-unit .dk-unit-info { padding: 0 12px; }
+.desk .dk-unit .dk-unit-where {
+  flex-wrap: nowrap;
+  gap: 8px;
+  height: 22px;
+  min-width: 0;
+}
+.desk .dk-unit[data-low] .dk-unit-where { height: 20px; }
+.desk .dk-unit .dk-unit-where > .dk-acct { flex: 0 1 auto; min-width: 0; max-width: 48%; }
+.desk .dk-unit .dk-unit-where .dk-acct-chip { max-width: 100%; min-width: 0; }
+.desk .dk-unit .dk-unit-where > span { flex: none; }
+.desk .dk-unit .dk-unit-where > .dk-acct { display: inline-flex; }
+.desk .dk-unit .dk-unit-where > .dk-unit-cwd { flex: 1 1 0; min-width: 0; max-width: none; }
+.desk .dk-unit .dk-unit-where > span:not(.dk-acct):not(.dk-unit-cwd) { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; max-width: 30%; }
+
+/* Team line: ▲ lead, ▼ crew, edged in the rug's colour. */
+.desk .dk-unit .dk-unit-team {
+  flex-wrap: nowrap;
+  gap: 6px;
+  height: 22px;
+  margin-top: 0;
+  padding-left: 6px;
+  overflow: hidden;
+  border-left: 3px solid var(--dk-team, var(--dk-line));
+}
+.desk .dk-unit[data-low] .dk-unit-team { height: 20px; }
+.desk .dk-unit .dk-unit-team .dk-mate { height: 18px; flex: 0 1 auto; }
+.desk .dk-unit[data-low] .dk-unit-team .dk-mate { height: 16px; }
+
+/* Commands: the desk's own buttons, one row, 26px. */
+.desk .dk-unit .dk-unit-cmdrow {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  height: 28px;
+  padding: 1px 12px;
+  border-bottom: 2px solid var(--dk-line);
+}
+.desk .dk-unit .dk-unit-cmdrow .dk-cmd {
+  flex: 1 1 auto;
+  justify-content: center;
+  gap: 6px;
+  min-width: 0;
+  height: 26px;
+  padding: 0 8px;
+  font-size: 11px;
+  white-space: nowrap;
+}
+.desk .dk-unit .dk-unit-cmdrow .dk-cmd kbd { font-size: 9px; }
+.desk .dk-unit .dk-unit-cmdrow .dk-cmd[aria-label='more actions'] { flex: 0 0 34px; padding: 0; }
+
+/* ──────────────────────────────── the drawer's session pane (Charon's) ──
+   ui/UnitSession.tsx.
+   Charon's own SessionView (`compact`) restyled for a ~372×500px box. Every
+   rule is scoped `.desk .dk-sv …` and outranks the app.css rule it bends —
+   including that rule's @media (max-width: 820px) and @container variants,
+   which come later in app.css at the same weight — by specificity, never by
+   `!important`. Classes here are Charon's: a rename there un-styles the drawer
+   (never breaks it). Charon's inner layouts (cards, pickers, bubbles) stay
+   Charon's; only boxes, paddings and heights change. */
+
+/* ── The box: a sized column under the head; Charon's tokens on the desk's
+   night palette, square corners whatever the page theme. */
+.desk .dk-sv {
+  --bg: var(--dk-panel);
+  --bg-elevated: var(--dk-panel-2);
+  --bg-inset: var(--dk-edge);
+  --border: var(--dk-line);
+  --radius-sm: 0px;
+  --radius-md: 0px;
+  --radius-lg: 0px;
+  --radius-xl: 0px;
+  --chip-radius: 0px;
+  --bubble-radius: 0px;
+  flex: 1 1 0;
+  min-height: 0;
+  /* `.desk` forbids selection (a game board); what is read here can be copied,
+     as in Charon: a command about to be allowed, a question, a reason. */
+  user-select: text;
+  display: flex;
+  flex-direction: column;
+  /* A SIZE container: the composer, the menus and the popover are sized in
+     cqh of the pane, never of the viewport. */
+  container: dk-sv / size;
+  /* Charon's face, never the HUD's pixel font. */
+  font: 400 13px/1.45 var(--body);
+  color: var(--text);
+}
+.desk .dk-sv > .app-main.is-compact {
+  flex: 1 1 0;
+  min-height: 0;
+  min-width: 0;
+  overflow: hidden;
+}
+
+/* ── Header: only the runtime panel (model │ effort) and the context row.
+   The head above says who it is and holds the commands; no usage cell (the
+   desk's account chip and LimitsPanel say it — as on Charon's phone). */
+.desk .dk-sv .app-bar {
+  /* Never squeezed: a tall gate card takes its room from the conversation. */
+  flex: none;
+  min-height: 0;
+  padding: 4px 8px;
+  border-bottom: 1px solid var(--border);
+  background: none;
+}
+.desk .dk-sv .app-bar .bar-ident,
+.desk .dk-sv .app-bar .session-header-controls,
+.desk .dk-sv .app-bar .runtime-usage { display: none; }
+.desk .dk-sv .app-bar .session-header-layout { display: block; }
+/* Beats `.app-bar.is-expanded .session-runtime-panel:not(.has-endpoint)`
+   (≤600px, same weight, earlier) and the ≤820px `position: static` (the
+   popover is placed against the panel). */
+.desk .dk-sv .app-bar .session-runtime-panel {
+  position: relative;
+  width: 100%;
+  max-width: none;
+  justify-self: stretch;
+  grid-template-columns: minmax(0, 1.3fr) minmax(0, 1fr);
+  box-shadow: none;
+}
+.desk .dk-sv .app-bar .session-runtime-panel:has(.runtime-effort-params) { grid-template-columns: minmax(0, 1fr) minmax(0, 0.85fr); }
+/* A custom endpoint keeps its third cell (tokens): it is not the usage cell. */
+.desk .dk-sv .app-bar .session-runtime-panel.has-endpoint { grid-template-columns: minmax(0, 1.3fr) minmax(0, 0.8fr) minmax(0, 1.2fr); }
+.desk .dk-sv .app-bar .session-runtime-panel.has-endpoint.without-effort { grid-template-columns: minmax(0, 1.3fr) minmax(0, 1fr); }
+/* 32px cells (40px on a tall pane): beats `@container session-header
+   (max-width: 420px)`'s 52px and the phone's 26px. */
+.desk .dk-sv .app-bar .session-runtime-panel .runtime-cell { min-height: 32px; height: auto; padding: 3px 8px; gap: 1px; }
+@container dk-sv (min-height: 600px) {
+  .desk .dk-sv .app-bar .session-runtime-panel .runtime-cell { min-height: 40px; padding: 5px 10px; }
+}
+.desk .dk-sv .app-bar .session-runtime-panel .runtime-model::after { top: 6px; bottom: 6px; }
+/* The effort cell is the last one unless an endpoint adds its tokens cell. */
+.desk .dk-sv .app-bar .session-runtime-panel .runtime-effort::after { display: none; }
+.desk .dk-sv .app-bar .session-runtime-panel.has-endpoint .runtime-effort::after { display: block; top: 6px; bottom: 6px; }
+.desk .dk-sv .app-bar .session-runtime-panel .runtime-value { font-size: 12px; line-height: 1.3; gap: 5px; }
+.desk .dk-sv .app-bar .session-runtime-panel .runtime-effective { font-size: 9px; line-height: 1.1; margin-top: 0; }
+.desk .dk-sv .app-bar .session-runtime-panel .runtime-cell > .runtime-switch-tag { margin-top: 0; font-size: 9px; line-height: 13px; padding: 0 5px; }
+/* The context row: one 20px line (gauge, cache mark, Compact). */
+.desk .dk-sv .app-bar .session-runtime-panel > .bar-context-row { min-height: 20px; padding: 2px 8px; }
+.desk .dk-sv .app-bar .session-runtime-panel .bar-context-compact { padding: 0 6px; }
+/* The model/effort popover opens DOWN over the conversation, inside the pane. */
+.desk .dk-sv .app-bar .runtime-choice-popover {
+  left: 0;
+  right: 0;
+  transform: none;
+  width: auto;
+  max-height: 60cqh;
+}
+
+/* ── Banners. Asleep: the head says so and the Resume CTA wakes it, so the
+   red banner goes; an error's details stay. */
+.desk .dk-sv .app-disconnect-banner-wrap .app-disconnect-banner,
+.desk .dk-sv .app-main > .turn-cost { display: none; }
+.desk .dk-sv .app-disconnect-banner-wrap .app-error-details { padding: 4px 10px 6px; }
+.desk .dk-sv .app-main > .app-reconnect-banner,
+.desk .dk-sv .app-main > .app-error { padding: 4px 10px; font-size: 12px; }
+.desk .dk-sv .app-main > .cold-resume-note,
+.desk .dk-sv .app-main > .aside-error { padding: 4px 10px; font-size: 11.5px; }
+
+/* ── The conversation: what the rest leaves, never under 200px. */
+/* The floor follows the pane's own height (cqh): on a short drawer (a phone's
+   sheet, a low window) a fixed floor would push the composer out of the box. */
+.desk .dk-sv .app-main > .app-chat-wrap { flex: 1 1 0; min-height: min(200px, 35cqh); }
+/* A gate waits: the answer comes first, the conversation keeps a few lines. */
+.desk .dk-sv .app-main:has(> .pz-wrap:not(.is-collapsed)) > .app-chat-wrap { min-height: min(96px, 20cqh); }
+.desk .dk-sv .app-chat-wrap > .app-chat {
+  padding: 10px 8px 12px 12px;
+  gap: 8px;
+  background: rgba(5, 8, 15, 0.55);
+  font: 400 12.5px/1.5 var(--dk-text);
+  color: var(--text);
+}
+.desk .dk-sv .app-chat-wrap > .app-chat::-webkit-scrollbar { width: 6px; height: 6px; }
+.desk .dk-sv .app-chat-wrap > .app-chat::-webkit-scrollbar-track { background: var(--dk-edge); }
+.desk .dk-sv .app-chat-wrap > .app-chat::-webkit-scrollbar-thumb { background: var(--dk-line); }
+.desk .dk-sv .app-chat-wrap > .app-chat::-webkit-scrollbar-thumb:hover { background: var(--dk-dim); }
+/* Horizontal only: a folded bubble keeps Charon's own vertical padding. */
+.desk .dk-sv .app-chat .bubble { padding-left: 10px; padding-right: 10px; min-width: 0; }
+/* The head carries the time and the copy button: no mirror at the foot of
+   every message in a column this narrow — so the head's time stays, even on
+   a phone where Charon moves it to the foot. */
+.desk .dk-sv .app-chat .bubble .bubble-f { display: none; }
+.desk .dk-sv .app-chat .bubble .bubble-h { flex-wrap: wrap; row-gap: 2px; }
+.desk .dk-sv .app-chat .bubble .bubble-h .bubble-h-meta time { display: inline; }
+/* Headings sized for the drawer's text, not for a full-width chat. */
+.desk .dk-sv .app-chat .bubble .content.md h1 { font-size: 15px; }
+.desk .dk-sv .app-chat .bubble .content.md h2 { font-size: 14px; }
+.desk .dk-sv .app-chat .bubble .content.md h3 { font-size: 13px; }
+/* Charon's pills at 32px, restacked: ↓ 10, ▴ 50, ⇈ 90 (the wrap's 200px
+   floor keeps all three inside it). The centred "scroll to start" pill only
+   hides text in a column this narrow (as on a phone). */
+/* Small and see-through: in a column this narrow they lie over the text. */
+.desk .dk-sv .app-chat-wrap .app-scroll-pill,
+.desk .dk-sv .app-chat-wrap .app-scroll-up-pill { right: 10px; width: 26px; height: 26px; font-size: 13px; opacity: 0.55; }
+.desk .dk-sv .app-chat-wrap .app-scroll-pill:hover,
+.desk .dk-sv .app-chat-wrap .app-scroll-up-pill:hover { opacity: 1; }
+.desk .dk-sv .app-chat-wrap .app-scroll-pill { bottom: 8px; }
+.desk .dk-sv .app-chat-wrap .app-scroll-up-pill { bottom: 40px; }
+.desk .dk-sv .app-chat-wrap .app-scroll-up-pill.is-user { bottom: 72px; }
+.desk .dk-sv .app-chat-wrap .app-jump-msg-start-pill { display: none; }
+
+/* ── Bars above the composer (thinking, background tasks, scheduled, goal):
+   one line each, full-width strips. */
+.desk .dk-sv .app-main > .thinking-bar { padding: 3px 10px; flex-wrap: nowrap; gap: 6px; font-size: 11px; }
+.desk .dk-sv .app-main > .thinking-bar .t-now { order: 0; flex: 0 1 auto; margin-right: 0; }
+.desk .dk-sv .app-main > .thinking-bar .t-meta { flex-shrink: 1; min-width: 0; overflow: hidden; font-size: 10.5px; }
+.desk .dk-sv .app-main > .thinking-bar .t-speed,
+.desk .dk-sv .app-main > .thinking-bar .t-sdk-speed { display: none; }
+.desk .dk-sv .app-main .bgtasks-bar {
+  flex: none;
+  margin: 0;
+  padding: 3px 10px;
+  border-width: 1px 0 0;
+}
+.desk .dk-sv .app-main .bgtasks-bar .bgtasks-more { display: none; }
+
+/* ── Gates. A card (or the async strip) gives way before the conversation:
+   it shrinks to a 32px strip and scrolls inside; its grip folds it. */
+.desk .dk-sv .app-main > .pz-wrap {
+  flex: 0 1 auto;
+  min-height: 32px;
+  display: flex;
+  flex-direction: column;
+}
+/* No `display` here: `hidden` (the fold) must keep working. */
+.desk .dk-sv .app-main > .pz-wrap > .app-pending-zone {
+  flex: 0 1 auto;
+  min-height: 0;
+  max-height: none;
+  overflow-y: auto;
+  padding: 8px 10px;
+}
+.desk .dk-sv .app-pending-zone .inline-perm-card,
+.desk .dk-sv .app-pending-zone .user-question-card,
+.desk .dk-sv .app-pending-zone .exit-plan-card { padding: 8px 10px; }
+.desk .dk-sv .app-pending-zone .inline-perm-card .ip-summary { display: none; }
+.desk .dk-sv .app-pending-zone .inline-perm-card .ip-input { max-height: 62px; margin-bottom: 8px; }
+.desk .dk-sv .app-pending-zone .inline-perm-card .ip-actions button { padding: 6px 10px; }
+/* The two answers first, side by side; the "don't ask again" options under
+   them, each on its line — in a box this short, deny must not be below the fold. */
+.desk .dk-sv .app-pending-zone .inline-perm-card .ip-actions { flex-wrap: wrap; gap: 6px; }
+.desk .dk-sv .app-pending-zone .inline-perm-card .ip-actions .allow { order: 0; flex: 1 1 0; }
+.desk .dk-sv .app-pending-zone .inline-perm-card .ip-actions .deny { order: 1; flex: 1 1 0; }
+.desk .dk-sv .app-pending-zone .inline-perm-card .ip-actions .always { order: 2; flex: 1 1 100%; text-align: left; }
+.desk .dk-sv .app-pending-zone .exit-plan-card .ep-content { max-height: 160px; }
+/* Y / N on the board click the card the drawer shows (Desk.tsx): its two
+   buttons wear the desk's keycap. */
+.desk .dk-sv .pz-wrap.permission:not(.is-collapsed) .ip-actions .allow::after,
+.desk .dk-sv .pz-wrap.permission:not(.is-collapsed) .ip-actions .deny::after {
+  margin-left: 6px;
+  padding: 0 4px;
+  font: 600 9px/1.5 var(--dk-mono);
+  letter-spacing: 0;
+  color: var(--dk-dim);
+  border: 1px solid var(--dk-line);
+  background: rgba(0, 0, 0, 0.3);
+}
+.desk .dk-sv .pz-wrap.permission:not(.is-collapsed) .ip-actions .allow::after { content: 'Y'; }
+.desk .dk-sv .pz-wrap.permission:not(.is-collapsed) .ip-actions .deny::after { content: 'N'; }
+/* No keyboard on a touch screen, no keycap. */
+@media (pointer: coarse) {
+  .desk .dk-sv .pz-wrap.permission:not(.is-collapsed) .ip-actions .allow::after,
+  .desk .dk-sv .pz-wrap.permission:not(.is-collapsed) .ip-actions .deny::after { content: none; }
+}
+/* Asleep: Charon's Resume in the composer's place, at the drawer's scale. */
+.desk .dk-sv .app-main > .app-disconnect-cta { padding: 8px 10px; }
+.desk .dk-sv .app-main > .app-disconnect-cta button { padding: 10px 12px; font-size: 11px; letter-spacing: 0.2em; }
+
+/* ── The composer. MIRRORS app.css's ≤820px composer block ("Input bar: the
+   desktop row [mode column | textarea | send] is too wide for a phone"):
+   the textarea at full width, then ONE toolbar — the mode chip on the left,
+   📎 · aside · send as icons on the right. Keyed on `.is-compact` (the
+   pane's width, not the viewport's): a change to that block does not reach
+   here on its own. */
+.desk .dk-sv .app-input-bar.is-compact {
+  flex-wrap: wrap;
+  gap: 6px;
+  padding: 6px 8px;
+}
+.desk .dk-sv .app-input-bar.is-compact .mode-switch:not(.ci-mode) { display: none; }
+.desk .dk-sv .app-input-bar.is-compact .mode-switch.ci-mode {
+  display: flex;
+  order: 1;
+  flex: 0 1 auto;
+  min-width: 0;
+  margin-right: auto;
+}
+.desk .dk-sv .app-input-bar.is-compact .ci-mode .m-btn {
+  flex: 0 1 auto;
+  min-width: 0;
+  min-height: 28px;
+  padding: 0 8px;
+  gap: 6px;
+}
+/* Two lines at rest, then grows with its text to about a quarter of the pane
+   and scrolls (ChatInputBar measures it where `field-sizing` is missing). */
+.desk .dk-sv .app-input-bar.is-compact textarea {
+  flex: 1 1 100%;
+  field-sizing: content;
+  min-height: calc(2.8em + 14px);
+  max-height: 28cqh;
+  padding: 6px 8px;
+  font-size: 13px;
+  line-height: 1.4;
+}
+.desk .dk-sv .app-input-bar.is-compact .ci-send-col { order: 2; flex: 0 0 auto; flex-direction: row; gap: 6px; }
+.desk .dk-sv .app-input-bar.is-compact .ci-send-col .ci-attach,
+.desk .dk-sv .app-input-bar.is-compact .ci-send-col .aside,
+.desk .dk-sv .app-input-bar.is-compact .ci-send-col .send {
+  flex: 0 0 auto;
+  width: 30px;
+  min-height: 28px;
+  padding: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.desk .dk-sv .app-input-bar.is-compact .send-label,
+.desk .dk-sv .app-input-bar.is-compact .aside-label { display: none; }
+.desk .dk-sv .app-input-bar.is-compact .send-icon { display: block; }
+.desk .dk-sv .app-input-bar.is-compact .ci-attach svg,
+.desk .dk-sv .app-input-bar.is-compact .aside svg,
+.desk .dk-sv .app-input-bar.is-compact .send-icon { width: 15px; height: 15px; }
+.desk .dk-sv .app-input-bar.is-compact .ci-chip-name { max-width: 150px; }
+.desk .dk-sv .app-input-bar.is-compact .ci-drop-card { padding: 14px 16px; font-size: 11px; }
+/* The `/` and `@` menus open upward over the conversation, inside the pane. */
+.desk .dk-sv .app-input-bar.is-compact .ci-mentions { left: 6px; right: 6px; max-height: 50cqh; }
+.desk .dk-sv .app-input-bar.is-compact .ci-slash-hint { left: 6px; max-width: calc(100% - 12px); }
+/* 16px: iOS zooms the page into any smaller input (the bottom sheet). */
+@media (max-width: 820px) {
+  .desk .dk-sv .app-input-bar.is-compact textarea { font-size: 16px; }
+}
+
+/* ─────────────────────────────────────────────────── the top bar's eye ── */
+/* Inherits `.dk-tools button`; the glyph centred. */
+.dk-tools .dk-eye svg { display: block; margin: 0 auto; }

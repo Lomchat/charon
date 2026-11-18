@@ -107,9 +107,12 @@ export default function QuestLog({
                       Got it
                     </button>
                   )}
-                  <button type="button" className="dk-btn" onClick={() => onOpen(quest.sessionId)}>
-                    {quest.kind === 'permission' || quest.kind === 'done' || quest.kind === 'error' ? 'Open' : 'Answer'}
-                  </button>
+                  {quest.kind === 'permission' || quest.kind === 'done' || quest.kind === 'error' ? (
+                    <button type="button" className="dk-btn" onClick={() => onOpen(quest.sessionId)}>Open</button>
+                  ) : (
+                    // A question or a plan is answered in the drawer: it holds the card.
+                    <button type="button" className="dk-btn" onClick={() => onVisit(quest.sessionId)}>Answer</button>
+                  )}
                 </footer>
               </article>
             );

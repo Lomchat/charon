@@ -20,7 +20,7 @@ import { FoldEdge, foldRootProps, useBubbleFold } from './bubbleFold';
 import { coldResumeShare, fmtTokens as fmtDriverTokens } from '@/lib/usageDrivers';
 import type { InsightUsage } from './SessionInsight';
 import type { TurnLedger } from '@/lib/promptCache';
-import { Fragment, memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
+import { Fragment, memo, useCallback, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore, type Ref } from 'react';
 import type { Vps } from '@/lib/db/schema';
 import { addOverlay, getSummary, subscribeSummaries } from './sync/summaryStore';
 import type { SessionListItem, AgentKind, SessionAttachment, FastModeVerdict } from '@/lib/types/api';
@@ -40,7 +40,7 @@ import { isTurnInterrupted } from '@/lib/turnInterrupted';
 import { parseSessionError } from '@/lib/sessionError';
 import { isClaudeAuthExpired } from '@/lib/authExpired';
 import { resolveResetAtMs } from '@/lib/rateLimitReset';
-import Message, { type Msg, summarizeToolInput } from './Message';
+import Message, { type Msg, summarizeToolInput, FileLinkContext } from './Message';
 import ToolPanel from './ToolPanel';
 import BgTasksBar from './BgTasksBar';
 import ScheduledTasksBar from './ScheduledTasksBar';
@@ -83,7 +83,7 @@ import {
 import { useInputDraft } from './inputDraftStore';
 import { useStableCallback, useStableOptionalCallback, useStableValue, shallowEqualRows } from './useStable';
 import { useUsage } from './usageStore';
-import { COMPOSER_MAX_VIEWPORT_SHARE, revealComposer, useComposerSize, type ComposerSize } from './composerSize';
+import { COMPOSER_MAX_VIEWPORT_SHARE, DEFAULT_COMPOSER_SIZE, revealComposer, useComposerSize, type ComposerSize } from './composerSize';
 import { formatQuote, insertQuoteBlock } from './chatQuote';
 import QuoteSelectionButton from './QuoteSelectionButton';
 import ComposerGrip from './ComposerGrip';
@@ -154,7 +154,7 @@ type Props = {
   // Opens the ToolPanel drawer on narrow screens (<=1100px it's hidden behind
   // a transform). Used by the git chip, which must reveal the panel it points
   // at — on desktop the panel is always visible and this is a no-op.
-  onOpenTools?: () => void;
+  onOpenTools?: (tab?: 'git' | 'calls') => void;
   /** Jump to another session, from the explorer's activity icons (§14.88). */
   // §14.78: opening something that was just CREATED must carry the created row
   // and pin it. A bare id loses the race against the session-list refresh, and
@@ -175,6 +175,16 @@ type Props = {
   onNewShellIn?: (vpsId: string, cwd: string) => void;
   /** `/routine`: the Routines modal on a new routine prefilled from here. */
   onNewRoutine?: (draft: { vpsId: string; cwd: string; kind: AgentKind; prompt: string }) => void;
+  /** A narrow embed (the desk's drawer): no Tools panel, the header always
+   *  unfolded, a composer that ignores the shared composer size (no grip, never
+   *  collapsed) and grows with its text. Adds `.is-compact` on `.app-main`. */
+  compact?: boolean;
+  /** The composer's textarea, for a host that focuses it with its own keys.
+   *  Null while a gate card or the Resume CTA holds the composer's place. */
+  composerRef?: Ref<HTMLTextAreaElement>;
+  /** Enter (no modifier) or Tab in an EMPTY composer: no text, no upload in
+   *  flight, no `/` or `@` menu open. True = the host handled it. */
+  onEmptyComposerKey?: (key: 'Enter' | 'Tab', shift: boolean) => boolean;
 };
 
 // Module-side session cache — sessionCache.ts shared desktop/mobile.
@@ -208,6 +218,7 @@ export default function SessionView({
   onOpenFolder: onOpenFolderProp,
   onNewSessionIn: onNewSessionInProp,
   onNewShellIn, onNewRoutine,
+  compact = false, composerRef, onEmptyComposerKey: onEmptyComposerKeyProp,
 }: Props) {
   // The parent passes inline arrows and a freshly mapped `siblings` on every
   // render; below this line they keep ONE identity, so memo(MessageHistory),
@@ -221,6 +232,8 @@ export default function SessionView({
   const onNewSessionIn = useStableOptionalCallback(onNewSessionInProp);
   const onAfterRevert = useStableOptionalCallback(onAfterRevertProp);
   const onUsageRefresh = useStableOptionalCallback(onUsageRefreshProp);
+  const onEmptyComposerKey = useStableOptionalCallback(onEmptyComposerKeyProp);
+  const fileLinks = useContext(FileLinkContext);
   const siblings = useStableValue(siblingsProp, shallowEqualRows);
   const usageProfile = accountProfileId(selected);
   const [endpoint, refreshEndpoint] = useSessionEndpoint(sessionId, selected.endpoint);
@@ -543,13 +556,19 @@ export default function SessionView({
         case 'diff':
         case 'mcp':
           setToolTabRequest(action === 'diff' ? 'git' : 'calls');
-          onOpenTools?.();
+          onOpenTools?.(action === 'diff' ? 'git' : 'calls');
           return true;
         case 'memory': {
           const file = PROVIDERS[sessionKind].instructionsFile;
           if (!vpsId || !cwd) return refuse('/memory: this session has no folder.');
           try { await api.fsReadRange(vpsId, cwd, file, 0, 1); }
           catch { return refuse(`/memory: this folder has no ${file} yet.`); }
+          if (fileLinks) {
+            const target = { vpsId, root: cwd, path: file };
+            const url = fileLinks.hrefFor(target);
+            if (url) window.open(url, '_blank', 'noopener'); else fileLinks.onUnavailable?.(target);
+            return true;
+          }
           await openWorkspaceTab({ vpsId, path: cwd, kind: 'file', ref: file, pin: true });
           return true;
         }
@@ -1115,9 +1134,9 @@ export default function SessionView({
   return (
     <ContextWindowContext.Provider value={contextWindowTokens}>
       {sessionSettingsOpen && <SessionSettingsModal session={selected} onClose={closeSessionSettings} />}
-      <main className="app-main"
+      <main className={`app-main${compact ? ' is-compact' : ''}`}
         onPointerDownCapture={readOnAction} onKeyDownCapture={readOnAction} onWheelCapture={readOnAction}>
-        <div className={`app-bar${barExpanded ? ' is-expanded' : ''}`}>
+        <div className={`app-bar${barExpanded || compact ? ' is-expanded' : ''}`}>
           <div className="session-header-layout">
           {/* Session identity: title, then cwd. The path is the fastest
               "where am I?" cue when several sessions share a name (or have
@@ -1561,13 +1580,16 @@ export default function SessionView({
             onAside={ASIDE_STATUSES.has(status ?? '') && supportsSessionCapability(sessionKind, 'sideQuestion') ? askAside : undefined}
             slashKey={`${sessionKind}|${vpsId}|${selected.cwd ?? ''}`}
             onSlashAction={runSlash}
+            compact={compact}
+            textareaRef={composerRef}
+            onEmptyKey={onEmptyComposerKey}
           />
           </>
         )}
         </ComposerWithAsyncStrip>
       </main>
 
-      <ToolPanel
+      {!compact && <ToolPanel
         sessionId={sessionId}
         kind={sessionKind}
         toolCalls={toolCalls}
@@ -1597,7 +1619,7 @@ export default function SessionView({
         compactError={compactError}
         usage={supportsSessionCapability(sessionKind, 'contextUsage') ? usageInput : null}
         deferInsight={!historyReady}
-      />
+      />}
       {forkModalOpen && (
         <ForkModal
           sourceKind={sessionKind}
@@ -1708,8 +1730,7 @@ const MessageHistory = memo(function MessageHistory({
 type InsertRequest = { text: string; nonce: number; block?: boolean };
 
 /** The recap to draw under the last answer (§14.122): none while a turn runs
- *  (`busy`), nor once the row it follows is no longer the last word. Shared
- *  with the desk's drawer (app/desk/ui/UnitTalk.tsx). */
+ *  (`busy`), nor once the row it follows is no longer the last word. */
 export function recapToShow(recap: SessionRecap | null, messages: Msg[], busy: boolean): SessionRecap | null {
   if (!recap || busy) return null;
   for (let i = messages.length - 1; i >= 0; i--) {
@@ -1763,8 +1784,15 @@ const ParentChip = memo(function ParentChip({ parentId, onOpen, beforeHandle }: 
 const ChatInputBar = memo(function ChatInputBar({
   sessionId, kind, permissionMode, onSetMode, onSend, prefillInput, clearPrefillInput,
   pending, onUploadFiles, onDismissPending, insertRequest, clearInsertRequest, siblings, compacting = false,
-  onAside, slashKey, onSlashAction,
+  onAside, slashKey, onSlashAction, compact = false, textareaRef, onEmptyKey,
 }: {
+  /** SessionView's `compact`: the shared composer size is ignored (no grip,
+   *  never collapsed, never revealed) and the box grows with its text. */
+  compact?: boolean;
+  /** The host's handle on the textarea (SessionView `composerRef`). */
+  textareaRef?: Ref<HTMLTextAreaElement>;
+  /** Enter (no modifier) or Tab in an empty box, no menu open: true = handled. */
+  onEmptyKey?: (key: 'Enter' | 'Tab', shift: boolean) => boolean;
   /** Ask beside the conversation (§14.119), offered while the session is
    *  awake; the answer never enters the context. Absent = no button. */
   onAside?: (question: string) => Promise<void>;
@@ -1805,11 +1833,16 @@ const ChatInputBar = memo(function ChatInputBar({
   // is a grip drag in progress, committed on release.
   const [composerSize, setComposerSize] = useComposerSize();
   const [sizePreview, setSizePreview] = useState<ComposerSize | null>(null);
-  const shownSize = sizePreview ?? composerSize;
+  const shownSize = compact ? DEFAULT_COMPOSER_SIZE : (sizePreview ?? composerSize);
   const sized = !shownSize.hidden && shownSize.height != null;
 
   const footerRef = useRef<HTMLElement | null>(null);
   const taRef = useRef<HTMLTextAreaElement | null>(null);
+  const setTextarea = useCallback((el: HTMLTextAreaElement | null) => {
+    taRef.current = el;
+    if (typeof textareaRef === 'function') textareaRef(el);
+    else if (textareaRef) (textareaRef as { current: HTMLTextAreaElement | null }).current = el;
+  }, [textareaRef]);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   // Last known caret offset. A drop lands on the WINDOW, not the textarea, so
   // by the time we insert, the textarea may not even be focused — without this
@@ -1829,10 +1862,10 @@ const ChatInputBar = memo(function ChatInputBar({
   useLayoutEffect(() => {
     const ta = taRef.current;
     if (!ta || typeof CSS === 'undefined' || CSS.supports('field-sizing', 'content')) return;
-    if (!window.matchMedia?.('(max-width: 820px)').matches) { ta.style.height = ''; return; }
+    if (!compact && !window.matchMedia?.('(max-width: 820px)').matches) { ta.style.height = ''; return; }
     ta.style.height = '0px';
     ta.style.height = `${ta.scrollHeight + ta.offsetHeight - ta.clientHeight}px`;
-  }, [input]);
+  }, [input, compact]);
 
   // What is being dragged over the page, or null. Two kinds land in the same
   // place (the caret) but do very different things on the way: 'files' uploads
@@ -1851,11 +1884,11 @@ const ChatInputBar = memo(function ChatInputBar({
   // it self-applies the moment the bar remounts.
   useEffect(() => {
     if (prefillInput !== null) {
-      revealComposer();
+      if (!compact) revealComposer();
       setInput(prefillInput);
       clearPrefillInput();
     }
-  }, [prefillInput, clearPrefillInput, setInput]);
+  }, [prefillInput, clearPrefillInput, setInput, compact]);
 
   // Focus on desktop session entry/remount, after pane transitions. Touch
   // devices keep the keyboard closed until the user taps the composer.
@@ -1865,13 +1898,23 @@ const ChatInputBar = memo(function ChatInputBar({
     syncTouchInput();
     media?.addEventListener('change', syncTouchInput);
     const id = requestAnimationFrame(() => {
-      if (!media?.matches) taRef.current?.focus();
+      if (media?.matches) return;
+      // Embedded (`compact`): the composer can mount under a host's dialog or
+      // while a field holds the caret (a gate card left its place) — the
+      // caret stays where the user is typing.
+      if (compact) {
+        const held = document.activeElement as HTMLElement | null;
+        const typing = held != null && (held.tagName === 'INPUT' || held.tagName === 'TEXTAREA'
+          || held.tagName === 'SELECT' || held.isContentEditable);
+        if (typing || held?.closest?.('[role="dialog"], .app-modal-bg')) return;
+      }
+      taRef.current?.focus();
     });
     return () => {
       cancelAnimationFrame(id);
       media?.removeEventListener('change', syncTouchInput);
     };
-  }, [sessionId]);
+  }, [sessionId, compact]);
 
   const rememberCaret = useCallback(() => {
     const ta = taRef.current;
@@ -1893,7 +1936,7 @@ const ChatInputBar = memo(function ChatInputBar({
     const chunk = lead + text + trail;
     const next = before + chunk + after;
     inputRef.current = next;
-    revealComposer();
+    if (!compact) revealComposer();
     setInput(next);
     const caret = before.length + chunk.length;
     caretRef.current = caret;
@@ -1905,13 +1948,13 @@ const ChatInputBar = memo(function ChatInputBar({
       ta.focus();
       try { ta.setSelectionRange(caret, caret); } catch { /* detached */ }
     });
-  }, [setInput]);
+  }, [setInput, compact]);
 
   /** A quote: on its own lines, the caret on the line right below it. */
   const insertBlockAtCaret = useCallback((block: string) => {
     const { next, caret } = insertQuoteBlock(inputRef.current, caretRef.current ?? inputRef.current.length, block);
     inputRef.current = next;
-    revealComposer();
+    if (!compact) revealComposer();
     setInput(next);
     caretRef.current = caret;
     requestAnimationFrame(() => {
@@ -1923,7 +1966,7 @@ const ChatInputBar = memo(function ChatInputBar({
       // the quote, in view (setSelectionRange does not scroll everywhere).
       if (caret === next.length) ta.scrollTop = ta.scrollHeight;
     });
-  }, [setInput]);
+  }, [setInput, compact]);
 
   // ── `@` mention menu ────────────────────────────────────────────────────
   // Naming a session is only half of addressing it: you also have to know what
@@ -2191,10 +2234,11 @@ const ChatInputBar = memo(function ChatInputBar({
     <footer
       ref={footerRef}
       className={`app-input-bar${shownSize.hidden ? ' is-collapsed' : ''}${sized ? ' is-sized' : ''}${
-        sizePreview ? ` is-resizing${!sizePreview.hidden && sizePreview.height == null ? ' at-detent' : ''}` : ''}`}
+        sizePreview ? ` is-resizing${!sizePreview.hidden && sizePreview.height == null ? ' at-detent' : ''}` : ''}${
+        compact ? ' is-compact' : ''}`}
     >
-      <ComposerGrip footerRef={footerRef} textRef={taRef} size={composerSize}
-        onPreview={setSizePreview} onCommit={setComposerSize} />
+      {!compact && <ComposerGrip footerRef={footerRef} textRef={taRef} size={composerSize}
+        onPreview={setSizePreview} onCommit={setComposerSize} />}
       {/* The provider registry owns the mode ladder; providerText owns labels
           and glyphs (§14.102). */}
       <div className={`mode-switch ${kind}`} role="radiogroup" aria-label={providerText.modeSwitchAria(kind)}>
@@ -2301,7 +2345,7 @@ const ChatInputBar = memo(function ChatInputBar({
         </div>
       )}
       <textarea
-        ref={taRef}
+        ref={setTextarea}
         enterKeyHint="enter"
         value={input}
         onChange={(e) => {
@@ -2358,6 +2402,9 @@ const ChatInputBar = memo(function ChatInputBar({
             }
             if (e.key === 'Escape') { e.preventDefault(); setMention(null); return; }
           }
+          if (onEmptyKey && !input.trim() && uploading.length === 0
+            && (e.key === 'Tab' || (e.key === 'Enter' && !e.shiftKey && !e.ctrlKey && !e.metaKey && !e.altKey))
+            && onEmptyKey(e.key === 'Tab' ? 'Tab' : 'Enter', e.shiftKey)) { e.preventDefault(); return; }
           if (e.key !== 'Enter') return;
           if (e.altKey && onAside && !e.shiftKey && !e.ctrlKey && !e.metaKey) {
             e.preventDefault();
