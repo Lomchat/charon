@@ -53,8 +53,6 @@ type Props = {
   resumeLabel?: string;
   onKill?: () => void;               // "Close" — shell/install only
   onHide?: () => void;              // hide / show back (§14.118)
-  onUnattended?: () => void;        // unattended on / off (§14.119)
-  unattendedLabel?: string;
   hideLabel?: string;
   onDelete?: () => void;
   deleteLabel?: string;
@@ -67,7 +65,7 @@ export default function SessionContextMenu({
   showRename = true, showColor = true,
   onRename, onEditHandle, onColor,
   onSleep, sleepLabel = '💤 Sleep', onResume, resumeLabel = 'Resume',
-  onKill, onHide, hideLabel = 'Hide', onUnattended, unattendedLabel = 'Unattended', onDelete, deleteLabel = 'Delete permanently', onClose,
+  onKill, onHide, hideLabel = 'Hide', onDelete, deleteLabel = 'Delete permanently', onClose,
 }: Props) {
   useEffect(() => {
     // Ignore events in the first moments after open: on touch, the long-press
@@ -182,12 +180,6 @@ export default function SessionContextMenu({
       {onHide && (
         <button type="button" onClick={() => { onHide(); onClose(); }}>
           {hideLabel}
-        </button>
-      )}
-      {onUnattended && (
-        <button type="button" onClick={() => { onUnattended(); onClose(); }}
-          title="Unattended: its permission requests and questions are refused at once, and it carries on without them">
-          {unattendedLabel}
         </button>
       )}
       {onKill && (

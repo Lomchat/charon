@@ -1789,23 +1789,6 @@ export default function HubPanel({ vpsList: initialVpsList, vpsFolders: initialF
     });
   }
 
-  // Unattended on / off (§14.119): same shape as `setHidden`.
-  function setUnattended(targets: SessionListItem[], on: boolean) {
-    const ids = targets.filter((t) => (t.unattended === 1) !== on).map((t) => t.id);
-    if (!ids.length) return;
-    void Promise.allSettled(ids.map(async (id) => {
-      const o = addOverlay(id, { unattended: on ? 1 : 0 });
-      try { o.ack((await api.setSessionUnattended(id, on))?.sync); } catch (e) { o.fail(); throw e; }
-    })).then((results) => {
-      const failed = results.filter((r) => r.status === 'rejected');
-      if (failed.length) {
-        const first = failed[0] as PromiseRejectedResult;
-        setError({ msg: `unattended: ${failed.length}/${ids.length} failed — ${first.reason?.message ?? first.reason}` });
-      }
-      refreshIfDegraded();
-    });
-  }
-
   // Same shape as `setHidden`: one overlay per changed row, one error line.
   function setColor(targets: SessionListItem[], color: string | null) {
     const ids = targets.filter((t) => (t.color ?? null) !== color).map((t) => t.id);
@@ -2762,10 +2745,6 @@ export default function HubPanel({ vpsList: initialVpsList, vpsFolders: initialF
           hideLabel={targets.every((t) => t.hidden === 1)
             ? (targets.length > 1 ? `Show ${targets.length} sessions` : 'Show (unhide)')
             : (targets.length > 1 ? `Hide ${targets.length} sessions` : 'Hide')}
-          onUnattended={() => setUnattended(targets, !targets.every((t) => t.unattended === 1))}
-          unattendedLabel={targets.every((t) => t.unattended === 1)
-            ? (targets.length > 1 ? `Watch ${targets.length} sessions again` : 'Watch again (attended)')
-            : (targets.length > 1 ? `Unattended: ${targets.length} sessions` : 'Unattended (refuse its cards)')}
           onDelete={() => setConfirmDelete(targets)}
           deleteLabel={targets.length > 1 ? `Delete ${targets.length} permanently` : 'Delete permanently'}
           onClose={() => setCtxMenu(null)}

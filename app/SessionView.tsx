@@ -560,14 +560,6 @@ export default function SessionView({
         case 'stop':
           await forceStop();
           return true;
-        case 'unattended': {
-          const word = arg.toLowerCase();
-          if (word && !/^(on|off)$/.test(word)) return refuse('/unattended: on or off.');
-          const on = word ? word === 'on' : selected.unattended !== 1;
-          await api.setSessionUnattended(sessionId, on);
-          return inform(on ? 'Unattended: questions and permission requests are now refused for it.'
-            : 'Attended again: it asks you as usual.');
-        }
         case 'routine':
           if (!onNewRoutine || !vpsId || !cwd) return refuse('/routine: this session has no folder.');
           onNewRoutine({ vpsId, cwd, kind: sessionKind, prompt: arg });

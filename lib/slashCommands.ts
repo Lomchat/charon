@@ -9,7 +9,7 @@ import {
 export type SlashAction =
   | 'model' | 'effort' | 'mode' | 'rename' | 'clear' | 'aside' | 'rewind' | 'compact' | 'goal'
   | 'review' | 'fork' | 'export' | 'shell' | 'diff' | 'memory' | 'copy' | 'retry'
-  | 'sleep' | 'stop' | 'unattended' | 'mcp' | 'routine';
+  | 'sleep' | 'stop' | 'mcp' | 'routine';
 
 export type SlashItem = {
   /** Without its sigil. */
@@ -79,8 +79,6 @@ const CHARON_COMMANDS: readonly CharonCommand[] = [
     description: 'Put the session to sleep (it resumes on your next message)' },
   { name: 'stop', action: 'stop', hint: '', offered: always,
     description: 'Stop the session now — it can be resumed' },
-  { name: 'unattended', action: 'unattended', hint: '[on|off]', offered: always,
-    description: 'Let it run alone: questions and permission requests are refused for it' },
   { name: 'mcp', action: 'mcp', hint: '', offered: (p) => supportsSessionCapability(p, 'mcp'),
     description: "Show the session's MCP servers" },
   { name: 'routine', action: 'routine', hint: '[prompt]', offered: always,

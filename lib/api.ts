@@ -721,8 +721,6 @@ export const api = {
       { objective, ...(tokenBudget ? { tokenBudget } : {}) }),
   dismissSessionGoal: (id: string) =>
     send<OkResponse & ActionSyncStamp>('POST', `/api/sessions/${id}/goal`, { dismiss: true }),
-  setSessionUnattended: (id: string, unattended: boolean) =>
-    send<OkResponse & ActionSyncStamp & { unattended: boolean; declined: number }>('POST', `/api/sessions/${id}/unattended`, { unattended }),
   setSessionHidden: (id: string, hidden: boolean) =>
     send<OkResponse & ActionSyncStamp & { hidden: boolean; ids: string[] }>('POST', `/api/sessions/${id}/hidden`, { hidden }),
   renameAgentSession: (id: string, name: string | null) =>
