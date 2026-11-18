@@ -236,21 +236,22 @@ export const MODE_LABELS: Record<string, string> = {
  * modes — and clicking one sent `'normal'`, which the agent silently coerced
  * to `agent`: from `plan` that is a silent grant of write access (§14.102).
  */
-export const MODE_SWITCH_META: Record<string, { glyph: string; label: string; title: string }> = {
+/** `risk` tints a mode wherever modes are listed side by side (Settings). */
+export const MODE_SWITCH_META: Record<string, { glyph: string; label: string; title: string; risk: 'safe' | 'medium' | 'danger' }> = {
   // Claude
-  normal: { glyph: '▷', label: 'normal', title: 'normal — Claude Code’s default: reads and allowed rules pass, everything else asks' },
-  acceptEdits: { glyph: '▶▶', label: 'accept edits', title: 'accept edits — file edits and file commands (mkdir, mv, cp…) in the project pass too; the rest asks' },
-  auto: { glyph: '◎', label: 'auto', title: 'auto — Claude Code’s own reviewer runs safe actions and refuses risky ones, without asking' },
-  bypass: { glyph: '⚡', label: 'bypass', title: 'bypass — every request is accepted, even Claude Code’s own safety checks (DANGER)' },
-  plan: { glyph: '⏸', label: 'plan mode', title: 'plan mode — proposes a plan without running tools' },
+  normal: { glyph: '▷', label: 'normal', title: 'normal — Claude Code’s default: reads and allowed rules pass, everything else asks', risk: 'safe' },
+  acceptEdits: { glyph: '▶▶', label: 'accept edits', title: 'accept edits — file edits and file commands (mkdir, mv, cp…) in the project pass too; the rest asks', risk: 'medium' },
+  auto: { glyph: '◎', label: 'auto', title: 'auto — Claude Code’s own reviewer runs safe actions and refuses risky ones, without asking', risk: 'medium' },
+  bypass: { glyph: '⚡', label: 'bypass', title: 'bypass — every request is accepted, even Claude Code’s own safety checks (DANGER)', risk: 'danger' },
+  plan: { glyph: '⏸', label: 'plan mode', title: 'plan mode — proposes a plan without running tools', risk: 'safe' },
   // Codex
-  'read-only': { glyph: '⊘', label: 'read only', title: 'read only — Codex reads the workspace; approval is required to edit files or access the internet' },
-  'workspace-write': { glyph: '✎', label: 'default', title: 'default — Codex edits the workspace and runs commands; approval is required for the internet or edits elsewhere' },
-  'accept-all': { glyph: '⚡', label: 'full access', title: 'full access — Codex edits anywhere and uses the internet without asking (DANGER)' },
+  'read-only': { glyph: '⊘', label: 'read only', title: 'read only — Codex reads the workspace; approval is required to edit files or access the internet', risk: 'safe' },
+  'workspace-write': { glyph: '✎', label: 'default', title: 'default — Codex edits the workspace and runs commands; approval is required for the internet or edits elsewhere', risk: 'medium' },
+  'accept-all': { glyph: '⚡', label: 'full access', title: 'full access — Codex edits anywhere and uses the internet without asking (DANGER)', risk: 'danger' },
   // Cursor — the mode IS the gate here, so each tooltip says what it costs.
-  sandbox: { glyph: '⊡', label: 'sandbox', title: 'sandbox — writes are confined to the SDK sandbox; its own reviewer stays on' },
-  agent: { glyph: '✎', label: 'agent', title: 'agent — normal access, with the provider’s own reviewer vetting risky calls' },
-  force: { glyph: '⚡', label: 'force', title: 'force — every tool call runs unreviewed, with no sandbox (DANGER)' },
+  sandbox: { glyph: '⊡', label: 'sandbox', title: 'sandbox — writes are confined to the SDK sandbox; its own reviewer stays on', risk: 'safe' },
+  agent: { glyph: '✎', label: 'agent', title: 'agent — normal access, with the provider’s own reviewer vetting risky calls', risk: 'medium' },
+  force: { glyph: '⚡', label: 'force', title: 'force — every tool call runs unreviewed, with no sandbox (DANGER)', risk: 'danger' },
 };
 
 /** Background-work constellation: shared copy for all providers. */

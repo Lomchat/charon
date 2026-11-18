@@ -11,6 +11,8 @@ import { applicableParams } from './cursorEffort';
 import { fastMultiplier } from '@/lib/modelPricing';
 import { SwitchRow } from './EffortSwitches';
 import type { ProviderEffortSwitchesProps } from './modelPickers';
+import Switch from './Switch';
+import { Ladder, Segmented, SetRow } from './SettingsKit';
 
 /** The VPS's Cursor catalog, cached per tab. */
 function useCursorCatalog(vpsId: string): { models: CursorModel[]; loaded: boolean } {
@@ -50,6 +52,55 @@ export function CursorParamSwitches({ vpsId, modelId, value, onChange, disabled,
           title={speed && fastCost ? `${fastCost.replace(/x$/, '×')} the price per token` : undefined}
           on={(current[param.id] ?? axes.defaults[param.id]) === 'true'} disabled={disabled}
           onFlip={(on) => onChange(encodeModelParams({ ...current, [param.id]: on ? 'true' : 'false' }))} />
+      );
+    })}
+  </>;
+}
+
+/** Settings: the default model's own knobs, one row per axis — its reasoning
+ *  ladder as Effort, its fast lane as Speed (like the other agents), any other
+ *  scale as a segmented row, any other on/off knob as a switch. Each change
+ *  merges one axis into the stored parameter set. */
+export function CursorDefaultRows({ vpsId, modelId, value, onChange }: {
+  vpsId: string; modelId: string; value: string; onChange: (v: string) => void;
+}) {
+  const { models } = useCursorCatalog(vpsId);
+  const spec = splitModelSpec(modelId);
+  const model = models.find((m) => m.id === spec.id) ?? null;
+  if (!model) return null;
+  const axes = modelAxes(model);
+  const current = applicableParams(model, value ? decodeModelParams(value) : spec.params);
+  const at = (id: string) => current[id] ?? axes.defaults[id] ?? '';
+  const put = (id: string, v: string) => onChange(encodeModelParams({ ...current, [id]: v }));
+  const fastCost = fastMultiplier(model.price, model.fastPrice)?.replace(/x$/, '×');
+  return <>
+    {axes.all.map((param) => {
+      const values = (param.values ?? []).map((v) => ({ id: v.value, label: paramValueLabel(param, v.value) }));
+      if (param.id === 'fast' && isSwitchParam(param)) {
+        return (
+          <SetRow key={param.id} label="Speed" note={at('fast') === 'true' && fastCost ? `${fastCost} the price per token` : undefined}>
+            <Segmented label="Speed" value={at('fast') === 'true' ? 'true' : 'false'} onChange={(v) => put('fast', v)}
+              options={[
+                { id: 'false', label: 'Standard', title: 'Normal speed · normal price' },
+                { id: 'true', label: 'Fast', tone: 'info', title: fastCost ? `${fastCost} the price per token` : undefined },
+              ]} />
+          </SetRow>
+        );
+      }
+      if (isSwitchParam(param)) {
+        return (
+          <SetRow key={param.id} label={paramLabel(param)}>
+            <Switch checked={at(param.id) === 'true'} onChange={(on) => put(param.id, on ? 'true' : 'false')} size="sm" label={paramLabel(param)} />
+          </SetRow>
+        );
+      }
+      if (!values.length) return null;
+      return (
+        <SetRow key={param.id} label={param === axes.reasoning ? 'Effort' : paramLabel(param)}>
+          {param === axes.reasoning
+            ? <Ladder label={paramLabel(param)} value={at(param.id)} options={values} onChange={(v) => put(param.id, v)} />
+            : <Segmented label={paramLabel(param)} value={at(param.id)} options={values} onChange={(v) => put(param.id, v)} />}
+        </SetRow>
       );
     })}
   </>;

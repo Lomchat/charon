@@ -8,6 +8,7 @@ import { ENDPOINT_ENGINES, endpointModelCheck, type CustomEndpoint, type Endpoin
 import { providerName } from '@/lib/providerText';
 import AgentLogo from './AgentLogo';
 import { IconPencil, IconPlay, IconPlug, IconPlusSquare, IconTrash } from './icons';
+import { SetChip, SetHeader } from './SettingsKit';
 import PickerControl from './PickerControl';
 const CustomEndpointModal = dynamic(() => import('./CustomEndpointModal'), { ssr: false });
 
@@ -75,10 +76,9 @@ export default function CustomEndpointsSettings({ vpsList = [] }: { vpsList?: Vp
     finally { setRemoving(null); }
   }
   return <section className="endpoint-settings" aria-label="Custom endpoints">
-    <div className="endpoint-settings-head">
-      <div><h3>Custom endpoints <span className="endpoint-count">{endpoints.length}</span></h3><p className="set-hint">Your model connections, ready to use in any session.</p></div>
-      <button type="button" className="endpoint-btn is-primary" disabled={locked} onClick={() => setEditing({ endpoint: null, engine: 'claude' })}><IconPlusSquare />Add endpoint</button>
-    </div>
+    <SetHeader icon={<IconPlug />} title="Custom endpoints" sub="Your model connections, ready to use in any session."
+      chips={<SetChip>{endpoints.length} endpoint{endpoints.length === 1 ? '' : 's'}</SetChip>}
+      right={<button type="button" className="st-btn primary" disabled={locked} onClick={() => setEditing({ endpoint: null, engine: 'claude' })}><IconPlusSquare />Add endpoint</button>} />
     <div className="endpoint-batch">
       <div className="endpoint-batch-controls">
         <label>Test from VPS<PickerControl aria-label="VPS for endpoint tests" value={batchBusy && batch ? batch.vpsId : selectedVpsId} disabled={locked} onValueChange={setTestVpsId}>

@@ -6442,6 +6442,232 @@ html[data-density='small'] .cs-sub-fold { font-size: 8.5px; }
   .settings-pane { padding: 14px 2px 10px; }
 }
 
+/* ── Settings (app/SettingsModal.tsx, app/SettingsKit.tsx): a nav column,
+   then screens made of the same parts — a header, cards, label/control rows,
+   segmented choices and an effort ladder — so every agent reads alike.
+   Scoped to .settings-modal: the Routines modal reuses the bare frame. ── */
+.app-modal.settings-modal { width: 1120px; height: 820px; padding: 0; overflow: hidden; }
+.settings-modal > .modal-close { top: 14px; right: 14px; z-index: 3; }
+.settings-modal .settings-body { margin: 0; }
+.settings-modal .settings-nav {
+  width: 220px; gap: 12px; padding: 16px 12px; overflow-y: auto;
+  background: var(--bg-raised); border-right: 1px solid var(--border);
+}
+.settings-modal .settings-nav button {
+  gap: 10px; padding: 6px 10px; border-radius: var(--radius-md);
+  font: 500 13px/1.3 var(--body); letter-spacing: 0; text-transform: none; color: var(--text);
+}
+.settings-modal .settings-nav button:hover { background: var(--bg-elevated); color: var(--text-strong); }
+.settings-modal .settings-nav button.on { background: color-mix(in srgb, var(--accent) 16%, var(--bg-elevated)); color: var(--text-strong); }
+.settings-modal .settings-nav-group + .settings-nav-group { margin-top: 0; }
+.settings-modal .settings-nav-group-label {
+  padding: 0 10px 4px; font: 600 11.5px/1.3 var(--body); letter-spacing: 0; text-transform: none; color: var(--text-muted);
+}
+.settings-modal .settings-nav .nav-ico { color: var(--text-muted); opacity: 1; }
+.settings-modal .settings-nav button.on .nav-ico { color: var(--accent); }
+.settings-modal .settings-nav .nav-ico svg { width: 14px; height: 14px; }
+.st-nav-head { display: flex; flex-direction: column; gap: 10px; }
+.st-nav-title { display: flex; align-items: center; gap: 8px; padding: 2px 8px 0; font: 650 15px/1.2 var(--body); color: var(--text-strong); }
+.st-nav-title svg { width: 15px; height: 15px; color: var(--accent); }
+.st-nav-search { position: relative; display: block; }
+.st-nav-search svg { position: absolute; left: 9px; top: 50%; transform: translateY(-50%); width: 12px; height: 12px; color: var(--text-muted); pointer-events: none; }
+.app-modal .st-nav-search input {
+  width: 100%; height: 30px; margin: 0; padding: 0 10px 0 28px; outline: none;
+  border: 1px solid var(--border); border-radius: var(--radius-md); background: var(--bg-inset);
+  color: var(--text); font: 12.5px var(--body);
+}
+.app-modal .st-nav-search input:focus { border-color: var(--accent-dim); }
+.settings-modal .settings-pane { display: flex; flex-direction: column; gap: 12px; padding: 18px 22px 24px; }
+.settings-modal .settings-foot.st-foot {
+  display: flex; align-items: center; gap: 10px; margin: 0; padding: 10px 22px;
+  border-top: 1px solid var(--border); background: var(--bg-raised);
+}
+.st-unsaved { display: inline-flex; align-items: center; gap: 8px; margin-right: auto; font: 600 12.5px var(--body); color: var(--text-strong); }
+.st-unsaved i { width: 7px; height: 7px; border-radius: 50%; background: var(--attention); box-shadow: 0 0 0 3px color-mix(in srgb, var(--attention) 22%, transparent); }
+.st-unsaved.clean { font-weight: 500; color: var(--text-muted); }
+.st-unsaved.clean i { background: var(--success); box-shadow: none; }
+
+/* Header: icon tile, title, one line, state chips; the master switch right. */
+.st-head {
+  display: flex; align-items: center; gap: 14px; padding: 12px 16px; flex: none;
+  border: 1px solid var(--border); border-radius: var(--radius-lg);
+  background: radial-gradient(120% 160% at 0% 0%, color-mix(in srgb, var(--accent) 12%, transparent), transparent 60%), var(--bg-raised);
+}
+.st-head-ico {
+  flex: none; width: 40px; height: 40px; display: grid; place-items: center; border-radius: var(--radius-md);
+  background: color-mix(in srgb, var(--accent) 14%, var(--bg-elevated)); color: var(--accent);
+  border: 1px solid color-mix(in srgb, var(--accent) 28%, var(--border));
+}
+.st-head-ico svg { width: 19px; height: 19px; }
+.st-head-tx { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+.st-head-title { font: 700 19px/1.2 var(--body); color: var(--text-strong); }
+.st-head-sub { font-size: 12px; line-height: 1.4; color: var(--text-muted); }
+.st-chips { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 6px; }
+.st-chip {
+  display: inline-flex; align-items: center; height: 20px; padding: 0 9px; white-space: nowrap;
+  border: 1px solid var(--border); border-radius: 999px; background: var(--bg-elevated);
+  font: 600 11.5px/1 var(--body); color: var(--text);
+}
+.st-chip.tone-ok { color: var(--success); border-color: color-mix(in srgb, var(--success) 40%, var(--border)); background: color-mix(in srgb, var(--success) 10%, var(--bg-elevated)); }
+.st-chip.tone-off { color: var(--text-muted); }
+.st-head-right { flex: none; }
+.st-avail {
+  display: inline-flex; align-items: center; gap: 10px; height: 30px; padding: 0 6px 0 12px;
+  border: 1px solid var(--border); border-radius: var(--radius-md); background: var(--bg-elevated);
+  font: 600 12.5px var(--body); color: var(--text-strong);
+}
+
+/* Card: a short title, then rows separated by hairlines. */
+.st-card { flex: none; padding: 4px 16px; border: 1px solid var(--border); border-radius: var(--radius-lg); background: var(--bg-raised); }
+.st-card-h { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; padding: 10px 0 6px; }
+.st-card-title { display: inline-flex; align-items: center; gap: 8px; font: 650 13.5px/1.3 var(--body); color: var(--text-strong); }
+.st-card-title svg { width: 14px; height: 14px; color: var(--text-muted); }
+.st-card-aside { font-size: 11.5px; color: var(--text-muted); }
+.st-card > .density-choice-grid, .st-card > .fi-choice-grid, .st-card > .st-themes { margin: 2px 0 12px; }
+
+/* Row: the setting's name (and its one-line fact) left, its control right. */
+.st-row {
+  display: grid; grid-template-columns: 176px minmax(0, 1fr); align-items: center; gap: 12px;
+  min-height: 44px; padding: 6px 0; border-top: 1px solid color-mix(in srgb, var(--border) 60%, transparent);
+}
+.st-card > .st-row:first-child, .st-card-h + .st-row { border-top: 0; }
+.st-row-l { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.st-row-l > span { font: 550 13px/1.3 var(--body); color: var(--text); }
+.st-row-l > small { font-size: 11.5px; line-height: 1.35; color: var(--text-muted); }
+.st-row-c { display: flex; align-items: center; flex-wrap: wrap; gap: 8px 12px; min-width: 0; }
+.st-row-note { font-size: 11.5px; color: var(--text-muted); }
+.st-row-c > .picker-trigger { width: auto; min-width: 220px; max-width: 100%; height: 30px; padding: 0 10px; font-size: 12.5px; }
+.st-row-c > .ss-picker { flex: 1; min-width: 0; margin: 0; }
+
+/* Segmented: a small closed choice; the selected option tinted by its tone. */
+.st-seg { display: inline-flex; flex-wrap: wrap; gap: 2px; max-width: 100%; padding: 2px; border: 1px solid var(--border); border-radius: var(--radius-md); background: var(--bg-inset); }
+.app-modal .st-seg button {
+  height: 26px; padding: 0 11px; border: 0; border-radius: var(--radius-sm); background: transparent; cursor: pointer;
+  font: 550 12px/1 var(--body); letter-spacing: 0; text-transform: none; color: var(--text-muted); white-space: nowrap;
+}
+.app-modal .st-seg button:hover:not(.on) { color: var(--text-strong); }
+.app-modal .st-seg button.on { background: var(--bg-high); color: var(--text-strong); box-shadow: inset 0 0 0 1px var(--border-strong); }
+.st-seg button.tone-safe {
+  --tone: var(--success);
+}
+.st-seg button.tone-medium {
+  --tone: var(--warning);
+}
+.st-seg button.tone-danger {
+  --tone: var(--danger);
+}
+.st-seg button.tone-info {
+  --tone: var(--info);
+}
+.app-modal .st-seg button.on[class*='tone-'] {
+  color: var(--tone); background: color-mix(in srgb, var(--tone) 15%, var(--bg-high));
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--tone) 50%, transparent);
+}
+
+/* Ladder: an ordered scale, rising steps, the chosen one and those below lit. */
+.st-ladder { display: inline-flex; align-items: flex-end; flex-wrap: wrap; gap: 4px; }
+.app-modal .st-ladder button {
+  display: inline-flex; flex-direction: column; align-items: stretch; justify-content: flex-end; gap: 4px;
+  min-width: 46px; padding: 2px 3px; border: 0; background: transparent; cursor: pointer; letter-spacing: 0; text-transform: none;
+}
+.st-step b { display: block; border-radius: var(--radius-sm); background: var(--bg-high); border: 1px solid var(--border); }
+.st-step span { font: 11px/1.2 var(--body); color: var(--text-muted); text-align: center; white-space: nowrap; }
+.st-step:hover b { border-color: var(--border-strong); }
+.st-step.lit b { background: color-mix(in srgb, var(--accent) 40%, var(--bg-high)); border-color: color-mix(in srgb, var(--accent) 55%, var(--border)); }
+.st-step.on b { background: var(--accent); border-color: var(--accent); }
+.st-step.on span { color: var(--text-strong); font-weight: 650; }
+.app-modal .st-ladder .st-ladder-def {
+  flex-direction: row; align-self: center; min-width: 0; height: 24px; margin-right: 6px; padding: 0 10px;
+  border: 1px solid var(--border); border-radius: 999px; font: 550 11.5px/22px var(--body); color: var(--text-muted);
+}
+.app-modal .st-ladder .st-ladder-def.on { color: var(--text-strong); border-color: var(--accent); background: color-mix(in srgb, var(--accent) 14%, transparent); }
+
+/* Fields, buttons, links, notes. */
+.app-modal .st-input {
+  flex: 1; min-width: 180px; height: 30px; margin: 0; padding: 0 10px; outline: none;
+  border: 1px solid var(--border); border-radius: var(--radius-md); background: var(--bg-inset);
+  color: var(--text); font-size: 12.5px;
+}
+.app-modal .st-input:focus { border-color: var(--accent-dim); }
+.st-mono, .app-modal .st-input.st-mono { font-family: var(--mono); }
+.st-strong { color: var(--text-strong); font-weight: 600; }
+.app-modal .st-btn {
+  display: inline-flex; align-items: center; gap: 6px; height: 30px; padding: 0 14px; cursor: pointer;
+  border: 1px solid var(--border); border-radius: var(--radius-md); background: var(--bg-elevated);
+  font: 600 12.5px var(--body); letter-spacing: 0; text-transform: none; color: var(--text-strong);
+}
+.app-modal .st-btn:hover:not(:disabled) { background: var(--bg-high); border-color: var(--border-strong); }
+.app-modal .st-btn.primary { background: var(--accent); border-color: var(--accent); color: var(--bg-inset); }
+.app-modal .st-btn.primary:hover:not(:disabled) { background: var(--accent-strong); }
+.app-modal .st-btn:disabled { opacity: .45; cursor: default; }
+.st-btn svg { width: 13px; height: 13px; }
+.st-link { font-size: 12.5px; font-weight: 600; color: var(--accent-strong); }
+.st-foot-note { margin: 0; padding: 0 0 10px; font-size: 11.5px; line-height: 1.4; color: var(--text-muted); }
+.st-foot-note.ok { color: var(--success); }
+.st-foot-note.err { color: var(--danger); }
+.settings-pane > .st-foot-note { margin-top: -4px; padding: 0 4px; }
+
+/* Theme tiles: each preview sets its own data-theme, so it shows that theme. */
+.st-themes { display: grid; grid-template-columns: repeat(auto-fill, minmax(124px, 1fr)); gap: 8px; }
+.app-modal .st-theme {
+  display: flex; flex-direction: column; gap: 6px; padding: 7px; cursor: pointer; text-align: left;
+  border: 1px solid var(--border); border-radius: var(--radius-md); background: var(--bg-elevated);
+  font: 600 12px var(--body); letter-spacing: 0; text-transform: none; color: var(--text);
+}
+.app-modal .st-theme:hover { border-color: var(--border-strong); }
+.app-modal .st-theme.on { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent); background: color-mix(in srgb, var(--accent) 10%, var(--bg-elevated)); color: var(--text-strong); }
+.st-theme-pv { display: flex; flex-direction: column; gap: 4px; height: 44px; padding: 7px; border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--bg); }
+.st-theme-pv i { display: block; height: 4px; border-radius: var(--radius-sm); }
+.st-theme-pv i:nth-child(1) { width: 45%; background: var(--accent); }
+.st-theme-pv i:nth-child(2) { height: 8px; background: var(--bg-elevated); }
+.st-theme-pv i:nth-child(3) { width: 62%; background: var(--text-muted); }
+
+/* Notifications: the table in a card, the Telegram connection folded. */
+.st-card-table { padding: 10px 16px 2px; }
+.st-card-flush { padding: 0 16px; }
+.st-card-flush .notification-exceptions { border-top: 0; }
+.st-details > summary { display: flex; align-items: center; justify-content: space-between; padding: 12px 0; cursor: pointer; list-style: none; }
+.st-details > summary::-webkit-details-marker { display: none; }
+.st-details > summary > span:last-child { font-size: 16px; color: var(--text-muted); transition: transform .15s ease; }
+.st-details[open] > summary > span:last-child { transform: rotate(90deg); }
+.settings-modal .notification-settings { display: flex; flex-direction: column; gap: 12px; padding: 0; }
+
+.settings-modal .settings-pane > .st-head:first-child,
+.settings-modal .settings-pane > section > .st-head:first-child,
+.settings-modal .notification-settings > .st-head:first-child { margin-right: 34px; }
+.settings-modal .endpoint-settings, .settings-modal .uc-settings { display: flex; flex-direction: column; gap: 12px; }
+.settings-modal .endpoint-btn { min-height: 30px; padding: 0 12px; border-radius: var(--radius-md); font: 600 12px var(--body); letter-spacing: 0; text-transform: none; color: var(--text); }
+.settings-modal .endpoint-btn.is-icon { width: 30px; padding: 0; }
+.settings-modal .endpoint-settings h3, .settings-modal .uc-settings h3 { font: 650 13.5px/1.3 var(--body); letter-spacing: 0; text-transform: none; color: var(--text-strong); }
+.settings-modal .endpoint-batch-controls label { font: 550 12.5px var(--body); letter-spacing: 0; text-transform: none; color: var(--text); }
+.settings-modal .notification-table .notification-section-row th { font: 650 12.5px var(--body); letter-spacing: 0; text-transform: none; color: var(--text-strong); }
+.st-head-sub code { font-size: 11.5px; }
+
+@media (max-width: 700px) {
+  .app-modal.settings-modal { width: 100vw; max-width: 100vw; height: 100dvh; max-height: 100dvh; border-radius: 0; }
+  .settings-modal .settings-nav {
+    width: 100%; flex-direction: row; gap: 0; padding: 8px 52px 8px 10px; overflow-x: auto;
+    border-right: 0; border-bottom: 1px solid var(--border);
+  }
+  .settings-modal .settings-nav-group + .settings-nav-group { margin-left: 6px; padding-left: 6px; }
+  .st-nav-head { display: none; }
+  .settings-modal .settings-pane { gap: 10px; padding: 12px 12px 20px; }
+  .settings-modal .settings-pane > .st-head:first-child,
+  .settings-modal .settings-pane > section > .st-head:first-child,
+  .settings-modal .notification-settings > .st-head:first-child { margin-right: 0; }
+  .st-head { flex-wrap: wrap; gap: 10px; padding: 10px 12px; }
+  .st-head-ico { width: 32px; height: 32px; }
+  .st-head-title { font-size: 17px; }
+  .st-head-right { flex: 1 1 100%; }
+  .st-avail { width: 100%; justify-content: space-between; }
+  .st-card { padding: 2px 12px; }
+  .st-row { grid-template-columns: minmax(0, 1fr); gap: 6px; padding: 9px 0; }
+  .st-row-c > .picker-trigger, .app-modal .st-input { width: 100%; min-width: 0; flex: 1 1 100%; }
+  .st-themes { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .app-modal .st-ladder button { min-width: 38px; }
+  .settings-modal .settings-foot.st-foot { padding: 10px 12px calc(10px + env(safe-area-inset-bottom)); }
+}
+
 /* ── Routines modal (app/RoutinesModal.tsx, §14.120): the Settings frame;
    the nav lists routines (name + schedule), the pane edits one. ── */
 .routines-modal .settings-nav { width: 230px; }

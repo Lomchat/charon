@@ -3,7 +3,8 @@
 import { useEffect, useState } from 'react';
 import { api } from '@/lib/api';
 import type { UserCommand } from '@/lib/types/api';
-import { IconPencil, IconPlusSquare, IconTrash } from './icons';
+import { IconPencil, IconPlusSquare, IconTerminal, IconTrash } from './icons';
+import { SetChip, SetHeader } from './SettingsKit';
 import { setUserCommands, useUserCommands } from './userCommandsStore';
 import { SESSION_PROVIDERS } from '@/lib/sessionCapabilities';
 import { providerName } from '@/lib/providerText';
@@ -75,16 +76,13 @@ export default function UserCommandsSettings() {
 
   return (
     <section className="uc-settings" aria-label="Your commands">
-      <div className="endpoint-settings-head">
-        <div>
-          <h3>Your commands <span className="endpoint-count">{commands.length}</span></h3>
-          <p className="set-hint">Prompts you call by typing <code>/name</code> in any session — {ANY_PROVIDER}, on every server and device.</p>
-        </div>
-        <button type="button" className="endpoint-btn is-primary" disabled={!!busy || !!form}
+      <SetHeader icon={<IconTerminal />} title="Commands"
+        sub={<>Prompts you call with <code>/name</code> in any session — {ANY_PROVIDER}, on every server and device.</>}
+        chips={<SetChip>{commands.length} command{commands.length === 1 ? '' : 's'}</SetChip>}
+        right={<button type="button" className="st-btn primary" disabled={!!busy || !!form}
           onClick={() => { setError(null); setForm({ id: null, name: '', description: '', prompt: '' }); }}>
           <IconPlusSquare />Add command
-        </button>
-      </div>
+        </button>} />
       {error && <p className="uc-error" role="alert">{error}</p>}
       {form && !form.id && editor}
       {!loaded ? <p className="set-meta" role="status">Loading…</p>

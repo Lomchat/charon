@@ -3,7 +3,6 @@ import dynamic from '@/app/dynamic';
 const CustomEndpointsSettings = dynamic(() => import('./CustomEndpointsSettings'), { ssr: false });
 const UserCommandsSettings = dynamic(() => import('./UserCommandsSettings'), { ssr: false });
 import Switch from './Switch';
-import PickerControl, { PickerOption } from './PickerControl';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { api } from '@/lib/api';
 import { NOTIFICATION_EVENTS, normalizeChannelNotifications, type NotificationSession } from '@/lib/notificationPreferences';
@@ -15,16 +14,16 @@ import type { Vps } from '@/lib/db/schema';
 import ModelPicker from './ModelPicker';
 import ModelReleaseNotice from './ModelReleaseNotice';
 import type { AgentKind, ModelNoticesResponse } from '@/lib/types/api';
-import EffortPicker from './EffortPicker';
 import CodexModelPicker from './CodexModelPicker';
-import CodexEffortPicker from './CodexEffortPicker';
 import CursorModelPicker from './CursorModelPicker';
-import CursorEffortPicker, { CursorParamSwitches } from './CursorEffortPicker';
+import { CursorDefaultRows } from './CursorEffortPicker';
 import { pruneCursorEffort } from './cursorEffort';
 import { catalogVpsFor } from './modelPickers';
-import { MODE_LABELS, providerText } from '@/lib/providerText';
+import { MODE_LABELS, MODE_SWITCH_META, providerText } from '@/lib/providerText';
 import AgentLogo from './AgentLogo';
-import { IconPlug } from './icons';
+import { IconArrowRepeat, IconBellFill, IconGear, IconPlug, IconSearch, IconTelegram, IconTerminal } from './icons';
+import { Ladder, Segmented, SetCard, SetChip, SetHeader, SetRow } from './SettingsKit';
+import { useClaudeEffortLevels, useCodexEffortLevels } from './effortOptions';
 import { invalidateModels } from './modelsCache';
 import {
   CLAUDE_PERMISSION_MODES, CODEX_SANDBOX_MODES, CURSOR_MODES, PROVIDERS,
@@ -34,7 +33,7 @@ import SettingSourcesPicker from './SettingSourcesPicker';
 import {
   DEFAULT_SETTING_SOURCES, formatSettingSources, safeParseSettingSources,
 } from '@/lib/settingSources';
-import { THEMES, DEFAULT_THEME_ID, type Theme } from './themes';
+import { THEMES, DEFAULT_THEME_ID } from './themes';
 import { applyTheme, currentThemeId } from './themeClient';
 import { applyDensity, currentDensity, DEFAULT_DENSITY, resolveDensity } from './density';
 import { applyFileIcons, currentFileIcons, DEFAULT_FILE_ICONS, resolveFileIcons, type FileIconStyle } from './fileIconStyle';
@@ -78,46 +77,32 @@ export type SettingsCategory = Cat;
 // fleet current" (maintenance). Five equal-weight entries read as a pile;
 // three labelled groups read as a map.
 const NAV_GROUPS: { id: string; label: string; cats: { id: Cat; label: string }[] }[] = [
-  { id: 'hub', label: 'hub', cats: [
-    { id: 'general', label: 'general' },
-    { id: 'notifications', label: 'notifications' },
-    { id: 'endpoints', label: 'custom endpoints' },
-    { id: 'commands', label: 'commands' },
+  { id: 'hub', label: 'Hub', cats: [
+    { id: 'general', label: 'General' },
+    { id: 'notifications', label: 'Notifications' },
+    { id: 'endpoints', label: 'Custom endpoints' },
+    { id: 'commands', label: 'Commands' },
   ] },
-  { id: 'agents', label: 'agents', cats: SESSION_PROVIDERS.map((p) => (
-    { id: p, label: p }
+  { id: 'agents', label: 'Agents', cats: SESSION_PROVIDERS.map((p) => (
+    { id: p, label: providerText.agentLabel(p) }
   )) },
-  { id: 'maintenance', label: 'maintenance', cats: [
-    { id: 'updates', label: 'updates' },
+  { id: 'maintenance', label: 'Maintenance', cats: [
+    { id: 'updates', label: 'Updates' },
   ] },
 ];
 
-// Dark first: it is what the hub defaults to and where most themes live.
-const THEME_GROUPS = [
-  { label: 'dark', themes: THEMES.filter((t) => t.dark) },
-  { label: 'light', themes: THEMES.filter((t) => !t.dark) },
-].filter(({ themes }) => themes.length);
-
-/** One row of the theme picker: the name, what it is for, and the palette it
- *  would apply. The swatch sets `data-theme` ON ITSELF, so its chips resolve
- *  that theme's tokens straight from themes.css — no colour is copied into
- *  TypeScript, and a theme edited in the stylesheet updates its own preview.
- *  The chips inherit that theme's `--radius-sm` too, so the corners preview
- *  the geometry as well as the palette. */
-function ThemeChoice({ theme }: { theme: Theme }) {
-  return (
-    <span className="theme-choice">
-      <PickerOption title={theme.label} sub={theme.hint} />
-      <span className="theme-swatch" data-theme={theme.id} aria-hidden="true">
-        <i style={{ background: 'var(--bg-elevated)' }} />
-        <i style={{ background: 'var(--text)' }} />
-        <i style={{ background: 'var(--accent)' }} />
-        <i style={{ background: 'var(--success)' }} />
-        <i style={{ background: 'var(--danger)' }} />
-      </span>
-    </span>
-  );
-}
+/** What the nav search also matches, beyond each section's name. */
+const NAV_KEYWORDS: Partial<Record<Cat, string>> = {
+  general: 'theme display size density file icons ssh key public url',
+  notifications: 'telegram browser sound events exceptions bot chat',
+  endpoints: 'endpoint api server provider test model',
+  commands: 'slash prompt command',
+  updates: 'auto-update sdk version release',
+  ...Object.fromEntries(SESSION_PROVIDERS.map((p) => [p, 'model effort speed fast mode default']) as [Cat, string][]),
+  claude: 'model fallback effort speed fast ultracode recap mode settings files catalog api key',
+  codex: 'model effort speed fast ultrafast mode approve reviewer',
+  cursor: 'model effort speed fast thinking context mode usage',
+};
 
 const Toggle = Switch;
 
@@ -266,12 +251,12 @@ export default function SettingsModal({ onClose, vpsList, initialCat, modelNotic
   }
 
   const navIcon = (id: Cat) => {
-    if (isSessionProvider(id)) return <AgentLogo kind={id} size={14} />;
-    if (id === 'general') return <span className="nav-ico">⚙</span>;
-    if (id === 'notifications') return <span className="nav-ico">✉</span>;
+    if (isSessionProvider(id)) return <AgentLogo kind={id} size={15} />;
+    if (id === 'general') return <span className="nav-ico"><IconGear /></span>;
+    if (id === 'notifications') return <span className="nav-ico"><IconBellFill /></span>;
     if (id === 'endpoints') return <span className="nav-ico"><IconPlug /></span>;
-    if (id === 'commands') return <span className="nav-ico">/</span>;
-    return <span className="nav-ico">↻</span>;
+    if (id === 'commands') return <span className="nav-ico"><IconTerminal /></span>;
+    return <span className="nav-ico"><IconArrowRepeat /></span>;
   };
 
   // The backend switches, read the same way everywhere: anything but the
@@ -279,107 +264,157 @@ export default function SettingsModal({ onClose, vpsList, initialCat, modelNotic
   // as a green/red dot so "why is there no ＋ Codex button" is answered without
   // opening the section.
   const backendOn = (kind: AgentKind) => s?.[`${kind}.enabled`] !== 'false';
-  const backendSwitch = (kind: AgentKind) => {
-    const label = providerText.agentLabel(kind);
-    return (
-    <>
-      <div className="switch-row">
-        <span>{providerText.backendAvailable(kind)}</span>
-        <Toggle
-          checked={backendOn(kind)}
-          onChange={(v) => set(`${kind}.enabled`, v ? 'true' : 'false')}
-          label={`offer ${label} sessions in this hub`}
-        />
-      </div>
-      <p className="set-meta">
-        Off hides every {label} launcher — the ＋ button on each VPS, the one in
-        the tab bar, and its row in the new-session wizard. Existing {label}{' '}
-        sessions keep running and stay in the sidebar.
-      </p>
-    </>
-    );
+  const availability = (kind: SessionProvider) => (
+    <span className="st-avail" title={providerText.backendAvailable(kind)}>
+      <span>Available</span>
+      <Toggle
+        checked={backendOn(kind)}
+        onChange={(v) => set(`${kind}.enabled`, v ? 'true' : 'false')}
+        label={`offer ${providerText.agentLabel(kind)} sessions in this hub`}
+      />
+    </span>
+  );
+
+  // The same Mode row for every agent: its modes side by side, tinted by risk.
+  const modeRow = (kind: SessionProvider, key: string, modes: readonly string[], fallback: string, hint?: string) => (
+    <SetRow label="Mode" hint={hint}>
+      <Segmented label="Mode" value={s?.[key] || fallback} onChange={(v) => set(key, v)}
+        options={modes.map((m) => ({
+          id: m, label: MODE_SWITCH_META[m]?.label ?? MODE_LABELS[m] ?? m,
+          title: MODE_SWITCH_META[m]?.title ?? MODE_LABELS[m], tone: MODE_SWITCH_META[m]?.risk,
+        }))} />
+    </SetRow>
+  );
+
+  // A provider's released versions, as its header says them.
+  const versionsOf = (kind: SessionProvider) => PROVIDERS[kind].backend.versions
+    .map((line) => (s?.[line.latestSettingKey] ? `${line.packageLabel} ${s[line.latestSettingKey]}` : line.packageLabel))
+    .join(' · ');
+
+  const agentHeader = (kind: SessionProvider, catalogVps?: Vps | null) => (
+    <SetHeader icon={<AgentLogo kind={kind} size={22} />} title={providerText.agentLabel(kind)}
+      sub={<span className="st-mono">{versionsOf(kind)}</span>}
+      chips={catalogVps ? <SetChip title="The account catalog these pickers read">catalog via {catalogVps.name}</SetChip> : undefined}
+      right={availability(kind)} />
+  );
+
+  const usageCard = (kind: SessionProvider) => PROVIDERS[kind].usageDashboardUrl && (
+    <SetCard title="Account usage">
+      <SetRow label="Usage" hint={providerText.usageOnWebOnly(kind)}>
+        <a className="st-link" href={PROVIDERS[kind].usageDashboardUrl!} target="_blank" rel="noopener noreferrer">
+          {providerText.usageOpenDashboard(kind)} ↗
+        </a>
+      </SetRow>
+    </SetCard>
+  );
+
+  const claudeEfforts = useClaudeEffortLevels(s?.['claude.default_model'] ?? '', s?.['claude.default_effort'] ?? '');
+  const codexEfforts = useCodexEffortLevels(codexVps?.id ?? '', s?.['codex.default_model'] ?? '', s?.['codex.default_effort'] ?? '');
+  const [navQuery, setNavQuery] = useState('');
+  const navMatch = (c: { id: Cat; label: string }) => {
+    const q = navQuery.trim().toLowerCase();
+    return !q || `${c.label} ${NAV_KEYWORDS[c.id] ?? ''}`.toLowerCase().includes(q);
   };
+  const unsaved = Object.keys(dirty).length;
+  const claudeCatalog = `${catalogRefresh}:${modelNotices.claude.map((m) => m.id).join(',')}`;
 
   return (
     <>
     <div style={sessionSettings ? { display: 'none' } : undefined} className="app-modal-bg" onClick={(e) => { if (e.target === e.currentTarget) close(); }}>
       <div className="app-modal settings-modal" role="dialog" aria-modal="true" aria-label="Settings">
         <button className="modal-close" onClick={close} aria-label="Close settings" title="Close settings">✕</button>
-        <h2>settings</h2>
         {s == null && <div className="empty">loading…</div>}
         {s && (
           <>
             <div className="settings-body">
               <nav className="settings-nav" aria-label="settings sections">
-                {NAV_GROUPS.map((g) => (
-                  <div key={g.id} className="settings-nav-group">
-                    <div className="settings-nav-group-label">{g.label}</div>
-                    {g.cats.map((c) => (
-                      <button
-                        key={c.id}
-                        type="button"
-                        className={cat === c.id ? 'on' : ''}
-                        onClick={() => setCat(c.id)}
-                      >
-                        {navIcon(c.id)}
-                        <span>{c.label}</span>
-                        {c.id === 'general' && hasNewModels && (
-                          <span className="model-notice-badge" aria-label="new models available">new</span>
-                        )}
-                        {isSessionProvider(c.id) && (
-                          <span
-                            className={`nav-state${backendOn(c.id) ? ' on' : ' off'}`}
-                            title={backendOn(c.id) ? `${c.label} is available` : `${c.label} is switched off`}
-                            aria-label={backendOn(c.id) ? `${c.label} enabled` : `${c.label} disabled`}
-                          />
-                        )}
-                      </button>
-                    ))}
-                  </div>
-                ))}
+                <div className="st-nav-head">
+                  <span className="st-nav-title"><IconGear />Settings</span>
+                  <span className="st-nav-search">
+                    <IconSearch />
+                    <input value={navQuery} onChange={(e) => setNavQuery(e.target.value)} placeholder="Search settings"
+                      aria-label="Search settings" spellCheck={false}
+                      onKeyDown={(e) => {
+                        if (e.key !== 'Enter') return;
+                        const hit = NAV_GROUPS.flatMap((g) => g.cats).find(navMatch);
+                        if (hit) setCat(hit.id);
+                      }} />
+                  </span>
+                </div>
+                {NAV_GROUPS.map((g) => {
+                  const cats = g.cats.filter(navMatch);
+                  if (!cats.length) return null;
+                  return (
+                    <div key={g.id} className="settings-nav-group">
+                      <div className="settings-nav-group-label">{g.label}</div>
+                      {cats.map((c) => (
+                        <button
+                          key={c.id}
+                          type="button"
+                          className={cat === c.id ? 'on' : ''}
+                          onClick={() => setCat(c.id)}
+                        >
+                          {navIcon(c.id)}
+                          <span>{c.label}</span>
+                          {c.id === 'general' && hasNewModels && (
+                            <span className="model-notice-badge" aria-label="new models available">new</span>
+                          )}
+                          {isSessionProvider(c.id) && (
+                            <span
+                              className={`nav-state${backendOn(c.id) ? ' on' : ' off'}`}
+                              title={backendOn(c.id) ? `${c.label} is available` : `${c.label} is switched off`}
+                              aria-label={backendOn(c.id) ? `${c.label} enabled` : `${c.label} disabled`}
+                            />
+                          )}
+                        </button>
+                      ))}
+                    </div>
+                  );
+                })}
               </nav>
 
               <div className="settings-pane">
                 {cat === 'endpoints' && <CustomEndpointsSettings vpsList={vpsList} />}
                 {cat === 'commands' && <UserCommandsSettings />}
-                {cat === 'general' && (
+                {cat === 'general' && (() => {
+                  const themeId = s['app.theme'] ?? DEFAULT_THEME_ID;
+                  const density = s['app.density'] ?? DEFAULT_DENSITY;
+                  const icons = resolveFileIcons(s['app.file_icons'] ?? DEFAULT_FILE_ICONS);
+                  return (
                   <>
+                    <SetHeader icon={<IconGear />} title="General" sub="How this hub looks, and how it is reached."
+                      chips={<>
+                        <SetChip>{THEMES.find((t) => t.id === themeId)?.label ?? themeId}</SetChip>
+                        <SetChip>{DENSITY_CHOICES.find((d) => d.id === density)?.label ?? density} display</SetChip>
+                        <SetChip>{FILE_ICON_CHOICES.find((f) => f.id === icons)?.label} icons</SetChip>
+                      </>} />
                     <ModelReleaseNotice notices={modelNotices} onSeen={onModelsSeen} />
-                    <label>theme
-                      <PickerControl
-                        value={s['app.theme'] ?? DEFAULT_THEME_ID}
-                        onValueChange={(nextValue) => { set('app.theme', nextValue); applyTheme(nextValue); }}
-                      >
-                        {THEME_GROUPS.map(({ label, themes }) => (
-                          <optgroup key={label} label={label}>
-                            {themes.map((theme) => (
-                              <option key={theme.id} value={theme.id}>
-                                <ThemeChoice theme={theme} />
-                              </option>
-                            ))}
-                          </optgroup>
+                    <SetCard title="Theme" aside="The whole hub, every device · previewed live">
+                      <div className="st-themes" role="radiogroup" aria-label="Theme">
+                        {THEMES.map((theme) => (
+                          <button key={theme.id} type="button" role="radio" aria-checked={themeId === theme.id}
+                            className={`st-theme${themeId === theme.id ? ' on' : ''}`} title={theme.hint}
+                            onClick={() => { set('app.theme', theme.id); applyTheme(theme.id); }}>
+                            <span className="st-theme-pv" data-theme={theme.id} aria-hidden="true"><i /><i /><i /></span>
+                            <span>{theme.label}</span>
+                          </button>
                         ))}
-                      </PickerControl>
-                    </label>
-                    <p className="set-meta">
-                      Applies to the whole hub, on every device. Previewed as you
-                      pick; cancel puts the previous one back.
-                    </p>
-                    <fieldset className="density-choices">
-                      <legend>display size</legend>
+                      </div>
+                    </SetCard>
+                    <SetCard title="Display size" aside="Previewed live">
                       <div className="density-choice-grid">
                         {DENSITY_CHOICES.map((choice) => (
                           <label
                             key={choice.id}
                             className="density-choice"
                             data-size={choice.id}
-                            data-selected={(s['app.density'] ?? DEFAULT_DENSITY) === choice.id}
+                            data-selected={density === choice.id}
                           >
                             <input
                               type="radio"
                               name="app.density"
                               value={choice.id}
-                              checked={(s['app.density'] ?? DEFAULT_DENSITY) === choice.id}
+                              checked={density === choice.id}
                               onChange={() => { set('app.density', choice.id); applyDensity(choice.id); }}
                             />
                             <span className="density-preview" aria-hidden="true">
@@ -411,13 +446,11 @@ export default function SettingsModal({ onClose, vpsList, initialCat, modelNotic
                           </label>
                         ))}
                       </div>
-                    </fieldset>
-                    <p className="set-meta">Previewed live. Save to use this size on every device.</p>
-                    <fieldset className="density-choices">
-                      <legend>file icons</legend>
+                    </SetCard>
+                    <SetCard title="File icons" aside="Explorer, tabs and search">
                       <div className="fi-choice-grid">
                         {FILE_ICON_CHOICES.map((choice) => {
-                          const on = resolveFileIcons(s['app.file_icons'] ?? DEFAULT_FILE_ICONS) === choice.id;
+                          const on = icons === choice.id;
                           return (
                             <label key={choice.id} className="density-choice fi-choice" data-selected={on}>
                               <input
@@ -439,373 +472,256 @@ export default function SettingsModal({ onClose, vpsList, initialCat, modelNotic
                           );
                         })}
                       </div>
-                    </fieldset>
-                    <p className="set-meta">The explorer, the tabs and search results. Previewed live; save for every device.</p>
-                    <label>SSH key (path on the hub server)
-                      <input value={s['ssh.private_key_path'] ?? ''} onChange={(e) => set('ssh.private_key_path', e.target.value)} placeholder="/root/.ssh/id_rsa" />
-                    </label>
-                    <label>public URL of this hub (deep links in Telegram / push)
-                      <input value={s['app.public_url'] ?? ''} onChange={(e) => set('app.public_url', e.target.value)} placeholder="https://charon.example.com" type="url" autoComplete="off" autoCorrect="off" autoCapitalize="off" spellCheck={false} />
-                    </label>
+                    </SetCard>
+                    <SetCard title="Connection">
+                      <SetRow label="SSH key" hint="Path on the hub server">
+                        <input className="st-input st-mono" aria-label="SSH key path" value={s['ssh.private_key_path'] ?? ''}
+                          onChange={(e) => set('ssh.private_key_path', e.target.value)} placeholder="/root/.ssh/id_rsa" />
+                      </SetRow>
+                      <SetRow label="Public URL" hint="Deep links in Telegram and push">
+                        <input className="st-input st-mono" aria-label="Public URL of this hub" value={s['app.public_url'] ?? ''}
+                          onChange={(e) => set('app.public_url', e.target.value)} placeholder="https://charon.example.com"
+                          type="url" autoComplete="off" autoCorrect="off" autoCapitalize="off" spellCheck={false} />
+                      </SetRow>
+                    </SetCard>
                   </>
-                )}
+                  );
+                })()}
 
-                {cat === 'claude' && (
+                {cat === 'claude' && (() => {
+                  const fast = s['claude.default_fast_mode'] === 'true';
+                  return (
                   <>
-                    {backendSwitch('claude')}
-                    <div className="settings-sub">every session</div>
-                    <div className="switch-row">
-                      <span>recap after each turn</span>
-                      <Toggle
-                        checked={s['claude.auto_recap'] !== 'false'}
-                        onChange={(v) => set('claude.auto_recap', v ? '' : 'false')}
-                        label="Recap after each turn"
-                      />
-                    </div>
-                    <p className="set-meta">
-                      One or two sentences under each finished answer: what was
-                      done, what is left. Asked aside — never added to the
-                      conversation. Applies at once to every session. Each one re-reads
-                      the session's context from the cache: a small share of
-                      the usage of a turn.
-                    </p>
-                    <div className="settings-sub">new session defaults</div>
-                    <p className="set-hint">{providerText.newSessionDefaults('claude')} — blank = SDK default.</p>
-                    <label>default model
-                      <ModelPicker
-                        catalogVersion={`${catalogRefresh}:${modelNotices.claude.map((m) => m.id).join(",")}`}
-                        value={s['claude.default_model'] ?? ''}
-                        onChange={(v) => set('claude.default_model', v)}
-                        inheritPlaceholder="SDK default"
-                      />
-                    </label>
-                    <label>default fallback model (when the primary is rate-limited)
-                      <ModelPicker
-                        catalogVersion={`${catalogRefresh}:${modelNotices.claude.map((m) => m.id).join(",")}`}
-                        value={s['claude.default_fallback_model'] ?? ''}
-                        onChange={(v) => set('claude.default_fallback_model', v)}
-                        inheritPlaceholder="none"
-                      />
-                    </label>
-                    <label>default effort
-                      <EffortPicker
-                        value={s['claude.default_effort'] ?? ''}
-                        onChange={(v) => set('claude.default_effort', v)}
-                        inheritPlaceholder="SDK default"
-                      />
-                    </label>
-                    <div className="switch-row">
-                      <span>ultracode by default</span>
-                      <Toggle
-                        checked={s['claude.default_ultracode'] === 'true'}
-                        onChange={(v) => set('claude.default_ultracode', v ? 'true' : '')}
-                        label="Ultracode by default" tone="violet"
-                      />
-                    </div>
-                    <p className="set-meta">Big tasks run as workflows of parallel agents.</p>
-                    <div className="switch-row">
-                      <span>fast by default</span>
-                      <Toggle
-                        checked={s['claude.default_fast_mode'] === 'true'}
-                        onChange={(v) => set('claude.default_fast_mode', v ? 'true' : '')}
-                        label="Fast by default" tone="info"
-                      />
-                    </div>
-                    <p className="set-meta">{CLAUDE_FAST_HINT}, where the model and plan allow it.</p>
-                    <label>default mode
-                      <PickerControl
-                        value={s['claude.default_permission_mode'] ?? 'normal'}
-                        onValueChange={(nextValue) => set('claude.default_permission_mode', nextValue)}
-                      >
-                        {CLAUDE_PERMISSION_MODES.map((mode) => (
-                          <option key={mode} value={mode}>{MODE_LABELS[mode]}</option>
-                        ))}
-                      </PickerControl>
-                    </label>
-
-                    {/* §14.100 — the bottom of the chain, so no "inherit"
-                        option here: this IS what a VPS and a session inherit.
-                        A VPS overrides it from its card in the data modal. */}
-                    <label>settings files sessions load
-                      <SettingSourcesPicker
-                        value={safeParseSettingSources(s['claude.setting_sources']) ?? [...DEFAULT_SETTING_SOURCES]}
-                        // `next` is never null without an `inherited` prop; the
-                        // fallback keeps the fleet default from ever becoming ''.
-                        onChange={(next) => set('claude.setting_sources',
-                          formatSettingSources(next ?? DEFAULT_SETTING_SOURCES))}
-                      />
-                    </label>
-
-                    <div className="settings-sub">model catalog</div>
-                    <label>Anthropic API key (catalog sync only — never inference)
-                      {/* PLAIN TEXT on purpose (NOT type=password): Chrome's
-                          password manager only autofills the SITE login password
-                          into type=password fields (ignoring autocomplete=off),
-                          which overwrote the real key. type=text + a
-                          non-credential name keep autofill away. The GET returns
-                          only a start+end preview (`sk-ant-api…wXYZ`), never the
-                          secret middle; leaving it untouched round-trips as
-                          "unchanged" (the route keeps the stored key), and any
-                          non-sk-ant- value is rejected. */}
-                      <input
-                        value={s['claude.api_key'] ?? ''}
-                        onChange={(e) => set('claude.api_key', e.target.value)}
-                        placeholder="sk-ant-…"
-                        type="text"
-                        name="charon-anthropic-catalog-key"
-                        autoComplete="off"
-                        data-lpignore="true"
-                        data-1p-ignore="true"
-                        data-bwignore="true"
-                        data-form-type="other"
-                        autoCorrect="off"
-                        autoCapitalize="off"
-                        spellCheck={false}
-                      />
-                    </label>
-                    <div className="tg-test-row">
-                      <button type="button" onClick={refreshModelList} disabled={syncing || !s['claude.api_key']}>
-                        {syncing ? 'syncing…' : '↻ refresh model list'}
-                      </button>
-                      {s['claude.models_cache_at'] && (
-                        <span className="set-meta" style={{ marginLeft: 8 }}>
-                          last sync: {new Date(Number(s['claude.models_cache_at'])).toLocaleString()}
-                        </span>
+                    {agentHeader('claude')}
+                    <SetCard title="New sessions start with">
+                      <SetRow label="Model">
+                        <ModelPicker catalogVersion={claudeCatalog} value={s['claude.default_model'] ?? ''}
+                          onChange={(v) => set('claude.default_model', v)} inheritPlaceholder="SDK default" />
+                      </SetRow>
+                      <SetRow label="Fallback" hint="When the model is rate-limited">
+                        <ModelPicker catalogVersion={claudeCatalog} value={s['claude.default_fallback_model'] ?? ''}
+                          onChange={(v) => set('claude.default_fallback_model', v)} inheritPlaceholder="none" />
+                      </SetRow>
+                      <SetRow label="Effort">
+                        <Ladder label="Effort" inheritLabel="default" value={s['claude.default_effort'] ?? ''}
+                          options={claudeEfforts.map((e) => ({ id: e, label: e }))}
+                          onChange={(v) => set('claude.default_effort', v)} />
+                      </SetRow>
+                      <SetRow label="Speed" note={fast ? CLAUDE_FAST_HINT : undefined}>
+                        <Segmented label="Speed" value={fast ? 'fast' : 'standard'}
+                          onChange={(v) => set('claude.default_fast_mode', v === 'fast' ? 'true' : '')}
+                          options={[
+                            { id: 'standard', label: 'Standard', title: 'Normal speed · normal price' },
+                            { id: 'fast', label: 'Fast', tone: 'info', title: `${CLAUDE_FAST_HINT}, where the model and plan allow it` },
+                          ]} />
+                      </SetRow>
+                      {modeRow('claude', 'claude.default_permission_mode', CLAUDE_PERMISSION_MODES, 'normal')}
+                    </SetCard>
+                    <SetCard title="Behaviour">
+                      <SetRow label="Ultracode" hint="Big tasks as parallel workflows">
+                        <Toggle checked={s['claude.default_ultracode'] === 'true'} tone="violet" size="sm"
+                          onChange={(v) => set('claude.default_ultracode', v ? 'true' : '')} label="Ultracode by default" />
+                      </SetRow>
+                      <SetRow label="Recap" hint="A line under each answer">
+                        <Toggle checked={s['claude.auto_recap'] !== 'false'} size="sm"
+                          onChange={(v) => set('claude.auto_recap', v ? '' : 'false')} label="Recap after each turn" />
+                      </SetRow>
+                      {/* §14.100 — the bottom of the chain, so no "inherit"
+                          option here: this IS what a VPS and a session inherit.
+                          A VPS overrides it from its card in the data modal. */}
+                      <SetRow label="Settings files" hint="Read when a session starts">
+                        <SettingSourcesPicker
+                          value={safeParseSettingSources(s['claude.setting_sources']) ?? [...DEFAULT_SETTING_SOURCES]}
+                          // `next` is never null without an `inherited` prop; the
+                          // fallback keeps the fleet default from ever becoming ''.
+                          onChange={(next) => set('claude.setting_sources',
+                            formatSettingSources(next ?? DEFAULT_SETTING_SOURCES))}
+                        />
+                      </SetRow>
+                    </SetCard>
+                    <SetCard title="Model catalog">
+                      <SetRow label="API key" hint="Catalog sync only, never inference">
+                        {/* PLAIN TEXT on purpose (NOT type=password): Chrome's
+                            password manager only autofills the SITE login password
+                            into type=password fields (ignoring autocomplete=off),
+                            which overwrote the real key. type=text + a
+                            non-credential name keep autofill away. The GET returns
+                            only a start+end preview (`sk-ant-api…wXYZ`), never the
+                            secret middle; leaving it untouched round-trips as
+                            "unchanged" (the route keeps the stored key), and any
+                            non-sk-ant- value is rejected. */}
+                        <input
+                          className="st-input st-mono"
+                          aria-label="Anthropic API key"
+                          value={s['claude.api_key'] ?? ''}
+                          onChange={(e) => set('claude.api_key', e.target.value)}
+                          placeholder="sk-ant-…"
+                          type="text"
+                          name="charon-anthropic-catalog-key"
+                          autoComplete="off"
+                          data-lpignore="true"
+                          data-1p-ignore="true"
+                          data-bwignore="true"
+                          data-form-type="other"
+                          autoCorrect="off"
+                          autoCapitalize="off"
+                          spellCheck={false}
+                        />
+                        <button type="button" className="st-btn" onClick={refreshModelList} disabled={syncing || !s['claude.api_key']}>
+                          <IconArrowRepeat />{syncing ? 'Syncing…' : 'Refresh'}
+                        </button>
+                      </SetRow>
+                      {(s['claude.models_cache_at'] || syncMsg) && (
+                        <p className={`st-foot-note${syncMsg ? (syncMsg.ok ? ' ok' : ' err') : ''}`}>
+                          {syncMsg ? syncMsg.msg : `Last sync ${new Date(Number(s['claude.models_cache_at'])).toLocaleString()}`}
+                        </p>
                       )}
-                      {syncMsg && (
-                        <span className={`tg-result ${syncMsg.ok ? 'ok' : 'err'}`}>{syncMsg.msg}</span>
-                      )}
-                    </div>
+                    </SetCard>
+                    {usageCard('claude')}
                   </>
-                )}
+                  );
+                })()}
 
-                {cat === 'codex' && (
+                {cat === 'codex' && (() => {
+                  const tier = s['codex.default_service_tier'] ?? '';
+                  return (
                   <>
-                    {backendSwitch('codex')}
-                    <div className="settings-sub">new session defaults</div>
-                    <p className="set-hint">
-                      defaults for new Codex sessions — blank = Codex default.
-                      {codexVps
-                        ? <> catalog via <b>{codexVps.name}</b>.</>
-                        : <> no codex-capable VPS connected yet — enter ids manually.</>}
-                    </p>
-                    {codexVps ? (
-                      <>
-                        <label>default model
-                          <CodexModelPicker
-                            catalogVersion={modelNotices.codex.map((m) => m.id).join(",")}
-                            vpsId={codexVps.id}
-                            value={s['codex.default_model'] ?? ''}
-                            onChange={(v) => set('codex.default_model', v)}
-                            inheritPlaceholder={`${providerText.agentLabel('codex')} default`}
-                          />
-                        </label>
-                        <label>default effort
-                          <CodexEffortPicker
-                            vpsId={codexVps.id}
-                            modelId={s['codex.default_model'] || undefined}
-                            value={s['codex.default_effort'] ?? ''}
-                            onChange={(v) => set('codex.default_effort', v)}
-                            inheritPlaceholder={`${providerText.agentLabel('codex')} default`}
-                          />
-                        </label>
-                        {codexSpeedChoices && <>
-                          <label>default speed
-                            <PickerControl
-                              value={s['codex.default_service_tier'] ?? ''}
-                              onValueChange={(v) => set('codex.default_service_tier', v)}
-                            >
-                              <option value="">Standard</option>
-                              {codexSpeedChoices.map((t) => {
-                                const cost = codexSpeedRange(t.id);
-                                return <option key={t.id} value={t.id}>{cost ? `${t.name} — ${cost}` : t.name}</option>;
-                              })}
-                            </PickerControl>
-                          </label>
-                          <p className="set-meta">A model without the tier runs at standard speed.</p>
-                        </>}
-                      </>
-                    ) : (
-                      <>
-                        <label>default model
-                          <input value={s['codex.default_model'] ?? ''} onChange={(e) => set('codex.default_model', e.target.value)} placeholder="gpt-5.6-sol" autoComplete="off" spellCheck={false} />
-                        </label>
-                        <label>default effort
-                          <input value={s['codex.default_effort'] ?? ''} onChange={(e) => set('codex.default_effort', e.target.value)} placeholder="medium" autoComplete="off" spellCheck={false} />
-                        </label>
-                      </>
-                    )}
-                    <label>default mode
-                      <PickerControl
-                        value={s['codex.default_permission_mode'] ?? 'workspace-write'}
-                        onValueChange={(nextValue) => set('codex.default_permission_mode', nextValue)}
-                      >
-                        {CODEX_SANDBOX_MODES.map((mode) => (
-                          <option key={mode} value={mode}>{MODE_LABELS[mode]}</option>
-                        ))}
-                      </PickerControl>
-                    </label>
-                    <div className="switch-row">
-                      <span>approve for me (automatic reviewer)</span>
-                      <Toggle
-                        checked={(s['codex.default_approvals_reviewer'] ?? 'auto_review') === 'auto_review'}
-                        onChange={(v) => set('codex.default_approvals_reviewer', v ? 'auto_review' : 'user')}
-                        label={providerText.autoReviewDefault('codex')}
-                      />
-                    </div>
-                    <p className="set-meta">
-                      The Codex CLI’s “Approve for me”: its reviewer answers the
-                      read only / default presets’ requests instead of a card.
-                      New sessions inherit it. It may still escalate sensitive
-                      actions; choose “full access” as the mode when no
-                      approval card should ever appear.
-                    </p>
+                    {agentHeader('codex', codexVps)}
+                    <SetCard title="New sessions start with">
+                      {codexVps ? <>
+                        <SetRow label="Model">
+                          <CodexModelPicker catalogVersion={modelNotices.codex.map((m) => m.id).join(',')} vpsId={codexVps.id}
+                            value={s['codex.default_model'] ?? ''} onChange={(v) => set('codex.default_model', v)}
+                            inheritPlaceholder={`${providerText.agentLabel('codex')} default`} />
+                        </SetRow>
+                        <SetRow label="Effort">
+                          <Ladder label="Effort" inheritLabel="default" value={s['codex.default_effort'] ?? ''}
+                            options={codexEfforts.map((e) => ({ id: e, label: e }))}
+                            onChange={(v) => set('codex.default_effort', v)} />
+                        </SetRow>
+                        {codexSpeedChoices && (
+                          <SetRow label="Speed" note={tier ? `${codexSpeedRange(tier) ?? ''}${codexSpeedRange(tier) ? ' · ' : ''}standard where the model lacks it` : undefined}>
+                            <Segmented label="Speed" value={tier} onChange={(v) => set('codex.default_service_tier', v)}
+                              options={[
+                                { id: '', label: 'Standard', title: 'Normal speed · normal usage' },
+                                ...codexSpeedChoices.map((t) => ({ id: t.id, label: t.name, tone: 'info' as const, title: codexSpeedRange(t.id) ?? undefined })),
+                              ]} />
+                          </SetRow>
+                        )}
+                      </> : <>
+                        <SetRow label="Model" hint="No catalog yet: no signed-in VPS">
+                          <input className="st-input st-mono" aria-label="Default model" value={s['codex.default_model'] ?? ''}
+                            onChange={(e) => set('codex.default_model', e.target.value)} placeholder="gpt-5.6-sol" autoComplete="off" spellCheck={false} />
+                        </SetRow>
+                        <SetRow label="Effort">
+                          <input className="st-input st-mono" aria-label="Default effort" value={s['codex.default_effort'] ?? ''}
+                            onChange={(e) => set('codex.default_effort', e.target.value)} placeholder="medium" autoComplete="off" spellCheck={false} />
+                        </SetRow>
+                      </>}
+                      {modeRow('codex', 'codex.default_permission_mode', CODEX_SANDBOX_MODES, 'workspace-write')}
+                    </SetCard>
+                    <SetCard title="Behaviour">
+                      <SetRow label="Approve for me" hint="Its reviewer answers requests">
+                        <Toggle checked={(s['codex.default_approvals_reviewer'] ?? 'auto_review') === 'auto_review'} size="sm"
+                          onChange={(v) => set('codex.default_approvals_reviewer', v ? 'auto_review' : 'user')}
+                          label={providerText.autoReviewDefault('codex')} />
+                      </SetRow>
+                    </SetCard>
+                    {usageCard('codex')}
                   </>
-                )}
+                  );
+                })()}
 
                 {cat === 'cursor' && (
                   <>
-                    {backendSwitch('cursor')}
-                    <div className="settings-sub">new session defaults</div>
-                    <p className="set-hint">
-                      defaults for new Cursor sessions — blank = Cursor default.
-                      {cursorVps
-                        ? <> catalog via <b>{cursorVps.name}</b>.</>
-                        : <> no cursor-capable VPS connected yet — enter ids manually.</>}
-                    </p>
-                    {cursorVps ? (
-                      <label>default model
-                        <CursorModelPicker
-                          catalogVersion={modelNotices.cursor.map((m) => m.id).join(',')}
-                          vpsId={cursorVps.id}
-                          value={s['cursor.default_model'] ?? ''}
-                          onChange={setCursorDefaultModel}
-                          inheritPlaceholder={`${providerText.agentLabel('cursor')} default`}
-                        />
-                      </label>
-                    ) : (
-                      <label>default model
-                        <input value={s['cursor.default_model'] ?? ''} onChange={(e) => set('cursor.default_model', e.target.value)} placeholder="default" autoComplete="off" spellCheck={false} />
-                      </label>
-                    )}
-                    {cursorVps && (
-                      <label>default effort
-                        <CursorEffortPicker
-                          vpsId={cursorVps.id}
-                          value={s['cursor.default_effort'] ?? ''}
-                          onChange={(v) => set('cursor.default_effort', v)}
-                          modelId={s['cursor.default_model'] ?? ''}
-                          inheritPlaceholder="model default"
-                        />
-                      </label>
-                    )}
-                    <p className="set-meta">The chosen model’s own parameters: pick the model first.</p>
-                    {cursorVps && (
-                      <CursorParamSwitches vpsId={cursorVps.id} modelId={s['cursor.default_model'] ?? ''}
-                        value={s['cursor.default_effort'] ?? ''} onChange={(v) => set('cursor.default_effort', v)}
-                        className="" plain />
-                    )}
-                    <label>default mode
-                      <PickerControl
-                        value={s['cursor.default_permission_mode'] || defaultSessionMode('cursor')}
-                        onValueChange={(nextValue) => set('cursor.default_permission_mode', nextValue)}
-                      >
-                        {CURSOR_MODES.map((mode) => (
-                          <option key={mode} value={mode}>{MODE_LABELS[mode]}</option>
-                        ))}
-                      </PickerControl>
-                    </label>
-                    <p className="set-meta">
-                      ⚠ Cursor exposes no per-request approval, so Charon cannot
-                      show a permission card for it. The mode is the whole gate:
-                      every rung but “force” keeps Cursor’s own reviewer on.
-                    </p>
-                  </>
-                )}
-
-                {/* Account usage, for a backend that publishes no API for it
-                    (registry `usageDashboardUrl`, §14.103). Rendered from the
-                    SECTION's provider rather than inside one backend's block,
-                    so any provider that declares a dashboard gets the row and
-                    none can be forgotten. It lives here because it is an
-                    ACCOUNT fact: the other two surfaces both hang off an open
-                    session — the header cell, and the mobile usage drawer
-                    behind its gauge icon — so with no session open there was
-                    nowhere at all to read it. */}
-                {isSessionProvider(cat) && PROVIDERS[cat].usageDashboardUrl && (
-                  <>
-                    <div className="settings-sub">account usage</div>
-                    <p className="set-hint">{providerText.usageOnWebOnly(cat)}.</p>
-                    <a
-                      className="set-extlink"
-                      href={PROVIDERS[cat].usageDashboardUrl!}
-                      target="_blank"
-                      rel="noopener noreferrer"
-                    >{providerText.usageOpenDashboard(cat)} ↗</a>
+                    {agentHeader('cursor', cursorVps)}
+                    <SetCard title="New sessions start with">
+                      <SetRow label="Model" hint={cursorVps ? undefined : 'No catalog yet: no signed-in VPS'}>
+                        {cursorVps
+                          ? <CursorModelPicker catalogVersion={modelNotices.cursor.map((m) => m.id).join(',')} vpsId={cursorVps.id}
+                              value={s['cursor.default_model'] ?? ''} onChange={setCursorDefaultModel}
+                              inheritPlaceholder={`${providerText.agentLabel('cursor')} default`} />
+                          : <input className="st-input st-mono" aria-label="Default model" value={s['cursor.default_model'] ?? ''}
+                              onChange={(e) => set('cursor.default_model', e.target.value)} placeholder="default" autoComplete="off" spellCheck={false} />}
+                      </SetRow>
+                      {cursorVps && (
+                        <CursorDefaultRows vpsId={cursorVps.id} modelId={s['cursor.default_model'] ?? ''}
+                          value={s['cursor.default_effort'] ?? ''} onChange={(v) => set('cursor.default_effort', v)} />
+                      )}
+                      {modeRow('cursor', 'cursor.default_permission_mode', CURSOR_MODES, defaultSessionMode('cursor'),
+                        'No per-request approval: the mode is the whole gate')}
+                    </SetCard>
+                    {usageCard('cursor')}
                   </>
                 )}
 
                 {cat === 'notifications' && (
                   <div className="notification-settings">
-                    <h3 className="notification-page-title">Notifications</h3>
-                    <p className="notification-intro">Choose which events you receive on each channel.</p>
-                    <NotificationTable
-                      browser={{ value: browserNotifications, busy: browserBusy,
-                        onChange: (value) => void updateBrowser({ ...browserNotifications, ...value }) }}
-                      telegram={{ value: normalizeChannelNotifications({ enabled: s['telegram.enabled'] === 'true', events: Object.fromEntries(NOTIFICATION_EVENTS.map(({ id }) => [id, (s[`telegram.notify.${id}`] ?? 'true') === 'true'])) }),
-                        onChange: (value) => {
-                          if (value.enabled !== (s['telegram.enabled'] === 'true')) set('telegram.enabled', String(value.enabled));
-                          for (const { id } of NOTIFICATION_EVENTS) {
-                            if (value.events[id] !== ((s[`telegram.notify.${id}`] ?? 'true') === 'true')) set(`telegram.notify.${id}`, String(value.events[id]));
-                          }
-                        } }} />
-                    <p className="notification-note">Browser changes are saved automatically. Click Save to apply Telegram settings.</p>
+                    <SetHeader icon={<IconBellFill />} title="Notifications" sub="What reaches you, and where."
+                      chips={<>
+                        <SetChip tone={browserNotifications.enabled ? 'ok' : 'off'}>Browser {browserNotifications.enabled ? 'on' : 'off'}</SetChip>
+                        <SetChip tone={s['telegram.enabled'] === 'true' ? 'ok' : 'off'}>Telegram {s['telegram.enabled'] === 'true' ? 'on' : 'off'}</SetChip>
+                      </>} />
+                    <SetCard className="st-card-table">
+                      <NotificationTable
+                        browser={{ value: browserNotifications, busy: browserBusy,
+                          onChange: (value) => void updateBrowser({ ...browserNotifications, ...value }) }}
+                        telegram={{ value: normalizeChannelNotifications({ enabled: s['telegram.enabled'] === 'true', events: Object.fromEntries(NOTIFICATION_EVENTS.map(({ id }) => [id, (s[`telegram.notify.${id}`] ?? 'true') === 'true'])) }),
+                          onChange: (value) => {
+                            if (value.enabled !== (s['telegram.enabled'] === 'true')) set('telegram.enabled', String(value.enabled));
+                            for (const { id } of NOTIFICATION_EVENTS) {
+                              if (value.events[id] !== ((s[`telegram.notify.${id}`] ?? 'true') === 'true')) set(`telegram.notify.${id}`, String(value.events[id]));
+                            }
+                          } }} />
+                    </SetCard>
+                    <p className="st-foot-note">Browser changes save at once; Telegram ones on Save.</p>
                     {browserError && <p className="notification-error" role="alert">{browserError}</p>}
-                      <details className="notification-connection">
-                        <summary>Telegram connection <span aria-hidden="true">›</span></summary>
-                        <p className="set-hint">Reply to permission requests and questions from Telegram. Create a bot with <code>@BotFather</code>.</p>
-                        <label>bot token
-                          <input value={s['telegram.bot_token'] ?? ''} onChange={(e) => set('telegram.bot_token', e.target.value)} placeholder="123456:ABC-…" type="text" autoComplete="off" autoCorrect="off" autoCapitalize="off" spellCheck={false} />
-                        </label>
-                        <label>chat_id
-                          <input value={s['telegram.chat_id'] ?? ''} onChange={(e) => set('telegram.chat_id', e.target.value)} placeholder="123456789" inputMode="numeric" />
-                        </label>
-                        <div className="tg-test-row">
-                          <button type="button" onClick={testTelegram} disabled={testing || s['telegram.enabled'] !== 'true' || !s['telegram.bot_token'] || !s['telegram.chat_id']}>
-                            {testing ? 'sending…' : 'Test connection'}
-                          </button>
-                          {testResult && <span className={`tg-result ${testResult.ok ? 'ok' : 'err'}`}>{testResult.msg}</span>}
-                        </div>
-                      </details>
-                    <NotificationExceptions onOpen={setSessionSettings} />
+                    <details className="st-card st-details">
+                      <summary><span className="st-card-title"><IconTelegram />Telegram connection</span><span aria-hidden="true">›</span></summary>
+                      <p className="st-foot-note">Reply to permission requests and questions from Telegram. Create a bot with <code>@BotFather</code>.</p>
+                      <SetRow label="Bot token">
+                        <input className="st-input st-mono" aria-label="Telegram bot token" value={s['telegram.bot_token'] ?? ''}
+                          onChange={(e) => set('telegram.bot_token', e.target.value)} placeholder="123456:ABC-…" type="text"
+                          autoComplete="off" autoCorrect="off" autoCapitalize="off" spellCheck={false} />
+                      </SetRow>
+                      <SetRow label="Chat id">
+                        <input className="st-input st-mono" aria-label="Telegram chat id" value={s['telegram.chat_id'] ?? ''}
+                          onChange={(e) => set('telegram.chat_id', e.target.value)} placeholder="123456789" inputMode="numeric" />
+                        <button type="button" className="st-btn" onClick={testTelegram}
+                          disabled={testing || s['telegram.enabled'] !== 'true' || !s['telegram.bot_token'] || !s['telegram.chat_id']}>
+                          {testing ? 'Sending…' : 'Test'}
+                        </button>
+                      </SetRow>
+                      {testResult && <p className={`st-foot-note ${testResult.ok ? 'ok' : 'err'}`}>{testResult.msg}</p>}
+                    </details>
+                    <div className="st-card st-card-flush"><NotificationExceptions onOpen={setSessionSettings} /></div>
                   </div>
                 )}
 
                 {cat === 'updates' && (
                   <>
+                    <SetHeader icon={<IconArrowRepeat />} title="Updates" sub="Agents update themselves when a VPS is idle." />
                     {/* One row per DECLARED backend, and the packages it names
                         come from its own registry entry (§14.102). Hand-written,
                         this block had two rows for three backends — and the
                         third's gate defaults ON, so an opt-in backend nobody
                         had enabled was sleeping and resuming every session on
                         every quiet VPS at each of its releases. */}
-                    {SESSION_PROVIDERS.map((p) => {
-                      const key = PROVIDERS[p].settings.autoUpdateKey;
-                      const packages = PROVIDERS[p].backend.versions
-                        .map((line) => line.packageLabel).join(' + ');
-                      return (
-                        <div className="switch-row" key={p}>
-                          <span>
-                            auto-update {providerText.agentLabel(p)} ({packages}) when a VPS is idle
-                          </span>
-                          <Toggle
-                            checked={(s[key] ?? 'true') === 'true'}
-                            onChange={(v) => set(key, v ? 'true' : 'false')}
-                            label={`auto-update ${providerText.agentLabel(p)} when a VPS is idle`}
-                          />
-                        </div>
-                      );
-                    })}
+                    <SetCard title="Auto-update when a VPS is idle">
+                      {SESSION_PROVIDERS.map((p) => {
+                        const key = PROVIDERS[p].settings.autoUpdateKey;
+                        return (
+                          <SetRow key={p} label={providerText.agentLabel(p)}
+                            hint={PROVIDERS[p].backend.versions.map((line) => line.packageLabel).join(' + ')}>
+                            <Toggle
+                              checked={(s[key] ?? 'true') === 'true'} size="sm"
+                              onChange={(v) => set(key, v ? 'true' : 'false')}
+                              label={`auto-update ${providerText.agentLabel(p)} when a VPS is idle`}
+                            />
+                          </SetRow>
+                        );
+                      })}
+                    </SetCard>
                     {(() => {
                       // `latest` per DECLARED release line, read from the
                       // settings map by the key the registry names for it.
@@ -814,12 +730,11 @@ export default function SettingsModal({ onClose, vpsList, initialCat, modelNotic
                         .filter((x) => !!x.value);
                       if (!lines.length) return null;
                       return (
-                        <p className="set-meta">
-                          latest releases:{' '}
-                          {lines.map((x, i) => (
-                            <span key={x.label}>{i > 0 && ' · '}{x.label} <b>{x.value}</b></span>
+                        <SetCard title="Latest releases">
+                          {lines.map((x) => (
+                            <SetRow key={x.label} label={x.label}><span className="st-mono st-strong">{x.value}</span></SetRow>
                           ))}
-                        </p>
+                        </SetCard>
                       );
                     })()}
                   </>
@@ -827,10 +742,17 @@ export default function SettingsModal({ onClose, vpsList, initialCat, modelNotic
               </div>
             </div>
 
-            <div className="settings-foot modal-actions">
-              {(cat === 'endpoints' || cat === 'commands') && !Object.keys(dirty).length
-                ? <><span className="set-meta endpoint-settings-footnote">{cat === 'commands' ? 'Commands are saved individually.' : 'Connections are saved individually.'}</span><button onClick={close}>done</button></>
-                : <><button className="primary" onClick={save} disabled={busy}>save</button><button onClick={close}>cancel</button></>}
+            <div className="settings-foot st-foot">
+              {(cat === 'endpoints' || cat === 'commands') && !unsaved
+                ? <>
+                    <span className="st-unsaved clean"><i />{cat === 'commands' ? 'Commands are saved individually' : 'Connections are saved individually'}</span>
+                    <button type="button" className="st-btn primary" onClick={close}>Done</button>
+                  </>
+                : <>
+                    <span className={`st-unsaved${unsaved ? '' : ' clean'}`}><i />{unsaved ? `${unsaved} unsaved change${unsaved > 1 ? 's' : ''}` : 'No changes'}</span>
+                    <button type="button" className="st-btn" onClick={close}>Cancel</button>
+                    <button type="button" className="st-btn primary" onClick={save} disabled={busy}>Save</button>
+                  </>}
             </div>
           </>
         )}
