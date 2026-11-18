@@ -116,11 +116,8 @@ type Props = {
   peerReplyTo?: string | null;
   // Set on the ONE bubble that shows the session's unread finish (§14.47):
   // it pulses like the sidebar card — green, red for a failed turn — until
-  // the user clicks it, leaves the session or sends.
+  // the user acts on the session (SessionView reads it), leaves it or sends.
   finishCue?: 'unread' | 'error' | null;
-  // Marks that finish read; given with `finishCue` only. MUST be a stable
-  // reference (memo, §14.38).
-  onFinishRead?: () => void;
 };
 
 /** The bubble class of an unread finish (`.finish-cue`, app.css). */
@@ -128,22 +125,10 @@ function finishCueClass(cue: Props['finishCue']): string {
   return cue ? ` finish-cue${cue === 'error' ? ' is-error' : ''}` : '';
 }
 
-/** The lit bubble's click handler: a click reads the finish — unless it hit
- *  a control (link, copy button, details) or ended a text selection. */
-function finishClick(cue: Props['finishCue'], read: (() => void) | undefined) {
-  if (!cue || !read) return undefined;
-  return (e: React.MouseEvent) => {
-    if ((e.target as Element).closest('a, button, input, textarea, select, summary, [role="button"]')) return;
-    const sel = window.getSelection();
-    if (sel && !sel.isCollapsed) return;
-    read();
-  };
-}
-
 // The roles drawn by Message's own bubble below (the others have their own component).
 const TEXT_BUBBLE_ROLES = new Set(['user', 'assistant', 'external', 'peer_status']);
 
-function Message({ m, vpsId, cwd, streaming = false, attachedResult, kind = 'claude', onReauth, onContinue, substitutedFor, onScheduleResume, onCancelScheduledResume, onContinueWithAccount, currentAccount, orphaned = false, peerSessionId, onOpenPeerSession, onPeerRequestHover, onPeerRequestJump, peerReplyTo, finishCue, onFinishRead }: Props) {
+function Message({ m, vpsId, cwd, streaming = false, attachedResult, kind = 'claude', onReauth, onContinue, substitutedFor, onScheduleResume, onCancelScheduledResume, onContinueWithAccount, currentAccount, orphaned = false, peerSessionId, onOpenPeerSession, onPeerRequestHover, onPeerRequestJump, peerReplyTo, finishCue }: Props) {
   const foldKey = TEXT_BUBBLE_ROLES.has(m.role) && !streaming ? m.id : null;
   const isFolded = useBubbleFold(foldKey);
   if (m.role === 'tool_use') return <ToolUseCard m={m} attachedResult={attachedResult} orphaned={orphaned} />;
@@ -173,7 +158,7 @@ function Message({ m, vpsId, cwd, streaming = false, attachedResult, kind = 'cla
       action: null, fatal: false, resetAt: null,
     } satisfies SessionErrorPayload;
     return <SessionErrorMessage m={m} error={error} onReauth={onReauth} onContinue={onContinue} onScheduleResume={onScheduleResume}
-      onContinueWithAccount={onContinueWithAccount} currentAccount={currentAccount} finishCue={finishCue} onFinishRead={onFinishRead} />;
+      onContinueWithAccount={onContinueWithAccount} currentAccount={currentAccount} finishCue={finishCue} />;
   }
 
   // Borderless until `stop` names the final answer (S2): a live bubble is
@@ -194,7 +179,6 @@ function Message({ m, vpsId, cwd, streaming = false, attachedResult, kind = 'cla
       className={`bubble role-${m.role}${isPeerReply ? ' peer-reply' : ''}${isAssistant && (m.assistantFinal === 0 || streaming) ? ' intermediate' : ''}${streaming ? ' streaming' : ''}${finishCueClass(finishCue)}${isFolded ? ' is-folded' : ''}`}
       data-msg-role={m.role}
       data-peer-message-id={m.messageId ?? (isExternal ? m.id : undefined)}
-      onClick={finishClick(finishCue, onFinishRead)}
       {...foldRootProps(foldKey)}
     >
       {foldKey && <FoldEdge isFolded={isFolded} />}
@@ -426,11 +410,10 @@ export function MessageLink({ href, vpsId, cwd, ...props }: React.ComponentProps
   }} />;
 }
 
-function SessionErrorMessage({ m, error, onReauth, onContinue, onScheduleResume, onContinueWithAccount, currentAccount, finishCue, onFinishRead }: {
+function SessionErrorMessage({ m, error, onReauth, onContinue, onScheduleResume, onContinueWithAccount, currentAccount, finishCue }: {
   m: Msg;
   error: SessionErrorPayload;
   finishCue?: Props['finishCue'];
-  onFinishRead?: () => void;
   onReauth?: () => void;
   onContinue?: () => void;
   onScheduleResume?: () => Promise<void>;
@@ -446,7 +429,7 @@ function SessionErrorMessage({ m, error, onReauth, onContinue, onScheduleResume,
   const isFolded = useBubbleFold(m.id);
   return (
     <div className={`bubble role-error${finishCueClass(finishCue)}${isFolded ? ' is-folded' : ''}`} data-msg-role="error"
-      onClick={finishClick(finishCue, onFinishRead)} {...foldRootProps(m.id)}>
+      {...foldRootProps(m.id)}>
       <FoldEdge isFolded={isFolded} />
       <header className="bubble-h">
         <span className="tag">error</span>

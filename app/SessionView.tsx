@@ -778,10 +778,10 @@ export default function SessionView({
     return null;
   }, [messages, status, currentAssistant, sessionKind]);
   // The finish on screen (§14.47): while the session's finish is unread — it
-  // stays so until the user leaves the session or sends — the turn's final
-  // answer wears the sidebar card's pulse, red when the turn failed (then an
-  // error row may be that answer). Nothing past the turn's input: a turn that
-  // ended without a final answer lights no older one.
+  // stays so until the user acts on the session, leaves it or sends — the
+  // turn's final answer wears the sidebar card's pulse, red when the turn
+  // failed (then an error row may be that answer). Nothing past the turn's
+  // input: a turn that ended without a final answer lights no older one.
   const finishAttention = attentionForRow(selected);
   const finishCue = finishAttention === 'unread' || finishAttention === 'error' ? finishAttention : null;
   const finishMsgId = useMemo(() => {
@@ -794,12 +794,17 @@ export default function SessionView({
     }
     return null;
   }, [messages, finishCue]);
-  // A click on that answer reads it: the same ack as leaving. Optimistic (a
-  // summary overlay, §14.32): the green goes at once, a failure brings it back.
+  // ANY action in the open session reads it, the same ack as leaving: a
+  // click anywhere in it (link, button, scroll pill, composer, scrollbar), a
+  // key, a wheel scroll — `<main>`'s capture handlers, which also see its
+  // portalled menus. Hovering is no action. Optimistic (a summary overlay,
+  // §14.32): the cue goes at once, a failure brings it back; the overlay
+  // zeroes `unreadStop`, which unplugs the handlers until the next finish.
   const markFinishRead = useCallback(() => {
     const o = addOverlay(sessionId, { unreadStop: 0 });
     api.markSessionRead(sessionId).then((r) => o.ack(r?.sync), () => o.fail());
   }, [sessionId]);
+  const readOnAction = selected.unreadStop ? markFinishRead : undefined;
   const currentAccount = accountProfileId(selected);
   // The usage popovers offer the provider's other accounts (§14.115); a turn
   // in flight, or background tasks the restart would kill with the CLI
@@ -1116,7 +1121,8 @@ export default function SessionView({
   return (
     <ContextWindowContext.Provider value={contextWindowTokens}>
       {sessionSettingsOpen && <SessionSettingsModal session={selected} onClose={closeSessionSettings} />}
-      <main className="app-main">
+      <main className="app-main"
+        onPointerDownCapture={readOnAction} onKeyDownCapture={readOnAction} onWheelCapture={readOnAction}>
         <div className={`app-bar${barExpanded ? ' is-expanded' : ''}`}>
           <div className="session-header-layout">
           {/* Session identity: title, then cwd. The path is the fastest
@@ -1326,7 +1332,7 @@ export default function SessionView({
                   limitMsgId={endpoint.active ? null : limitMsgId}
                   currentAccount={currentAccount}
                   onContinueWithAccount={continueWithAccount}
-                  finishMsgId={finishMsgId} finishCue={finishCue} onFinishRead={markFinishRead}
+                  finishMsgId={finishMsgId} finishCue={finishCue}
                   // Conservative on purpose: `reconnecting` means we don't
                   // know yet, and a wrong "interrupted" is worse than a
                   // late one.
@@ -1615,7 +1621,7 @@ export default function SessionView({
 // of <Message> elements; only the small live-tail bubble changes.
 const MessageHistory = memo(function MessageHistory({
   renderable, kind, vpsId, cwd, onReauth, authMsgId, continuableMsgId, schedulableMsgId, onContinue, onScheduleResume, onCancelScheduledResume, turnInFlight,
-  limitMsgId, currentAccount, onContinueWithAccount, finishMsgId, finishCue, onFinishRead,
+  limitMsgId, currentAccount, onContinueWithAccount, finishMsgId, finishCue,
   siblings, onOpenPeerSession, onPeerRequestHover, onPeerRequestJump, peerReplyToById,
   liveRow, substitute, selectedModel,
 }: {
@@ -1646,7 +1652,6 @@ const MessageHistory = memo(function MessageHistory({
   // bubble sees the value (memo, §14.38).
   finishMsgId: string | null;
   finishCue: 'unread' | 'error' | null;
-  onFinishRead: () => void;
   // Is a turn in flight right now? A tool_use with no tool_result can only
   // still be running while one is: outside a turn nothing can produce that
   // result anymore (§14.91). Only the unresolved tool cards receive the
@@ -1679,7 +1684,6 @@ const MessageHistory = memo(function MessageHistory({
       onPeerRequestHover={onPeerRequestHover} onPeerRequestJump={onPeerRequestJump}
       peerReplyTo={peerReplyToById.get(msg.id)}
       finishCue={msg.id === finishMsgId ? finishCue : null}
-      onFinishRead={msg.id === finishMsgId && finishCue ? onFinishRead : undefined}
     />;
   });
 });

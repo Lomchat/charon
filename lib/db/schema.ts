@@ -242,7 +242,8 @@ export const agentSessions = sqliteTable('agent_sessions', {
   // the sidebar can paint a green "finished — unread" glow that SURVIVES
   // reloads and is shared across devices (DB is the source of truth, not a
   // per-device localStorage flag). Cleared back to 0 when an attended view
-  // LEAVES the session or the user sends (markSessionRead), live across
+  // LEAVES the session, the user acts on it in the open view (POST .../read)
+  // or sends (markSessionRead), live across
   // tabs via the `session_unread` SSE event. Independent of
   // lastStopNotifiedSeq (which dedups PUSH notifications) — this one is a
   // passive in-app cue, only for Claude sessions. cf. CLAUDE.md §14.47.

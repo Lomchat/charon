@@ -63,7 +63,8 @@ export function pendingSplit(row: {
 
 /**
  * The attention of a list row. The session on screen is no exception: a
- * finish stays lit while you read it, until you leave it or send (§14.47).
+ * finish stays lit while you look at it, until you act on it (a click, a key,
+ * a scroll), leave it or send (§14.47).
  */
 export function attentionForRow(
   row: Pick<SessionListItem, 'status'> & {
