@@ -5,7 +5,9 @@ import { useEffect } from 'react';
 const ICON_SIZE = 64;
 const BADGE_SELECTOR = 'link[data-charon-notification-badge]';
 
-export default function TabNotificationBadge({ count }: { count: number }) {
+/** The tab's title and favicon carry `count` (what waits on the user). `name`:
+ *  the page's own title — the hub's by default, the desk passes its own. */
+export default function TabNotificationBadge({ count, name = 'Charon' }: { count: number; name?: string }) {
   useEffect(() => {
     const title = document.title;
     return () => {
@@ -15,7 +17,7 @@ export default function TabNotificationBadge({ count }: { count: number }) {
   }, []);
 
   useEffect(() => {
-    const title = count > 0 ? `(${count}) Charon` : 'Charon';
+    const title = count > 0 ? `(${count}) ${name}` : name;
     const badge = document.querySelector<HTMLLinkElement>(BADGE_SELECTOR)
       ?? document.createElement('link');
     const originalRels = new Map<HTMLLinkElement, string>();
@@ -73,7 +75,7 @@ export default function TabNotificationBadge({ count }: { count: number }) {
     };
     image.src = '/icon.svg';
     return () => { active = false; cleanup(); };
-  }, [count]);
+  }, [count, name]);
 
   return null;
 }

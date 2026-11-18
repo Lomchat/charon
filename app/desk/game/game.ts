@@ -7,8 +7,6 @@
 // zoom: a 1920×1080 window at zoom 3 is a 640×360 canvas, so the board costs
 // the same on any screen. Scrolling stays smooth because the canvas itself is
 // shifted by the sub-pixel remainder.
-import { isWorkingStatus } from '@/app/sessionUnread';
-import { rowStatus } from '@/lib/sessionAttention';
 import { fmtSpanShort, sessionCacheReading, type CacheReading } from '@/lib/promptCache';
 import { toolFamily, type SessionActivity, type ToolFamily } from '@/lib/sessionActivity';
 import {
@@ -16,16 +14,25 @@ import {
   type IconName, type RobotArt, type RobotPose,
 } from './art';
 import { Arcade } from './arcade';
-import { CELL_H, CELL_W, buildWorld, type Island, type Plot, type Station, type World } from './layout';
 import {
-  HEAT, MOOD_COLOR, agentName, ago, hashStr, levelOf, moodOf,
+  CELL_H, CELL_W, buildWorld, sitePad, type Island, type Slot, type Station, type Team, type World,
+} from './layout';
+import {
+  HEAT, MOOD_COLOR, agentName, ago, blend, hashStr, inTurn, levelOf, moodOf, ownColour,
   type DeskModel, type DeskSession, type Mood,
 } from './model';
 import { drawFoam, drawWater, glow, paintIsland, type IslandLayer } from './scenery';
 import { publishArcade, readBest, writeBest } from '../arcadeStore';
 
+/**
+ * What a point of the stage is on. On an island only a robot and a "+" answer
+ * (`spawn`: a deck's free console, or with `cwd` null the deck being built);
+ * a deck or the ground is nothing to pick there — the map alone travels by
+ * them.
+ */
 export type Pick =
   | { kind: 'agent'; id: string }
+  | { kind: 'spawn'; vpsId: string; cwd: string | null }
   | { kind: 'plot'; vpsId: string; cwd: string }
   | { kind: 'vps'; id: string };
 
@@ -257,7 +264,8 @@ export class Game {
       if (!station) continue;
       seen.add(session.id);
       const mood = moodOf(session);
-      const busy = isWorkingStatus(rowStatus(session));
+      // Busy = a turn runs. Background tasks alone are not one (`inTurn`).
+      const busy = inTurn(session);
       // The level is the context, by 100k tokens; -1 = no reading yet.
       const level = levelOf(session)?.level ?? -1;
       let actor = this.actors.get(session.id);
@@ -1081,7 +1089,9 @@ export class Game {
     const same = JSON.stringify(pick) === JSON.stringify(this.hovered);
     if (same) return;
     this.hovered = pick;
-    this.host.classList.toggle('is-pointing', pick != null);
+    // On an island only a robot or a "+" answers a click; on the map, any island.
+    this.host.classList.toggle('is-pointing',
+      pick != null && (pick.kind === 'agent' || pick.kind === 'spawn' || this.scene?.kind === 'map'));
     this.markSelection();
     this.labelsDirty = true;
   }
@@ -1093,6 +1103,8 @@ export class Game {
     const view = this.view();
     const wx = view.left + sx / this.cam.zoom;
     const wy = view.top + sy / this.cam.zoom;
+    // The "+" spots are an island's: on the map they are specks.
+    const spots = this.scene?.kind === 'island';
     for (const island of world.islands) {
       if (!this.shown(island.vpsId)) continue;
       const x = island.tx * T;
@@ -1105,7 +1117,15 @@ export class Game {
             return { kind: 'agent', id: station.id };
           }
         }
+        const { slot } = plot;
+        if (spots && wx >= slot.x && wy >= slot.y && wx < slot.x + CELL_W * T && wy < slot.y + CELL_H * T) {
+          return { kind: 'spawn', vpsId: plot.vpsId, cwd: plot.cwd };
+        }
         return { kind: 'plot', vpsId: plot.vpsId, cwd: plot.cwd };
+      }
+      const box = spots ? spawnBox(island, null) : null;
+      if (box && wx >= box.x && wy >= box.y && wx < box.x + box.w && wy < box.y + box.h) {
+        return { kind: 'spawn', vpsId: island.vpsId, cwd: null };
       }
       return { kind: 'vps', id: island.vpsId };
     }
@@ -1322,18 +1342,28 @@ export class Game {
     g.globalAlpha = 1;
     g.globalCompositeOperation = 'source-over';
 
-    // Selection and hover: brackets around the station.
+    // A team's rug answers when one of its own is pointed at or selected.
+    for (const [pick, strength] of [[this.hovered, 0.4], [this.selected, 0.85]] as const) {
+      if (pick?.kind !== 'agent') continue;
+      const station = world.stations.get(pick.id);
+      const team = station?.team;
+      if (!station || !team || !this.shown(station.plot.vpsId)) continue;
+      g.globalAlpha = strength * (0.75 + 0.25 * Math.sin(t * 0.005));
+      g.strokeStyle = blend(team.tint, '#ffffff', 0.4);
+      g.lineWidth = 1;
+      g.strokeRect(team.x + 1.5, team.y + 24.5, team.w - 3, team.h - 26);
+    }
+    g.globalAlpha = 1;
+
+    // Selection and hover: brackets around the station — or around a "+".
     if (this.hovered?.kind === 'agent') this.drawBrackets(g, this.hovered.id, 'rgba(232,238,249,0.45)', 0);
     if (this.selected?.kind === 'agent') this.drawBrackets(g, this.selected.id, '#ffffff', 1 + Math.round(Math.sin(t * 0.008)));
-    if (this.selected?.kind === 'plot' || this.hovered?.kind === 'plot') {
-      for (const pick of [this.hovered, this.selected]) {
-        if (pick?.kind !== 'plot') continue;
-        const plot = this.shown(pick.vpsId) ? findPlot(world, pick.vpsId, pick.cwd) : null;
-        if (!plot) continue;
-        g.strokeStyle = pick === this.selected ? '#ffffff' : 'rgba(232,238,249,0.45)';
-        g.lineWidth = 1;
-        g.strokeRect(plot.x - 1.5, plot.y - 1.5, plot.w + 3, plot.h + 3);
-      }
+    const spots = this.scene?.kind === 'island';
+    const hot = spots && this.hovered?.kind === 'spawn' ? this.hovered : null;
+    if (hot) {
+      const island = islands.find((i) => i.vpsId === hot.vpsId);
+      const box = island ? spawnBox(island, hot.cwd) : null;
+      if (box) corners(g, box.x, box.y + 2, box.x + box.w - 1, box.y + box.h - 3, 'rgba(255,224,102,0.8)');
     }
 
     // Everything that stands, back to front.
@@ -1348,14 +1378,43 @@ export class Game {
       items.push({ y: island.beaconY, draw: () => this.drawBeacon(g, island, bx, by, tall) });
     }
     for (const actor of actors) {
-      items.push({ y: actor.station.deskY, draw: () => this.drawDesk(g, actor) });
+      const s = actor.station;
+      // A lead's mast stands at the back of its dais.
+      if (s.lead && s.team) { const team = s.team; items.push({ y: s.deskY - 13, draw: () => this.drawMast(g, s, team) }); }
+      items.push({ y: s.deskY, draw: () => this.drawDesk(g, actor) });
       items.push({ y: actor.y, draw: () => this.drawActor(g, actor) });
+    }
+    // The free console of each deck: dim, nobody at it.
+    const slots: Array<{ slot: Slot; hot: boolean }> = [];
+    if (spots) {
+      for (const island of islands) {
+        for (const plot of island.plots) {
+          const { slot } = plot;
+          if (!inView(slot.x - 8, slot.y - 8, CELL_W * T + 16, CELL_H * T + 16)) continue;
+          slots.push({ slot, hot: hot?.vpsId === plot.vpsId && hot.cwd === plot.cwd });
+          items.push({ y: slot.deskY, draw: () => {
+            const desk = sprites.desk;
+            g.globalAlpha = 0.5;
+            g.drawImage(desk, Math.round(slot.deskX - desk.width / 2), Math.round(slot.deskY - desk.height));
+            g.globalAlpha = 1;
+          } });
+        }
+      }
     }
     items.sort((a, b) => a.y - b.y);
     for (const item of items) item.draw();
 
     // Above the heads: holo screens, markers, drones.
     for (const actor of actors) this.drawOverhead(g, actor);
+    // The "+" of every place a new robot can appear at: free consoles, the deck being built.
+    for (const { slot, hot: lit } of slots) this.drawPlus(g, slot.holoX, slot.holoY, slot.deskY - 23 - slot.holoY, lit, slot.x);
+    if (spots) {
+      for (const island of islands) {
+        const pad = sitePad(island.site);
+        if (!inView(pad.x - 8, pad.y - 24, 24, 32)) continue;
+        this.drawPlus(g, pad.x - 1, pad.y - 16, 5, hot?.vpsId === island.vpsId && hot.cwd == null, island.seed);
+      }
+    }
 
     // Effects.
     for (const r of this.rings) {
@@ -1404,14 +1463,55 @@ export class Game {
   private drawBrackets(g: CanvasRenderingContext2D, id: string, colour: string, inset: number): void {
     const s = this.world?.stations.get(id);
     if (!s || !this.shown(s.plot.vpsId)) return;
-    const x0 = s.x + inset; const y0 = s.y + 2 + inset;
-    const x1 = s.x + CELL_W * T - 1 - inset; const y1 = s.y + CELL_H * T - 3 - inset;
-    const k = 5;
-    g.fillStyle = colour;
-    for (const [x, y, dx, dy] of [[x0, y0, 1, 1], [x1, y0, -1, 1], [x0, y1, 1, -1], [x1, y1, -1, -1]] as const) {
-      g.fillRect(dx > 0 ? x : x - k + 1, y, k, 1);
-      g.fillRect(x, dy > 0 ? y : y - k + 1, 1, k);
+    corners(g, s.x + inset, s.y + 2 + inset, s.x + CELL_W * T - 1 - inset, s.y + CELL_H * T - 3 - inset, colour);
+  }
+
+  /**
+   * The mast at the corner of a lead's dais: a pennant in its team's colour,
+   * in the wind. It flies to the LEFT, off the cell: the lead's own marker
+   * (over its head, at rest or at its console) never hides it.
+   */
+  private drawMast(g: CanvasRenderingContext2D, s: Station, team: Team): void {
+    const x = s.x + 1;
+    const top = s.y - 2;
+    const foot = s.deskY - 8;
+    g.fillStyle = '#10131b';
+    g.fillRect(x, top, 2, foot - top);
+    g.fillStyle = '#6b7590';
+    g.fillRect(x, top, 1, foot - top);
+    g.fillStyle = '#ffe066';
+    g.fillRect(x, top - 1, 2, 1);
+    const t = this.time + (hashStr(team.leadId) % 1000);
+    const light = blend(team.tint, '#ffffff', 0.18);
+    const dark = blend(team.tint, '#10131b', 0.35);
+    for (let c = 0; c < 10; c += 1) {
+      const swell = Math.sin(t * 0.007 - c * 0.8);
+      const h = Math.max(1, 6 - Math.floor((c * 6) / 10));
+      const y = top + 1 + Math.floor((6 - h) / 2) + (c < 2 ? 0 : Math.round(swell * (c < 5 ? 0.6 : 1.1)));
+      g.fillStyle = swell > 0.35 ? light : swell < -0.5 ? dark : team.tint;
+      g.fillRect(x - 1 - c, y, 1, h);
     }
+  }
+
+  /** "A new robot, here": a holo screen with a plus, over a free console or a deck being built. */
+  private drawPlus(g: CanvasRenderingContext2D, x: number, y: number, beam: number, hot: boolean, seed: number): void {
+    const t = this.time + (seed % 1000);
+    const colour = hot ? '#ffe066' : '#b9c6de';
+    const breathe = hot ? 1 : 0.5 + 0.18 * Math.sin(t * 0.003);
+    const hy = y + (Math.floor(t / 700) % 2);
+    g.globalAlpha = 0.45 * breathe;
+    g.fillStyle = colour;
+    g.fillRect(x + 5, hy + 11, 1, Math.max(0, beam - (hy - y)));
+    g.globalAlpha = 0.6 + 0.3 * breathe;
+    g.fillStyle = '#0b1220';
+    g.fillRect(x, hy, 11, 11);
+    g.globalAlpha = breathe;
+    g.fillStyle = colour;
+    g.fillRect(x, hy, 11, 1); g.fillRect(x, hy + 10, 11, 1);
+    g.fillRect(x, hy, 1, 11); g.fillRect(x + 10, hy, 1, 11);
+    g.globalAlpha = Math.min(1, breathe + 0.3);
+    g.fillRect(x + 3, hy + 5, 5, 1); g.fillRect(x + 5, hy + 3, 1, 5);
+    g.globalAlpha = 1;
   }
 
   private drawBeacon(g: CanvasRenderingContext2D, island: Island, bx: number, by: number, tall: boolean): void {
@@ -1494,8 +1594,14 @@ export class Game {
       pose.eye = colour;
     } else {
       switch (actor.mood) {
-        case 'work':
         case 'bg': {
+          // Its turn is over: it stands by, lit, while its drones work on.
+          pose.bob = Math.floor(t / 900) % 2;
+          pose.eye = blinking ? null : colour;
+          pose.lamp = Math.floor(t / 700) % 2 ? colour : '#1c2433';
+          break;
+        }
+        case 'work': {
           const beat = actor.activity?.beat;
           const hot = this.time - actor.beatAt < 1300;
           const rate = hot ? 85 : beat === 'think' ? 0 : 240;
@@ -1829,22 +1935,37 @@ function typing(target: EventTarget | null): boolean {
   return el.tagName === 'INPUT' || el.tagName === 'TEXTAREA' || el.tagName === 'SELECT' || el.isContentEditable;
 }
 
-/** At its console (a turn runs, or it is parked on you) or resting beside it. */
+/**
+ * At its console (a turn runs, or it is parked on you) or standing beside it.
+ * A turn that ended with background tasks still running is over: beside it,
+ * like any robot that finished (the owner's call — it is not actively working).
+ */
 function seated(mood: Mood, busy: boolean): boolean {
-  return busy || mood === 'blocked' || mood === 'work' || mood === 'bg';
+  return busy || mood === 'blocked' || mood === 'work';
 }
 
 function chestColour(s: DeskSession): string {
-  const c = typeof s.color === 'string' ? s.color.trim() : '';
-  return /^#[0-9a-f]{6}$/i.test(c) ? c : '#ffd98a';
+  return ownColour(s) ?? '#ffd98a';
 }
 
-function findPlot(world: World, vpsId: string, cwd: string): Plot | null {
-  for (const island of world.islands) {
-    if (island.vpsId !== vpsId) continue;
-    for (const plot of island.plots) if (plot.cwd === cwd) return plot;
+/** The corners of a box, as brackets. */
+function corners(g: CanvasRenderingContext2D, x0: number, y0: number, x1: number, y1: number, colour: string): void {
+  const k = 5;
+  g.fillStyle = colour;
+  for (const [x, y, dx, dy] of [[x0, y0, 1, 1], [x1, y0, -1, 1], [x0, y1, 1, -1], [x1, y1, -1, -1]] as const) {
+    g.fillRect(dx > 0 ? x : x - k + 1, y, k, 1);
+    g.fillRect(x, dy > 0 ? y : y - k + 1, 1, k);
   }
-  return null;
+}
+
+/** What a "+" answers on (world pixels): a deck's free console, or with `cwd` null the deck being built. */
+function spawnBox(island: Island, cwd: string | null): { x: number; y: number; w: number; h: number } | null {
+  if (cwd == null) {
+    const s = island.site;
+    return { x: s.x - 3, y: s.y - 8, w: s.w + 6, h: s.h + 13 };
+  }
+  const plot = island.plots.find((p) => p.cwd === cwd);
+  return plot ? { x: plot.slot.x, y: plot.slot.y, w: CELL_W * T, h: CELL_H * T } : null;
 }
 
 function captionOf(actor: Actor): string {

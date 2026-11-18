@@ -1,5 +1,5 @@
 'use client';
-import { useEffect, useState, type RefObject } from 'react';
+import { useEffect, useState, type CSSProperties, type RefObject } from 'react';
 import { cacheTipLines, fmtTokens, sessionCacheReading } from '@/lib/promptCache';
 import { toolFamily } from '@/lib/sessionActivity';
 import type { SessionSummary } from '@/lib/sessionSummary';
@@ -19,6 +19,13 @@ type Props = {
   vps: Vps | null;
   /** Its first permission request, if one waits. */
   permission: Quest | null;
+  /** Its team (sub-sessions): the session it works for, the ones that work
+   *  for it, and the colour of their rug on the board. */
+  lead: SessionSummary | null;
+  crew: SessionSummary[];
+  teamTint: string | null;
+  /** Go to another robot (its island comes on stage). */
+  onVisit: (id: string) => void;
   busy: boolean;
   orderRef: RefObject<HTMLTextAreaElement | null>;
   /** Put the caret in the order as soon as this robot is selected. */
@@ -42,8 +49,8 @@ const FAMILY_VERB: Record<string, string> = {
 };
 
 export default function UnitPanel({
-  session, vps, permission, busy, orderRef, autoFocus, onOpen, onNext, onOrder, onStop, onSleep, onResume, onRead,
-  onPermission, onMore, onClose,
+  session, vps, permission, lead, crew, teamTint, busy, orderRef, autoFocus, onOpen, onNext, onOrder, onStop, onSleep,
+  onResume, onRead, onPermission, onVisit, onMore, onClose,
 }: Props) {
   const activity = useActivity(session.id);
   const mood = moodOf(session);
@@ -117,6 +124,19 @@ export default function UnitPanel({
           <span>{vps?.name ?? 'unknown machine'}</span>
           <span className="dk-unit-cwd" title={session.cwd}>{session.cwd}</span>
         </div>
+        {/* Its team: up to the one it works for, down to the ones that work for it. */}
+        {(lead || crew.length > 0) && (
+          <div className="dk-unit-team" style={teamTint ? { '--dk-team': teamTint } as CSSProperties : undefined}>
+            {lead && (
+              <>
+                <span aria-hidden="true" title="works for">▲</span>
+                <Mate session={lead} onVisit={onVisit} />
+              </>
+            )}
+            {crew.length > 0 && <span aria-hidden="true" title="its sub-sessions">▼</span>}
+            {crew.map((mate) => <Mate key={mate.id} session={mate} onVisit={onVisit} />)}
+          </div>
+        )}
         {cache && (
           <p
             className="dk-unit-cache"
@@ -201,24 +221,12 @@ export default function UnitPanel({
   );
 }
 
-/** A deck or a machine picked on the board: what is there, and "recruit". */
-export function PlacePanel({ title, lines, canRecruit, onRecruit, onClose }: {
-  title: string; lines: string[]; canRecruit: boolean; onRecruit: () => void; onClose: () => void;
-}) {
+/** A robot of the same team: its state, its name — a click goes to it. */
+function Mate({ session, onVisit }: { session: SessionSummary; onVisit: (id: string) => void }) {
+  const name = agentName(session);
   return (
-    <aside className="dk-unit dk-place" aria-label={title}>
-      <header className="dk-unit-head">
-        <div className="dk-unit-title"><h2 title={title}>{title}</h2></div>
-        <button type="button" className="dk-unit-close" onClick={onClose} aria-label="deselect" title="deselect (Esc)">×</button>
-      </header>
-      <div className="dk-unit-body">
-        {lines.map((line) => <p key={line} className="dk-unit-where"><span>{line}</span></p>)}
-      </div>
-      <div className="dk-unit-cmds">
-        <button type="button" className="dk-cmd dk-cmd-main" disabled={!canRecruit} onClick={onRecruit}>
-          + Recruit an agent
-        </button>
-      </div>
-    </aside>
+    <button type="button" className="dk-mate" data-mood={moodOf(session)} onClick={() => onVisit(session.id)} title={name}>
+      <i aria-hidden="true" /><span>{name}</span>
+    </button>
   );
 }

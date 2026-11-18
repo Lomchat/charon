@@ -694,16 +694,14 @@
   animation: dk-drawer 0.18s ease-out;
 }
 @keyframes dk-drawer { from { transform: translateX(24px); opacity: 0; } to { transform: none; opacity: 1; } }
-/* A deck or a machine: a few lines, no need for the whole height. */
-.dk-place { bottom: auto; border-right-color: var(--dk-line); }
 /* What sat in the corner makes room. */
 .desk.has-drawer .dk-corner { right: calc(var(--dk-drawer) + 20px); }
-.dk-unit[data-mood='work'] { --dk-mood: var(--dk-work); }
-.dk-unit[data-mood='bg'] { --dk-mood: var(--dk-bg); }
-.dk-unit[data-mood='blocked'], .dk-unit[data-mood='question'] { --dk-mood: var(--dk-ask); }
-.dk-unit[data-mood='done'] { --dk-mood: var(--dk-done); }
-.dk-unit[data-mood='error'] { --dk-mood: var(--dk-fail); }
-.dk-unit[data-mood='sleep'] { --dk-mood: #566076; }
+.dk-unit[data-mood='work'], .dk-mate[data-mood='work'] { --dk-mood: var(--dk-work); }
+.dk-unit[data-mood='bg'], .dk-mate[data-mood='bg'] { --dk-mood: var(--dk-bg); }
+.dk-unit[data-mood='blocked'], .dk-unit[data-mood='question'], .dk-mate[data-mood='blocked'], .dk-mate[data-mood='question'] { --dk-mood: var(--dk-ask); }
+.dk-unit[data-mood='done'], .dk-mate[data-mood='done'] { --dk-mood: var(--dk-done); }
+.dk-unit[data-mood='error'], .dk-mate[data-mood='error'] { --dk-mood: var(--dk-fail); }
+.dk-unit[data-mood='sleep'], .dk-mate[data-mood='sleep'] { --dk-mood: #566076; }
 
 .dk-unit-head {
   position: relative;
@@ -824,18 +822,6 @@
 .dk-unit-level > span { flex: 1; height: 5px; background: var(--dk-edge); border: 1px solid var(--dk-line); }
 .dk-unit-level > span > span { display: block; height: 100%; background: var(--dk-gold); }
 
-.dk-unit-body {
-  flex: 1;
-  min-height: 0;
-  padding: 10px 12px 12px;
-  overflow-y: auto;
-  overscroll-behavior: contain;
-}
-.dk-unit-body::-webkit-scrollbar { width: 6px; }
-.dk-unit-body::-webkit-scrollbar-track { background: var(--dk-edge); }
-.dk-unit-body::-webkit-scrollbar-thumb { background: var(--dk-line); }
-.dk-unit-body::-webkit-scrollbar-thumb:hover { background: var(--dk-dim); }
-.dk-unit-body > :first-child { margin-top: 0 !important; }
 /* What it is and where it runs: stays put above the conversation. */
 .dk-unit-info { flex: none; padding: 10px 12px; }
 .dk-unit-info > :first-child { margin-top: 0 !important; }
@@ -949,6 +935,28 @@
 .dk-unit-goal { display: -webkit-box; -webkit-box-orient: vertical; overflow: hidden; }
 .dk-unit-goal { color: var(--dk-dim); -webkit-line-clamp: 2; }
 .dk-unit-goal i { margin-right: 6px; font-style: normal; color: var(--dk-gold); }
+/* Its team (sub-sessions): ▲ the one it works for, ▼ the ones that work for
+   it — each a way to go there, edged in the colour of their rug on the board. */
+.dk-unit-team { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 6px; margin-top: 7px; min-width: 0; }
+.dk-unit-team > span { font: 400 9px/1 var(--dk-mono); color: var(--dk-dim); }
+.dk-mate {
+  --dk-mood: var(--dk-idle);
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  max-width: 100%;
+  height: 22px;
+  padding: 0 8px 0 6px;
+  font: 500 11px/1 var(--dk-text);
+  color: var(--dk-ink);
+  background: var(--dk-panel-2);
+  border: 1px solid var(--dk-line);
+  border-left: 3px solid var(--dk-team, var(--dk-line));
+}
+.dk-mate:hover { border-color: var(--dk-ink); border-left-color: var(--dk-team, var(--dk-ink)); }
+.dk-mate > i { flex: none; width: 6px; height: 6px; background: var(--dk-mood); }
+.dk-mate > span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .dk-unit-gate { margin-top: 8px; font-size: 12px; color: var(--dk-ink); }
 .dk-unit-gate b { color: var(--dk-ask); }
 
@@ -980,7 +988,6 @@
 .dk-cmd-main kbd, .dk-cmd-yes kbd { color: inherit; border-color: currentColor; background: none; opacity: 0.7; }
 .dk-cmd-yes { color: #06130b; background: var(--dk-done); border-color: #2c9c58; }
 .dk-cmd-no { color: #ffd9d9; background: #4a1c22; border-color: #8a3038; }
-.dk-place .dk-unit-cmds { grid-template-columns: auto; }
 
 .dk-unit-close {
   position: absolute;
@@ -1336,7 +1343,6 @@
   /* A sheet at the foot. A robot's has a set height: its conversation takes
      what the rest leaves, and would fold to nothing in a box sized by content. */
   .dk-unit { top: auto; left: 10px; right: 10px; width: auto; height: 68%; z-index: 2; border-right: 2px solid var(--dk-line); border-top: 4px solid var(--dk-mood); }
-  .dk-place { height: auto; max-height: 64%; }
   .dk-unit-face { width: auto; }
   .dk-unit-cmds { grid-template-columns: repeat(3, 1fr); }
   .dk-unit-level .dk-tip, .dk-acct-pop { width: min(300px, calc(100vw - 60px)); }

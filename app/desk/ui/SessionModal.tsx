@@ -57,12 +57,15 @@ export default function SessionModal({ session, vps, siblings, onClose, onOpenSe
         </header>
         <div className="dk-embed app-root">
           {/* `key`: another session (an @handle link) remounts the view — the
-              transcript state never crosses from one session to the next. */}
+              transcript state never crosses from one session to the next.
+              `showTools` off (the owner's call): the conversation only, no
+              tool call in the chat — the same view as the robot's drawer, so
+              its cached transcript paints this one at once. */}
           <SessionView
             key={session.id}
             sessionId={session.id}
             selected={session}
-            showTools
+            showTools={false}
             showToolsReady
             handle={session.handle ?? null}
             siblings={siblings}

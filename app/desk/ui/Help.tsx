@@ -16,6 +16,7 @@ const KEYS: Array<[string, string]> = [
   ['R', 'mark as read'],
   ['X', 'stop the turn'],
   ['right-click', 'rename, sleep, delete'],
+  ['N · click a +', 'new agent'],
   ['G', 'the mini-game'],
 ];
 

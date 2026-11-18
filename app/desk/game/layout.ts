@@ -5,11 +5,17 @@
 //   working directory                 →  a wooden deck on the island
 //   session                           →  a station on that deck: a console,
 //                                         and the 3×4 tiles around it
+//   a session and its sub-sessions    →  a team: the parent on a dais, its
+//                                         crew in rows in front, on one rug
+//   "a new one, here"                 →  a free console on every deck, a deck
+//                                         being built on every island
 //
-// The grouping by directory IS the sidebar's (`sidebarPathKey`), in its order.
-import { sidebarPathKey } from '@/app/sidebarPathGroups';
+// The grouping by directory AND under a parent IS the sidebar's
+// (`nestSubSessions`): a sub-session stands on its parent's deck, whatever
+// its own directory.
+import { nestSubSessions } from '@/app/sidebarSubSessions';
 import { T } from './art';
-import { hashStr, type DeskFolder, type DeskModel, type DeskSession } from './model';
+import { hashStr, teamTint, type DeskFolder, type DeskModel, type DeskSession } from './model';
 
 /** A station is CELL_W×CELL_H tiles; the robot never leaves it. From the
  *  top: a band for its marker, the robot and its console, a band for its name. */
@@ -29,8 +35,38 @@ export type Station = {
   holoX: number; holoY: number;
   /** Centre of the name, under the station. */
   labelX: number; labelY: number;
+  /** The team it leads or works in (sub-sessions), if any. */
+  team: Team | null;
+  /** It leads `team`: its cell is the dais. */
+  lead: boolean;
   plot: Plot;
 };
+
+/** A session and the sub-sessions that work for it: one rug on the deck. */
+export type Team = {
+  leadId: string;
+  /** Every descendant, in the sidebar's order. */
+  crewIds: string[];
+  tint: string;
+  /** Its block of cells, world pixels: the lead's row, then its crew's. */
+  x: number; y: number; w: number; h: number;
+};
+
+/** A console nobody sits at: the next robot of this folder appears there. */
+export type Slot = {
+  /** Top-left of the cell, world pixels. */
+  x: number; y: number;
+  deskX: number; deskY: number;
+  holoX: number; holoY: number;
+};
+
+/** A deck being built (on an islet: a first plank): a new folder on this machine. */
+export type Site = { x: number; y: number; w: number; h: number; small: boolean };
+
+/** Top-left of the emitter (9×4) a site's "+" floats over. */
+export function sitePad(site: Site): { x: number; y: number } {
+  return { x: Math.round(site.x + site.w / 2) - 4, y: site.small ? site.y + site.h - 14 : site.y + Math.round(site.h / 2) + 6 };
+}
 
 export type Plot = {
   key: string;
@@ -40,6 +76,8 @@ export type Plot = {
   /** World pixels. */
   x: number; y: number; w: number; h: number;
   stations: Station[];
+  teams: Team[];
+  slot: Slot;
 };
 
 export type Island = {
@@ -56,6 +94,8 @@ export type Island = {
   /** A machine without a session: a rock and a small beacon. */
   small: boolean;
   seed: number;
+  /** World pixels (relative to the island until `buildWorld` places it). */
+  site: Site;
 };
 
 export type Zone = { id: string; name: string; x: number; y: number; w: number; h: number };
@@ -80,6 +120,10 @@ const ZONE_GAP = 9;       // water between folders
 const ISLET_W = 5;
 const ISLET_H = 4;
 const ISLET_GAP = 2;
+const SITE = 4;           // tiles: the deck being built is a square
+const CREW_COLS = 3;      // a team's crew stands in rows of this many
+/** The lead stands this many pixels higher: on its dais. */
+export const DAIS_LIFT = 3;
 
 type Box = { w: number; h: number; px: number; py: number };
 
@@ -121,13 +165,47 @@ function shortLabel(path: string): string {
   return parts.length ? parts[parts.length - 1] : path;
 }
 
-function gridFor(count: number): { cols: number; rows: number } {
-  if (count <= 3) return { cols: Math.max(1, count), rows: 1 };
-  const cols = Math.min(4, Math.ceil(Math.sqrt(count * 1.4)));
-  return { cols, rows: Math.ceil(count / cols) };
+/**
+ * What stands on a deck, in cells: a session alone (1×1), a team (its lead's
+ * row over its crew's rows), and the free console (`lead` null, always last).
+ */
+type Unit = { w: number; h: number; cx: number; cy: number; lead: DeskSession | null; crew: DeskSession[] };
+
+/**
+ * Seat the units on a grid: teams first, then the sessions alone, the free
+ * console last — each at the first free place, row by row. A short deck is
+ * one row; a longer one leans wide. Returns the grid used.
+ */
+function seat(units: Unit[]): { cols: number; rows: number } {
+  const cells = units.reduce((sum, u) => sum + u.w * u.h, 0);
+  const lean = cells <= 4 ? cells : Math.min(4, Math.ceil(Math.sqrt(cells * 1.4)));
+  const width = Math.max(lean, ...units.map((u) => u.w));
+  const taken = new Set<number>();
+  const free = (x: number, y: number, u: Unit) => {
+    for (let j = 0; j < u.h; j += 1) for (let i = 0; i < u.w; i += 1) if (taken.has((y + j) * width + x + i)) return false;
+    return true;
+  };
+  let cols = 0;
+  let rows = 0;
+  for (const u of units) {
+    let placed = false;
+    for (let y = 0; !placed; y += 1) {
+      for (let x = 0; x + u.w <= width && !placed; x += 1) {
+        if (!free(x, y, u)) continue;
+        for (let j = 0; j < u.h; j += 1) for (let i = 0; i < u.w; i += 1) taken.add((y + j) * width + x + i);
+        u.cx = x; u.cy = y;
+        cols = Math.max(cols, x + u.w);
+        rows = Math.max(rows, y + u.h);
+        placed = true;
+      }
+    }
+  }
+  return { cols, rows };
 }
 
-type Draft = Box & { key: string; cwd: string; sessions: DeskSession[]; cols: number; rows: number };
+type Draft = Box & { key: string; cwd: string; units: Unit[]; cols: number; rows: number };
+
+const NOT_FOLDED: ReadonlySet<string> = new Set();
 
 function buildIsland(vpsId: string, name: string, folderId: string, sessions: DeskSession[]): {
   island: Omit<Island, 'tx' | 'ty'>; drafts: Draft[];
@@ -138,28 +216,36 @@ function buildIsland(vpsId: string, name: string, folderId: string, sessions: De
     return {
       island: {
         vpsId, name, folderId, tw: ISLET_W, th: ISLET_H, ground, plots: [],
-        beaconX: (ISLET_W * T) / 2, beaconY: 2.6 * T, small: true, seed,
+        beaconX: (ISLET_W * T) / 2 - 12, beaconY: 2.6 * T, small: true, seed,
+        // Beside the small beacon: where the islet's first deck will go.
+        site: { x: (ISLET_W * T) / 2 + 2, y: T + 2, w: 26, h: 26, small: true },
       },
       drafts: [],
     };
   }
-  // The sidebar's groups, in its order.
-  const groups = new Map<string, DeskSession[]>();
-  for (const s of sessions) {
-    const key = sidebarPathKey(s.cwd);
-    const list = groups.get(key);
-    if (list) list.push(s);
-    else groups.set(key, [s]);
-  }
-  const drafts: Draft[] = [...groups.entries()].map(([key, list]) => {
-    const { cols, rows } = gridFor(list.length);
+  // The sidebar's groups, in its order: by directory, a sub-session under its
+  // parent (on the parent's deck, whatever its own directory).
+  const drafts: Draft[] = nestSubSessions(sessions, NOT_FOLDED).map((group) => {
+    const teams: Unit[] = [];
+    const alone: Unit[] = [];
+    for (const row of group.rows) {
+      if (row.depth > 0) continue; // already in its root's crew
+      const crew = row.descendants.length;
+      if (!crew) { alone.push({ w: 1, h: 1, cx: 0, cy: 0, lead: row.item, crew: [] }); continue; }
+      const cols = Math.min(crew, CREW_COLS);
+      teams.push({ w: cols, h: 1 + Math.ceil(crew / cols), cx: 0, cy: 0, lead: row.item, crew: row.descendants });
+    }
+    const units = [...teams, ...alone, { w: 1, h: 1, cx: 0, cy: 0, lead: null, crew: [] }];
+    const { cols, rows } = seat(units);
     return {
-      key, cwd: key, sessions: list, cols, rows,
+      key: group.path, cwd: group.path, units, cols, rows,
       w: cols * CELL_W + PLOT_PAD * 2, h: rows * CELL_H + PLOT_PAD * 2, px: 0, py: 0,
     };
   });
+  // The deck being built is packed with the others: the shortest, so the last.
+  const site: Box = { w: SITE, h: SITE, px: 0, py: 0 };
   // An island is looked at alone, on a wide stage: it leans wide, firmly.
-  const inner = pack(drafts, PLOT_GAP, 2.1, 1.3);
+  const inner = pack([...drafts, site], PLOT_GAP, 2.1, 1.3);
   const innerW = Math.max(inner.w, 9);
   const innerH = inner.h;
   const tw = innerW + MARGIN * 2;
@@ -169,6 +255,7 @@ function buildIsland(vpsId: string, name: string, folderId: string, sessions: De
     island: {
       vpsId, name, folderId, tw, th, ground: roundedGround(tw, th, seed, 3), plots: [],
       beaconX: 2.2 * T, beaconY: (HEAD - 0.1) * T, small: false, seed,
+      site: { x: (site.px + MARGIN) * T, y: (site.py + HEAD) * T, w: SITE * T, h: SITE * T, small: false },
     },
     drafts,
   };
@@ -258,33 +345,63 @@ export function buildWorld(model: DeskModel): World {
     for (const { b, x: ix, y: iy } of block.placed) {
       const tx = block.px + ix;
       const ty = block.py + iy;
-      const island: Island = { ...b.island, tx, ty, plots: [] };
+      const island: Island = {
+        ...b.island, tx, ty, plots: [],
+        site: { ...b.island.site, x: b.island.site.x + tx * T, y: b.island.site.y + ty * T },
+      };
       for (const d of b.drafts) {
+        const x0 = (tx + d.px + PLOT_PAD) * T;
+        const y0 = (ty + d.py + PLOT_PAD) * T;
+        // A cell (it may sit half a column off: a lead centred over its crew).
+        const cell = (col: number, row: number) => ({ x: x0 + col * CELL_W * T, y: y0 + row * CELL_H * T });
+        const console = (cx: number, cy: number, lift = 0) => ({
+          x: cx, y: cy, deskX: cx + 30, deskY: cy + 42 - lift, holoX: cx + 34, holoY: cy + 8 - lift,
+        });
         const plot: Plot = {
           key: `${island.vpsId}\n${d.key}`, vpsId: island.vpsId, cwd: d.cwd, label: shortLabel(d.cwd),
-          x: (tx + d.px) * T, y: (ty + d.py) * T, w: d.w * T, h: d.h * T, stations: [],
+          x: (tx + d.px) * T, y: (ty + d.py) * T, w: d.w * T, h: d.h * T, stations: [], teams: [],
+          slot: console(x0, y0),
         };
-        d.sessions.forEach((s, i) => {
-          const cx = plot.x + (PLOT_PAD + (i % d.cols) * CELL_W) * T;
-          const cy = plot.y + (PLOT_PAD + Math.floor(i / d.cols) * CELL_H) * T;
+        const seats: string[] = [];
+        const stand = (s: DeskSession, col: number, row: number, team: Team | null, lead: boolean) => {
+          const { x: cx, y: cy } = cell(col, row);
+          const lift = lead ? DAIS_LIFT : 0;
           const station: Station = {
-            id: s.id, x: cx, y: cy, plot,
-            deskX: cx + 30, deskY: cy + 42,
-            seatX: cx + 30, seatY: cy + 35,
-            restX: cx + 11, restY: cy + 42,
-            holoX: cx + 34, holoY: cy + 8,
-            labelX: cx + 24, labelY: cy + 46,
+            id: s.id, plot, team, lead, ...console(cx, cy, lift),
+            seatX: cx + 30, seatY: cy + 35 - lift,
+            restX: cx + 11, restY: cy + 42 - lift,
+            // A lead's name clears the lip of its dais.
+            labelX: cx + 24, labelY: cy + 46 + (lead ? 2 : 0),
           };
           plot.stations.push(station);
           stations.set(s.id, station);
-        });
+          seats.push(`${s.id}@${col},${row}`);
+        };
+        for (const u of d.units) {
+          if (!u.lead) { plot.slot = console(cell(u.cx, u.cy).x, cell(u.cx, u.cy).y); seats.push(`+@${u.cx},${u.cy}`); continue; }
+          if (!u.crew.length) { stand(u.lead, u.cx, u.cy, null, false); continue; }
+          const at = cell(u.cx, u.cy);
+          const team: Team = {
+            leadId: u.lead.id, crewIds: u.crew.map((s) => s.id), tint: teamTint(u.lead),
+            x: at.x, y: at.y, w: u.w * CELL_W * T, h: u.h * CELL_H * T,
+          };
+          plot.teams.push(team);
+          seats.push(`team:${team.tint}`);
+          // The lead, centred over its crew; a short last row of crew, centred too.
+          stand(u.lead, u.cx + (u.w - 1) / 2, u.cy, team, true);
+          u.crew.forEach((s, i) => {
+            const row = Math.floor(i / u.w);
+            const inRow = Math.min(u.w, u.crew.length - row * u.w);
+            stand(s, u.cx + (u.w - inRow) / 2 + (i % u.w), u.cy + 1 + row, team, false);
+          });
+        }
         island.plots.push(plot);
-        shape.push(`${plot.key}:${d.px},${d.py}:${d.sessions.map((s) => s.id).join(',')}`);
+        shape.push(`${plot.key}:${d.px},${d.py}:${seats.join(',')}`);
       }
       island.beaconX += tx * T;
       island.beaconY += ty * T;
       islands.push(island);
-      shape.push(`${island.vpsId}@${tx},${ty}:${island.tw}x${island.th}`);
+      shape.push(`${island.vpsId}@${tx},${ty}:${island.tw}x${island.th}:${island.site.x},${island.site.y}`);
       if (!island.small) home = grow(home, tx * T, ty * T, island.tw * T, island.th * T);
     }
   }

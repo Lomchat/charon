@@ -121,6 +121,37 @@ its robot's state and plays nothing.
   quest log and the counters are fleet-wide.
 - **The map** is a way to choose: a click on an island goes there.
 
+### What a click picks
+
+On an island, only two things answer a click (`Game.pickAt`, the pointer says
+so): **a robot**, which selects it, and **a "+"**, which opens the new-agent
+wizard. A deck, the grass, the water are nothing to select: a click there lets
+go of the selected robot.
+
+- **A deck's free console** (`plot.slot`): the last place of every deck — a
+  dim console nobody sits at, a "+" on its screen. The wizard opens on that
+  machine and that folder; the robot appears there.
+- **The deck being built** (`island.site`; on an islet, a first plank): a new
+  folder on that machine. `N` does the same for the island on stage — or
+  beside the selected robot, in its folder.
+
+### Teams
+
+A session and its sub-sessions (`parentSessionId`) stand together, nested the
+way the sidebar nests them (`nestSubSessions`: a sub-session on its parent's
+deck, whatever its own directory; a grandchild in its root's team). No line
+between them — the ground says it:
+
+- **one rug** in the team's colour (`teamTint`: the lead's own colour, else
+  one picked by its id) under the whole block;
+- **the lead** centred at the head of it, raised on a dais, a mast with a
+  pennant at its corner;
+- **its crew** in rows of three in front of it.
+
+Pointing at or selecting one of them lights the rug's edge. In the drawer,
+`▲` is the robot it works for and `▼` the ones that work for it: each goes
+there.
+
 | A robot… | means |
 | --- | --- |
 | stands beside its console | idle |
@@ -130,7 +161,7 @@ its robot's state and plays nothing.
 | has `✓` | finished, unread |
 | has `✖`, smokes | failed turn or crashed session |
 | sits, dark | asleep |
-| is circled by drones | one per running background task |
+| stands beside its console, circled by drones | its turn is over, background tasks still run: one drone each |
 
 **Nothing is written under a working robot**: the holo screen's icon says the
 kind of action, the unit panel the command. A deck of command lines is
@@ -159,7 +190,10 @@ portrait, hovering the level explains it with that robot's numbers.
   its rate-limit windows as gauges — how full, the pace mark, when it empties,
   how many robots run on it. Folded, it keeps each account's fullest window.
 - **Island selector**: the map, one card per inhabited machine, the empty
-  machines behind `+N` (their islet offers "recruit").
+  machines behind `+N` (their islet has a "+": its first agent).
+- **The tab**: its favicon and title wear the number of sessions that want
+  you (finished or failed unread, waiting on an answer) — Charon's own
+  `TabNotificationBadge`, by `attentionForRow`, like the hub's tab.
 - **Quests**: every pending gate and every unread finish, oldest first within
   blocking → async → failed → done. A permission is answered in place
   (pessimistic: the card leaves when the summary says the gate is gone).

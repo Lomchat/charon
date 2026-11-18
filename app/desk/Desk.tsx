@@ -40,10 +40,12 @@ import NewSessionWizard from '@/app/NewSessionWizard';
 import { useCacheTick } from '@/app/PromptCacheMarks';
 import PromptModal from '@/app/PromptModal';
 import SessionContextMenu from '@/app/SessionContextMenu';
+import TabNotificationBadge from '@/app/TabNotificationBadge';
 import { canResumeSession, canSleepSession } from '@/app/sessionBulkActions';
 import { sidebarPathKey } from '@/app/sidebarPathGroups';
 import { api } from '@/lib/api';
 import { isCacheWarm, sessionCacheReading } from '@/lib/promptCache';
+import { attentionForRow } from '@/lib/sessionAttention';
 import type { SessionActivity } from '@/lib/sessionActivity';
 import type { SessionSummary } from '@/lib/sessionSummary';
 import type { SyncStamp } from '@/lib/sync/protocol';
@@ -51,7 +53,7 @@ import type { Vps, VpsFolder, VpsPath } from '@/lib/types/api';
 import { dropActivity, putActivity, replaceActivities } from './activityStore';
 import { readBest, useArcade } from './arcadeStore';
 import { Game, type Pick, type Scene } from './game/game';
-import { agentName, folderOf, moodOf, wantsYou, type Mood } from './game/model';
+import { agentName, folderOf, moodOf, teamTint, wantsYou, type Mood } from './game/model';
 import { homeIsland, islandsOf } from './islands';
 import { questsOf, type Quest } from './quests';
 import { setSound, sfx } from './sound';
@@ -62,7 +64,7 @@ import LimitsPanel from './ui/LimitsPanel';
 import QuestLog from './ui/QuestLog';
 import SessionModal from './ui/SessionModal';
 import TopBar, { type Tally } from './ui/TopBar';
-import UnitPanel, { PlacePanel } from './ui/UnitPanel';
+import UnitPanel from './ui/UnitPanel';
 
 // The safety net keeps Charon's own rhythm (§14.24): 60 s, 15 s on a hub too
 // old to publish summaries.
@@ -152,7 +154,8 @@ export default function Desk({ vpsList, folders, vpsPaths = [], initialSummaries
   const [menu, setMenu] = useState<{ id: string; x: number; y: number } | null>(null);
   const [renaming, setRenaming] = useState<string | null>(null);
   const [deleting, setDeleting] = useState<string | null>(null);
-  const [recruit, setRecruit] = useState<{ vpsId: string; cwd: string | null } | null>(null);
+  // The wizard for a new agent: on that machine, in that folder (null: to be chosen).
+  const [recruit, setRecruit] = useState<{ vpsId: string | null; cwd: string | null } | null>(null);
   const [busy, setBusy] = useState<ReadonlySet<string>>(() => new Set());
 
   // Hidden sessions stay out of every list but the eye view (§14.118).
@@ -162,6 +165,12 @@ export default function Desk({ vpsList, folders, vpsPaths = [], initialSummaries
   );
   const byId = useMemo(() => new Map(sessions.map((s) => [s.id, s] as const)), [sessions]);
   const quests = useMemo(() => questsOf(sessions), [sessions]);
+  // The sessions that want you — finished unread, failed unread, waiting on an
+  // answer: the count the hub's own tab wears (HeaderSessionNav), by the same
+  // predicate. It goes on this tab's favicon and title too.
+  const wanting = useMemo(() => sessions.filter((s) => attentionForRow(s) != null).length, [sessions]);
+  // The page's own title, as the server wrote it (pages.ts): the count goes before it.
+  const [pageTitle] = useState(() => document.title);
   const tally = useMemo(() => {
     const t: Tally = { blocked: 0, question: 0, done: 0, error: 0, work: 0, bg: 0, idle: 0, sleep: 0 };
     for (const s of sessions) t[moodOf(s)] += 1;
@@ -202,6 +211,23 @@ export default function Desk({ vpsList, folders, vpsPaths = [], initialSummaries
   const renamingSession = renaming ? byId.get(renaming) ?? null : null;
   const deletingSession = deleting ? byId.get(deleting) ?? null : null;
   const modal = Boolean(open || help || recruit || renaming || deleting);
+  // The selected robot's team (sub-sessions): who it works for, who works for
+  // it, and the colour of their rug — its root's, as on the board.
+  const selectedLead = selected?.parentSessionId ? byId.get(selected.parentSessionId) ?? null : null;
+  const selectedCrew = useMemo(
+    () => (selectedId ? sessions.filter((s) => s.parentSessionId === selectedId) : []),
+    [sessions, selectedId],
+  );
+  const selectedTint = useMemo(() => {
+    if (!selected || (!selectedLead && !selectedCrew.length)) return null;
+    let root = selected;
+    for (let hops = 0; hops < 8 && root.parentSessionId; hops += 1) {
+      const up = byId.get(root.parentSessionId);
+      if (!up || up.vpsId !== root.vpsId) break;
+      root = up;
+    }
+    return teamTint(root);
+  }, [selected, selectedLead, selectedCrew, byId]);
 
 
   /* ─────────────────────────────────────────────────────────── the board ── */
@@ -270,12 +296,19 @@ export default function Desk({ vpsList, folders, vpsPaths = [], initialSummaries
         setMenu(null);
         // On the map, a click on an island goes there (and keeps the robot it hit).
         if (sceneRef.current?.kind === 'map' && next) {
-          const vpsId = next.kind === 'vps' ? next.id : next.kind === 'plot' ? next.vpsId : board.islandOf(next.id);
+          const vpsId = next.kind === 'vps' ? next.id : next.kind === 'agent' ? board.islandOf(next.id) : next.vpsId;
           if (vpsId) travelRef.current({ kind: 'island', id: vpsId });
           setPick(next.kind === 'agent' ? next : null);
           return;
         }
-        setPick(next);
+        // A "+": a new agent there — that deck's folder, or one to choose.
+        if (next?.kind === 'spawn') {
+          setRecruit({ vpsId: next.vpsId, cwd: next.cwd === '~' ? null : next.cwd });
+          return;
+        }
+        // On an island only a robot is selected: a click on a deck, the grass
+        // or the water lets go of the one that was.
+        setPick(next?.kind === 'agent' ? next : null);
         if (how === 'double' && next?.kind === 'agent') setOpenId(next.id);
       },
       onZoom: setZoom,
@@ -675,7 +708,15 @@ export default function Desk({ vpsList, folders, vpsPaths = [], initialSummaries
           if (selectedPermission && !busy.has(selectedPermission.key)) onPermission(selectedPermission, true);
           break;
         case 'n':
-          if (selectedPermission && !busy.has(selectedPermission.key)) onPermission(selectedPermission, false);
+          // "No" to the permission of the selected robot; with none pending,
+          // "new": an agent on the island on stage (beside the selected robot).
+          if (selectedPermission) {
+            if (!busy.has(selectedPermission.key)) onPermission(selectedPermission, false);
+          } else {
+            const here = sceneRef.current?.kind === 'island' ? sceneRef.current.id : null;
+            const cwd = selected && selected.vpsId === here ? sidebarPathKey(selected.cwd) : null;
+            setRecruit({ vpsId: here, cwd: cwd === '~' ? null : cwd });
+          }
           break;
         case 'r':
           if (selectedId && canRead) onRead(selectedId);
@@ -694,7 +735,7 @@ export default function Desk({ vpsList, folders, vpsPaths = [], initialSummaries
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [modal, arcade.on, menu, selectedId, selectedPermission, selectedMood, canRead, busy, inhabited, nextQuest, openSession,
+  }, [modal, arcade.on, menu, selectedId, selected, selectedPermission, selectedMood, canRead, busy, inhabited, nextQuest, openSession,
     select, onPermission, onRead, lifecycle, travel, stepIsland, toggleMap, play]);
 
   /* ─────────────────────────────────────────────────────────────── render ── */
@@ -706,28 +747,9 @@ export default function Desk({ vpsList, folders, vpsPaths = [], initialSummaries
       .map((s) => ({ id: s.id, name: s.name ?? null, handle: s.handle as string, status: String(s.liveStatus ?? s.status) }));
   }, [all, open]);
 
-  const place = useMemo(() => {
-    if (!pick || pick.kind === 'agent') return null;
-    const vpsId = pick.kind === 'vps' ? pick.id : pick.vpsId;
-    const machine = vpsById.get(vpsId);
-    if (!machine) return null;
-    const here = sessions.filter((s) => s.vpsId === vpsId);
-    if (pick.kind === 'vps') {
-      const state = machine.agentStatus === 'ok' ? 'agent connected' : `agent ${machine.agentStatus}`;
-      return {
-        title: machine.name, vpsId, cwd: null as string | null,
-        lines: [`${here.length} agent${here.length === 1 ? '' : 's'} · ${state}`],
-      };
-    }
-    const n = here.filter((s) => sidebarPathKey(s.cwd) === pick.cwd).length;
-    return {
-      title: pick.cwd, vpsId, cwd: pick.cwd === '~' ? null : pick.cwd,
-      lines: [`${machine.name} · ${n} agent${n === 1 ? '' : 's'} on this deck`],
-    };
-  }, [pick, vpsById, sessions]);
 
   return (
-    <div className={`desk${arcade.on ? ' is-arcade' : ''}${(selected && !open) || place ? ' has-drawer' : ''}`}>
+    <div className={`desk${arcade.on ? ' is-arcade' : ''}${selected && !open ? ' has-drawer' : ''}`}>
       {/* The board mounts its canvas and its labels in here. */}
       <div className="dk-stage" ref={stageRef} />
 
@@ -808,6 +830,10 @@ export default function Desk({ vpsList, folders, vpsPaths = [], initialSummaries
             session={selected}
             vps={vpsById.get(selected.vpsId) ?? null}
             permission={selectedPermission}
+            lead={selectedLead}
+            crew={selectedCrew}
+            teamTint={selectedTint}
+            onVisit={visit}
             busy={selectedPermission ? busy.has(selectedPermission.key) : busy.has(`${selected.id}:read`)}
             orderRef={orderRef}
             // Every robot, a permission pending or not (Y / N then need Esc
@@ -826,17 +852,9 @@ export default function Desk({ vpsList, folders, vpsPaths = [], initialSummaries
             onClose={() => select(null)}
           />
         )}
-        {place && (
-          <PlacePanel
-            title={place.title}
-            lines={place.lines}
-            canRecruit
-            onRecruit={() => setRecruit({ vpsId: place.vpsId, cwd: place.cwd })}
-            onClose={() => select(null)}
-          />
-        )}
 
         <ArcadeHud />
+        <TabNotificationBadge count={wanting} name={pageTitle} />
 
         {error && (
           <button type="button" className="dk-banner" onClick={() => setError(null)} title="dismiss">
@@ -900,7 +918,7 @@ export default function Desk({ vpsList, folders, vpsPaths = [], initialSummaries
           vpsList={vps}
           vpsFolders={folders}
           vpsPaths={vpsPaths}
-          initialVpsId={recruit.vpsId}
+          initialVpsId={recruit.vpsId ?? undefined}
           initialCwd={recruit.cwd}
           onClose={() => setRecruit(null)}
           onCreatedSession={(created) => {

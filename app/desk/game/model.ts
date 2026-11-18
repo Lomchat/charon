@@ -11,7 +11,7 @@ export type DeskSession = Pick<SessionSummary,
   'id' | 'vpsId' | 'cwd' | 'name' | 'handle' | 'kind' | 'status' | 'liveStatus'
   | 'unreadStop' | 'pendingPermissions' | 'pendingBlocking' | 'pendingAsync'
   | 'color' | 'lastSeenSeq' | 'position' | 'createdAt' | 'model'>
-  & Partial<Pick<SessionSummary, 'runningBgTasks' | 'promptCache' | 'accountProfile'>>;
+  & Partial<Pick<SessionSummary, 'runningBgTasks' | 'promptCache' | 'accountProfile' | 'parentSessionId'>>;
 
 export type DeskVps = Pick<Vps, 'id' | 'name' | 'folderId' | 'agentStatus'>;
 export type DeskFolder = Pick<VpsFolder, 'id' | 'name'>;
@@ -70,6 +70,15 @@ export function moodOf(s: DeskSession): Mood {
   return 'idle';
 }
 
+/**
+ * A turn is running: the robot is at its console. Background tasks left
+ * behind by a turn that ended are not one — it stands by, its drones work on.
+ */
+export function inTurn(s: DeskSession): boolean {
+  const status = rowStatus(s);
+  return isWorkingStatus(status) && status !== 'background';
+}
+
 /** A mood that waits on the user (the quest log, the Tab cycle). */
 export function wantsYou(mood: Mood, s: DeskSession): boolean {
   if (mood === 'blocked' || mood === 'question' || mood === 'done') return true;
@@ -117,6 +126,31 @@ export const HEAT: Record<1 | 2 | 3 | 4, { ember: string; core: string }> = {
   2: { ember: '#d5622f', core: '#f3a352' },
   1: { ember: '#a3472f', core: '#dc7b46' },
 };
+/** The colour a session was given in Charon, when it is one a canvas can paint. */
+export function ownColour(s: Pick<DeskSession, 'color'>): string | null {
+  const c = typeof s.color === 'string' ? s.color.trim() : '';
+  return /^#[0-9a-f]{6}$/i.test(c) ? c : null;
+}
+
+/** Rug colours that read on a wooden deck, for a team whose lead wears none. */
+const TEAM_TINTS = ['#c2505c', '#3fa7a3', '#6d7fe0', '#a96fd0', '#5fae6a', '#d6893e'];
+
+/**
+ * The colour of a team — a session and the sub-sessions that work for it: its
+ * lead's own colour, else one picked by its id (the same team keeps its rug).
+ */
+export function teamTint(lead: Pick<DeskSession, 'id' | 'color'>): string {
+  return ownColour(lead) ?? TEAM_TINTS[hashStr(lead.id) % TEAM_TINTS.length];
+}
+
+/** `colour` pulled toward `other` by `amount` (0 = itself, 1 = the other); both `#rrggbb`. */
+export function blend(colour: string, other: string, amount: number): string {
+  const a = parseInt(colour.slice(1), 16);
+  const b = parseInt(other.slice(1), 16);
+  const mix = (shift: number) => Math.round(((a >> shift) & 255) * (1 - amount) + ((b >> shift) & 255) * amount);
+  return `#${((mix(16) << 16) | (mix(8) << 8) | mix(0)).toString(16).padStart(6, '0')}`;
+}
+
 export function hashStr(text: string): number {
   let h = 2166136261;
   for (let i = 0; i < text.length; i += 1) {

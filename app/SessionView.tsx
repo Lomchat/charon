@@ -233,7 +233,7 @@ export default function SessionView({
     cache: sharedCacheRef,
     onKilled,
     // The fetched view follows the RENDERED `showTools` (never a stored
-    // preference the caller did not pass: the desk renders tools shown).
+    // preference the caller did not pass: the desk sets its own).
     view: showToolsReady === false ? null : transcriptViewFor(showTools),
     provider: asSessionProvider(selected.kind),
   });
