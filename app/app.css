@@ -2404,6 +2404,11 @@ html[data-density='small'] .cs-sub-fold { font-size: 8.5px; }
   display: flex; align-items: center; gap: 6px;
 }
 .bubble .bubble-h .bubble-h-meta time { margin-left: 0; }
+/* Phone: a text bubble's time is at its foot only — at its head it crowds the
+   model chip. */
+@media (max-width: 820px) {
+  .bubble .bubble-h .bubble-h-meta time { display: none; }
+}
 /* Bottom mirror of the header meta (§ CLAUDE.md 11) — same info, end of a
    long message, right-aligned like the header. */
 .bubble .bubble-f {
@@ -2463,6 +2468,8 @@ html[data-density='small'] .cs-sub-fold { font-size: 8.5px; }
   .bubble-edge::after { right: -10px; }
 }
 .app-chat .bubble.is-folded, .app-chat .codex-plan-card.is-folded { padding-top: 3px; padding-bottom: 3px; cursor: pointer; }
+/* The header row folds too (or is the card's own toggle): all of it. */
+[data-fold-key] > .bubble-h, [data-fold-key] > header, .recap-bubble > .recap-label { cursor: pointer; }
 .app-chat .bubble.is-folded > .bubble-h, .app-chat .codex-plan-card.is-folded > header { margin-bottom: 0; flex-wrap: nowrap; min-width: 0; }
 .bubble.is-folded > :not(.bubble-h, .bubble-edge),
 .codex-plan-card.is-folded > :not(header, .bubble-edge),
@@ -2846,7 +2853,7 @@ html[data-density='small'] .cs-sub-fold { font-size: 8.5px; }
 .recap-bubble.is-folded .recap-label { flex: none; margin-bottom: 0; }
 .recap-fold-text { flex: 1 1 0; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .recap-bubble .recap-label {
-  display: inline-flex; align-items: center; gap: 5px; margin-bottom: 2px;
+  display: flex; align-items: center; gap: 5px; margin-bottom: 2px;
   color: var(--info); font: 10px/1.2 var(--display); letter-spacing: .14em; text-transform: uppercase;
 }
 .recap-bubble .recap-label svg { width: 11px; height: 11px; }

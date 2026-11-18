@@ -787,7 +787,7 @@ function ThinkingBubble({ m }: { m: Msg }) {
   return (
     <div className={`bubble thinking${isFolded ? ' is-folded' : ''}`} {...foldRootProps(m.id)}>
       <FoldEdge isFolded={isFolded} />
-      <header className="bubble-h" onClick={() => setOpen((v) => !v)} style={{ cursor: hasMore ? 'pointer' : 'default' }}>
+      <header className="bubble-h" data-head-toggle={hasMore || undefined} onClick={() => setOpen((v) => !v)}>
         {hasMore && <span className="caret">{open ? '▾' : '▸'}</span>}
         <span className="tag">thinking</span>
         {isFolded && <FoldLine foldKey={m.id} text={first} />}
@@ -835,7 +835,7 @@ function ToolUseCard({ m, attachedResult, orphaned = false }: { m: Msg; attached
     <div className={`bubble tool-use ${resultObj ? 'has-result' : orphaned ? 'interrupted' : 'running'}${resultObj?.isError ? ' err' : ''}${isFolded ? ' is-folded' : ''}`}
       {...foldRootProps(m.id)}>
       <FoldEdge isFolded={isFolded} />
-      <header className="bubble-h" onClick={() => setOpenInput((v) => !v)}>
+      <header className="bubble-h" data-head-toggle onClick={() => setOpenInput((v) => !v)}>
         <span className="caret">{openInput ? '▾' : '▸'}</span>
         <span className="tu-glyph">⚒</span>
         <span className="tu-name">{name}</span>
@@ -892,7 +892,7 @@ function ToolResultCard({ m }: { m: Msg }) {
   return (
     <div className={`bubble tool-result orphan${isFolded ? ' is-folded' : ''}`} {...foldRootProps(m.id)}>
       <FoldEdge isFolded={isFolded} />
-      <header className="bubble-h" onClick={() => isLong && setOpen((v) => !v)} style={{ cursor: isLong ? 'pointer' : 'default' }}>
+      <header className="bubble-h" data-head-toggle={isLong || undefined} onClick={() => isLong && setOpen((v) => !v)}>
         {isLong && <span className="caret">{open ? '▾' : '▸'}</span>}
         <span className="tag">tool_result</span>
         <span className="tr-preview">{preview}{content.length > 120 ? '…' : ''}</span>

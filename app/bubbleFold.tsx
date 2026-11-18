@@ -2,8 +2,10 @@
 /**
  * Fold any chat bubble to one line (CLAUDE.md §11). The bubble's LEFT EDGE is
  * the button, clickable over its whole height, so a long message folds from
- * wherever the reader is in it; a click anywhere on a folded line unfolds it;
- * Alt+click on an edge folds (or unfolds) every bubble of that chat.
+ * wherever the reader is in it; its HEADER row folds it too (unless that row is
+ * the card's own toggle: `data-head-toggle`); a click anywhere on a folded line
+ * unfolds it; Alt+click on an edge or header folds (or unfolds) every bubble of
+ * that chat.
  *
  * In memory only, keyed by row id: a reload unfolds everything. A streaming
  * bubble has no key (its id changes when it lands), so it cannot fold.
@@ -40,11 +42,14 @@ export function foldRootProps(key: string | null | undefined) {
   return key ? { 'data-fold-key': key, onClickCapture: onFoldClickCapture } : {};
 }
 
+/** A bubble's header row, as a direct child (the recap's is its label). */
+const HEAD = '.bubble-h, header, .recap-label';
+
 /** The bubble's body height in lines of its own font (header and footer left out). */
 function bodyLines(bubble: HTMLElement): number {
   let height = 0;
   for (const child of Array.from(bubble.children) as HTMLElement[]) {
-    if (child.matches('.bubble-h, header, .bubble-edge, .bubble-f')) continue;
+    if (child.matches(`${HEAD}, .bubble-edge, .bubble-f`)) continue;
     height += child.offsetHeight;
   }
   const fontSize = parseFloat(getComputedStyle(bubble).fontSize) || 14;
@@ -82,15 +87,21 @@ function onFoldClickCapture(e: MouseEvent<HTMLElement>) {
   const bubble = e.currentTarget;
   const target = e.target as Element;
   const onEdge = target.closest('.bubble-edge')?.parentElement === bubble;
+  const head = onEdge ? null : target.closest(HEAD);
+  const onHead = !!head && head.parentElement === bubble && !head.hasAttribute('data-head-toggle');
   if (!onEdge) {
-    if (!bubble.classList.contains('is-folded')) return;
-    // A folded line's own controls (copy, peer links) still work.
+    if (!onHead && !bubble.classList.contains('is-folded')) return;
+    // A header's own controls (copy, peer links) still work, and a drag that
+    // selected text in it is no click.
     if (target.closest('a, button, input, textarea, select, summary')) return;
+    const sel = window.getSelection();
+    if (sel && !sel.isCollapsed && sel.anchorNode && bubble.contains(sel.anchorNode)) return;
   }
-  // Capture phase: the header's own toggles (tool input, thinking) never see it.
+  // Capture phase: a folded card's own header toggle (tool input, thinking)
+  // never sees the click that unfolds it.
   e.preventDefault();
   e.stopPropagation();
-  toggle(bubble, onEdge && e.altKey);
+  toggle(bubble, (onEdge || onHead) && e.altKey);
 }
 
 /** Unfold the bubble holding `el` before a jump scrolls to it. */
