@@ -103,6 +103,22 @@ describe('limits', () => {
   });
 });
 
+describe('kill_sub_session', () => {
+  it('deletes only the caller\'s own child, with its subtree', async () => {
+    insert('boss', { handle: 'boss' });
+    insert('kid', { handle: 'kid', parentSessionId: 'boss' });
+    insert('grandkid', { handle: 'grandkid', parentSessionId: 'kid' });
+    insert('stranger', { handle: 'stranger' });
+    insert('sibling', { handle: 'sibling', parentSessionId: 'stranger' });
+    await expect(sub.killSubSession('boss', '@stranger')).rejects.toThrow(/not one of your/);
+    await expect(sub.killSubSession('boss', 'sibling')).rejects.toThrow(/not one of your/);
+    await expect(sub.killSubSession('kid', 'boss')).rejects.toThrow(/not one of your/);
+    expect(await sub.killSubSession('boss', '@KID')).toEqual(['grandkid', 'kid']);
+    const left = db.select().from(schema.agentSessions).all().map((r: any) => r.id).sort();
+    expect(left).toEqual(['boss', 'sibling', 'stranger']);
+  });
+});
+
 describe('deleting a parent', () => {
   it('re-roots its children (no FK) and republishes their summaries', async () => {
     insert('par');

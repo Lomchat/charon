@@ -430,6 +430,9 @@ export type AgentEvent = (
       // agent >= 0.134.0: nobody will watch the child (§14.119).
       unattended?: boolean;
     }
+  // TRANSIENT (agent >= 0.139.0): the parent asks the hub to DELETE one of its
+  // sub-sessions (charon_peer `kill_sub_session`); answered by `peer_kill_resolve`.
+  | { event: 'peer_kill_request'; session_id: string; request_id: string; handle: string }
   // turn_error (agent >= 0.36.0): typed failure off AssistantMessage.error
   // (authentication_failed, billing_error, …) — the same fact §14.65 infers by
   // regexing prose, stated.
@@ -471,6 +474,8 @@ export type AgentMethodName =
   | 'peer_spawn'
   | 'peer_spawn_resolve'
   | 'peer_interrupt'
+  | 'peer_kill'
+  | 'peer_kill_resolve'
   | 'ping'
   | 'list_sessions'
   | 'get_usage'

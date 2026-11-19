@@ -186,6 +186,9 @@ METHODS = {
     "peer_spawn",
     "peer_spawn_resolve",
     "peer_interrupt",
+    # Delete one of YOUR sub-sessions; the hub deletes (agent >= 0.139.0).
+    "peer_kill",
+    "peer_kill_resolve",
     "peer_status",
     "peer_conversation",
     "peer_inbox",

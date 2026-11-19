@@ -265,6 +265,8 @@ class Server:
         self.peer_timeout_tasks: dict[str, asyncio.Task] = {}
         # peer_spawn requests awaiting the hub's peer_spawn_resolve.
         self.spawn_waiters: dict[str, asyncio.Future] = {}
+        # peer_kill requests awaiting the hub's peer_kill_resolve.
+        self.kill_waiters: dict[str, asyncio.Future] = {}
         # In-flight spawns per parent: counted with the live children so parallel
         # calls cannot all pass the limit before any child exists.
         self.spawn_pending: dict[str, int] = {}
@@ -737,7 +739,7 @@ class Server:
         transient = event_name in (
             "shell_idle", "shell_status", "usage", "bg_task_progress", "generation_progress",
             "tool_progress", "edit_progress", "plan_progress",
-            "codex_signal", "peer_spawn_request", "compacting",
+            "codex_signal", "peer_spawn_request", "peer_kill_request", "compacting",
             # Which runtime a session runs in: hello re-states it on connect.
             "session_runtime",
         )
@@ -1726,6 +1728,59 @@ class Server:
             print(f"[peer_spawn] background delivery to {child_id} failed: {exc}",
                   file=sys.stderr, flush=True)
 
+    async def _peer_kill(self, params: dict[str, Any]) -> dict[str, Any]:
+        """Delete one of the source's sub-sessions (and its own sub-sessions).
+        Deletion is the hub's (DB cascade, §14.29): this checks what it can
+        locally, then waits for the hub's verdict (`peer_kill_resolve`)."""
+        source_id = params.get("source_session_id")
+        if not isinstance(source_id, str) or source_id not in self.sessions:
+            raise RpcError(ERR_SESSION_NOT_FOUND, "peer source session not found")
+        raw_handle = params.get("handle")
+        handle = raw_handle.strip().lstrip("@").lower() if isinstance(raw_handle, str) else ""
+        if not _PEER_HANDLE_RE.fullmatch(handle):
+            raise RpcError(ERR_INVALID_PARAMS, "handle must be a Charon session handle")
+        local = [sess for sess in self.sessions.values() if getattr(sess, "handle", None) == handle]
+        if local and not any(getattr(sess, "parent_session_id", None) == source_id for sess in local):
+            raise RpcError(ERR_INVALID_PARAMS, f"@{handle} is not one of your sub-sessions")
+        if not self.subscribers.get(source_id):
+            raise RpcError(ERR_SESSION_DEAD, "the Charon hub is not connected")
+        request_id = uuid.uuid4().hex
+        fut: asyncio.Future = asyncio.get_running_loop().create_future()
+        self.kill_waiters[request_id] = fut
+        try:
+            self._emit({"event": "peer_kill_request", "session_id": source_id,
+                        "request_id": request_id, "handle": handle})
+            try:
+                outcome = await asyncio.wait_for(fut, _SPAWN_HUB_TIMEOUT_S)
+            except asyncio.TimeoutError:
+                raise RpcError(ERR_INTERNAL, "the hub did not answer the delete request")
+        finally:
+            self.kill_waiters.pop(request_id, None)
+        if not outcome.get("ok"):
+            raise RpcError(ERR_INTERNAL, str(outcome.get("error") or "the hub refused to delete the session")[:500])
+        deleted = outcome.get("deleted")
+        return {"ok": True, "handle": handle,
+                "deleted": [h for h in deleted if isinstance(h, str)] if isinstance(deleted, list) else []}
+
+    def _peer_fail_target(self, target_id: str, error: str) -> None:
+        """A deleted session answers nothing: its open requests fail now
+        instead of timing out. A notice already read stays `delivered`."""
+        for message_id, row in self.peer_messages.items():
+            if row.get("target_session_id") != target_id \
+                    or row.get("status") in _PEER_FINAL_STATUSES or row.get("status") == "delivered":
+                continue
+            timeout = self.peer_timeout_tasks.pop(message_id, None)
+            if timeout is not None and not timeout.done():
+                timeout.cancel()
+            for key in ("_reply_buffer", "_turn_error", "_completing", "_expired"):
+                row.pop(key, None)
+            row["status"] = "failed"
+            row["error"] = error
+            row["updated_at"] = time.time()
+            if row.get("source_session_id") in self.sessions:
+                self._emit_peer_status(row)
+        self.peer_target_active.pop(target_id, None)
+
     # ── JSON-RPC dispatch ───────────────────────────────────────────────────
     # `dispatch` is a thin router: it groups methods by domain and delegates
     # to a per-domain async handler. The handlers operate on the same self.*
@@ -1735,6 +1790,7 @@ class Server:
     _META_METHODS = frozenset({
         "cli_agents",
         "peer_list", "peer_send", "peer_spawn", "peer_spawn_resolve", "peer_interrupt",
+        "peer_kill", "peer_kill_resolve",
         "peer_status", "peer_conversation", "peer_inbox", "peer_hidden_set",
         "hello", "ping", "list_sessions", "get_usage", "account_profiles",
         "accounts_set", "accounts_list", "accounts_merge_history", "accounts_transcript_check",
@@ -1917,6 +1973,17 @@ class Server:
         if method == "peer_spawn_resolve":
             request_id = params.get("request_id")
             fut = self.spawn_waiters.get(request_id) if isinstance(request_id, str) else None
+            if fut is None or fut.done():
+                return {"ok": True, "known": False}
+            fut.set_result(params)
+            return {"ok": True, "known": True}
+
+        if method == "peer_kill":
+            return await self._peer_kill(params)
+
+        if method == "peer_kill_resolve":
+            request_id = params.get("request_id")
+            fut = self.kill_waiters.get(request_id) if isinstance(request_id, str) else None
             if fut is None or fut.done():
                 return {"ok": True, "known": False}
             fut.set_result(params)
@@ -2697,6 +2764,7 @@ class Server:
             elif s is not None:
                 await s.stop(mark="killed")
             self.sessions.pop(sid, None)
+            self._peer_fail_target(sid, "the target session was deleted")
             self._unrestored.pop(sid, None)
             self.rings.pop(sid, None)
             self.subscribers.pop(sid, None)

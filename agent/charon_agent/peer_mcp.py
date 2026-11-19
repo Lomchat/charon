@@ -152,6 +152,22 @@ _TOOLS = [
         "annotations": {"readOnlyHint": False, "destructiveHint": True, "idempotentHint": True},
     },
     {
+        "name": "kill_sub_session",
+        "description": (
+            "Delete one of YOUR sub-sessions for good: stops it and removes it, its "
+            "transcript and its own sub-sessions from Charon. Cannot be undone. Use it "
+            "when the sub-session is no longer needed; to only stop a turn, use "
+            "interrupt_sub_session."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {"handle": {"type": "string", "description": "Sub-session handle, e.g. api or @api"}},
+            "required": ["handle"],
+            "additionalProperties": False,
+        },
+        "annotations": {"readOnlyHint": False, "destructiveHint": True, "idempotentHint": False},
+    },
+    {
         "name": "get_message_status",
         "description": (
             "Get the authoritative state of one sent or received peer message: "
@@ -279,6 +295,12 @@ def _handle(request: dict[str, Any], source_session_id: str, socket_path: str) -
                     "source_session_id": source_session_id,
                     "handle": args.get("handle"),
                 })
+            elif name == "kill_sub_session":
+                # Hub answer (25 s) + slack.
+                value = _agent_call(socket_path, "peer_kill", {
+                    "source_session_id": source_session_id,
+                    "handle": args.get("handle"),
+                }, timeout=45.0)
             elif name == "get_message_status":
                 value = _agent_call(socket_path, "peer_status", {
                     "source_session_id": source_session_id,

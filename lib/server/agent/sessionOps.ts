@@ -21,7 +21,7 @@ import {
 import type { PermissionMode } from '@/lib/server/hub/types';
 import type { WorkerEvent, WorkerStatus, AccountUsage } from '@/lib/server/hub/types';
 import { getAgentClientForVpsId } from './AgentClientPool';
-import { handlePeerSpawnRequest } from '@/lib/server/hub/subSessions';
+import { handlePeerKillRequest, handlePeerSpawnRequest } from '@/lib/server/hub/subSessions';
 import type { AgentSessionInfo } from './types';
 import { sendPushToAll } from '@/lib/server/hub/webPush';
 import {
@@ -2580,6 +2580,13 @@ export class SessionStream {
         // Hub-internal and transient: no row, no frame, no replay identity.
         void handlePeerSpawnRequest(this.id, ev).catch((e) => {
           console.warn(`[sub-sessions] spawn request failed: ${(e as Error)?.message ?? e}`);
+        });
+        break;
+      }
+      case 'peer_kill_request': {
+        // Hub-internal and transient, like peer_spawn_request.
+        void handlePeerKillRequest(this.id, ev).catch((e) => {
+          console.warn(`[sub-sessions] delete request failed: ${(e as Error)?.message ?? e}`);
         });
         break;
       }

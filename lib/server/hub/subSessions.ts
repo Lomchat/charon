@@ -2,6 +2,8 @@
 // transient `peer_spawn_request` event; the hub creates the child and answers
 // the daemon with `peer_spawn_resolve`, which then delivers the task over the
 // peer ledger. Limits and the mode ceiling are enforced on BOTH sides.
+// `kill_sub_session` comes the same way (`peer_kill_request` → delete →
+// `peer_kill_resolve`): a parent deletes only its OWN children, with their subtree.
 import { posix } from 'node:path';
 import { and, eq, inArray } from 'drizzle-orm';
 import { db, agentSessions, vps as vpsTable } from '@/lib/db';
@@ -261,5 +263,73 @@ export async function handlePeerSpawnRequest(parentId: string, ev: SpawnRequest)
     } catch (e) {
       console.warn(`[sub-sessions] orphan child ${createdId} cleanup failed: ${(e as Error)?.message ?? e}`);
     }
+  }
+}
+
+/** `rootId` and every descendant, deepest first (a child goes before its
+ *  parent, so no delete re-roots a row about to go). Bounded; a cycle stops. */
+export function subtreeDeepestFirst(rootId: string, childrenOf: (id: string) => string[]): string[] {
+  const order: string[] = [];
+  const visited = new Set<string>();
+  const walk = (id: string, depth: number) => {
+    if (visited.has(id) || depth > MAX_ANCESTOR_WALK) return;
+    visited.add(id);
+    for (const c of childrenOf(id)) walk(c, depth + 1);
+    order.push(id);
+  };
+  walk(rootId, 0);
+  return order;
+}
+
+type KillRequest = Extract<AgentEvent, { event: 'peer_kill_request' }>;
+
+/** Deletes the parent's sub-session `handle` and its own sub-sessions;
+ *  returns the deleted handles. Ownership is the DB's `parentSessionId`. */
+export async function killSubSession(parentId: string, rawHandle: unknown): Promise<string[]> {
+  const parent = db.select({ vpsId: agentSessions.vpsId }).from(agentSessions)
+    .where(eq(agentSessions.id, parentId)).get();
+  if (!parent) throw new Error('parent session not found');
+  const handle = typeof rawHandle === 'string' ? rawHandle.trim().replace(/^@/, '').toLowerCase() : '';
+  if (!handle) throw new Error('missing handle');
+  const child = db.select({ id: agentSessions.id, parentSessionId: agentSessions.parentSessionId })
+    .from(agentSessions)
+    .where(and(eq(agentSessions.vpsId, parent.vpsId), eq(agentSessions.handle, handle))).get();
+  if (!child) throw new Error(`@${handle} not found`);
+  if (child.parentSessionId !== parentId) throw new Error(`@${handle} is not one of your sub-sessions`);
+  const ids = subtreeDeepestFirst(child.id, (id) =>
+    db.select({ id: agentSessions.id }).from(agentSessions)
+      .where(eq(agentSessions.parentSessionId, id)).all().map((r) => r.id));
+  const { deleteSession } = await import('@/lib/server/agent/sessionOps');
+  const deleted: string[] = [];
+  for (const id of ids) {
+    const h = db.select({ h: agentSessions.handle }).from(agentSessions)
+      .where(eq(agentSessions.id, id)).get()?.h;
+    if ((await deleteSession(id)).deleted) deleted.push(h ?? id);
+  }
+  return deleted;
+}
+
+export async function handlePeerKillRequest(parentId: string, ev: KillRequest): Promise<void> {
+  const now = Date.now();
+  pruneSeen(now);
+  if (!ev.request_id || seen.has(ev.request_id)) return;
+  seen.set(ev.request_id, now);
+  let params: Record<string, unknown>;
+  try {
+    const deleted = await killSubSession(parentId, ev.handle);
+    console.log(`[sub-sessions] ${parentId} deleted ${deleted.join(', ')}`);
+    params = { request_id: ev.request_id, ok: true, deleted };
+  } catch (e) {
+    const msg = (e as Error)?.message ?? String(e);
+    console.warn(`[sub-sessions] delete from ${parentId} refused: ${msg}`);
+    params = { request_id: ev.request_id, ok: false, error: msg.slice(0, 300) };
+  }
+  const vpsId = db.select({ vpsId: agentSessions.vpsId }).from(agentSessions)
+    .where(eq(agentSessions.id, parentId)).get()?.vpsId;
+  if (!vpsId) return;
+  try {
+    await getAgentClientForVpsId(vpsId).call('peer_kill_resolve', params);
+  } catch (e) {
+    console.warn(`[sub-sessions] peer_kill_resolve failed: ${(e as Error)?.message ?? e}`);
   }
 }

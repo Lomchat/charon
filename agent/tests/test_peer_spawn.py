@@ -1,4 +1,4 @@
-"""Sub-sessions: peer_spawn / peer_spawn_resolve / peer_interrupt + parent persistence."""
+"""Sub-sessions: peer_spawn / peer_spawn_resolve / peer_interrupt / peer_kill + parent persistence."""
 import asyncio
 import os
 import sys
@@ -135,6 +135,26 @@ class PeerSpawnTestCase(unittest.TestCase):
             asyncio.run(self.server.dispatch(
                 "peer_interrupt", {"source_session_id": "p", "handle": "other"}, None))
         self.assertEqual(self.server.sessions["o"].interrupted, 0)
+
+    def test_kill_only_own_children_through_hub(self):
+        self.server.sessions["c"] = _Fake("c", "kid", parent="p")
+        self.server.sessions["o"] = _Fake("o", "other")
+        with self.assertRaises(RpcError):
+            asyncio.run(self.server.dispatch(
+                "peer_kill", {"source_session_id": "p", "handle": "other"}, None))
+        self.assertEqual(self.events, [])
+
+        async def run():
+            task = asyncio.create_task(self.server.dispatch(
+                "peer_kill", {"source_session_id": "p", "handle": "@Kid"}, None))
+            while not self.events:
+                await asyncio.sleep(0.01)
+            ev = self.events[0]
+            self.assertEqual((ev["event"], ev["handle"]), ("peer_kill_request", "kid"))
+            await self.server.dispatch("peer_kill_resolve", {
+                "request_id": ev["request_id"], "ok": True, "deleted": ["kid"]}, None)
+            return await task
+        self.assertEqual(asyncio.run(run()), {"ok": True, "handle": "kid", "deleted": ["kid"]})
 
     def test_peer_list_marks_children(self):
         self.server.sessions["c"] = _Fake("c", "kid", parent="p")

@@ -271,7 +271,7 @@ function shellArgv(argv: string[]): string {
 export type ToolFamily = 'shell' | 'edit' | 'read' | 'search' | 'web' | 'agent' | 'plan' | 'peer' | 'mcp' | 'other';
 
 const FAMILY: Array<[ToolFamily, RegExp]> = [
-  ['peer', /^mcp__charon_peer__|^(send_message|start_sub_session)$/i],
+  ['peer', /^mcp__charon_peer__|^(send_message|(start|interrupt|kill)_sub_session)$/i],
   ['agent', /^(agent|task|workflow|spawn_agent)$|^agents\//i],
   ['shell', /^(bash|shell|local_shell|exec|exec_command|run_terminal_cmd|bashoutput|monitor|command_execution|powershell)$/i],
   ['edit', /^(edit|write|multiedit|notebookedit|apply_patch|str_replace_editor|create_file|edit_file|delete_file|search_replace)$/i],

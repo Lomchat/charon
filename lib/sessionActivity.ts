@@ -41,7 +41,7 @@ export function isStateBeat(beat: ActivityBeat): boolean {
 export type ToolFamily = 'shell' | 'edit' | 'read' | 'search' | 'web' | 'agent' | 'plan' | 'peer' | 'other';
 
 const FAMILY: Array<[ToolFamily, RegExp]> = [
-  ['peer', /^mcp__charon_peer__|^send_message$|^start_sub_session$/i],
+  ['peer', /^mcp__charon_peer__|^send_message$|^(start|interrupt|kill)_sub_session$/i],
   ['agent', /^(agent|task|workflow|spawn_agent|taskcreate|taskoutput|taskstop)$/i],
   ['shell', /^(bash|shell|exec|exec_command|local_shell|run_terminal_cmd|bashoutput|killshell|monitor|command_execution)$/i],
   ['edit', /^(edit|write|multiedit|notebookedit|apply_patch|str_replace_editor|create_file|update_file|edit_file|file_change|delete_file)$/i],
