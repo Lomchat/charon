@@ -1480,17 +1480,21 @@ export default function SessionView({
             this bar is live STATE plus the only route to the per-task ⊘
             (§14.91). Gating it meant a reader in conversation view — the
             usual choice on a phone, where the preference is per-browser —
-            could neither see nor stop background work. */}
-        <BgTasksBar tasks={bgTasks} sessionId={sessionId} vpsId={vpsId} cwd={selected.cwd || null}
-          provider={asSessionProvider(sessionKind)}
-          sessionStatus={status ?? 'sleeping'} />
-        {/* What will wake the session later (CronCreate / ScheduleWakeup /
-            /loop), from its summary. Same placement, same reason. */}
-        <ScheduledTasksBar state={selected.scheduledTasks} sessionStatus={status ?? 'sleeping'} />
-        {/* What the session keeps working toward (§14.119). */}
-        {supportsSessionCapability(sessionKind, 'goal') && (
-          <GoalBar goal={selected.goal} sessionId={sessionId} provider={asSessionProvider(sessionKind)} />
-        )}
+            could neither see nor stop background work.
+            The wrapper is `display: contents` except on a phone holding two
+            strips or more: then they share ONE row (app.css). */}
+        <div className="status-strips">
+          <BgTasksBar tasks={bgTasks} sessionId={sessionId} vpsId={vpsId} cwd={selected.cwd || null}
+            provider={asSessionProvider(sessionKind)}
+            sessionStatus={status ?? 'sleeping'} />
+          {/* What will wake the session later (CronCreate / ScheduleWakeup /
+              /loop), from its summary. Same placement, same reason. */}
+          <ScheduledTasksBar state={selected.scheduledTasks} sessionStatus={status ?? 'sleeping'} />
+          {/* What the session keeps working toward (§14.119). */}
+          {supportsSessionCapability(sessionKind, 'goal') && (
+            <GoalBar goal={selected.goal} sessionId={sessionId} provider={asSessionProvider(sessionKind)} />
+          )}
+        </div>
         {goalEditorOpen && <GoalEditor sessionId={sessionId} provider={asSessionProvider(sessionKind)}
           initial={selected.goal} onClose={() => setGoalEditorOpen(false)} />}
 
