@@ -57,6 +57,12 @@ export function refreshAccounts(): Promise<void> {
   return rerunner.trigger();
 }
 
+/** A reading an action returned (a spent reset, §14.126): shown now, not
+ *  when its SSE frame lands. Newest still wins. */
+export function putAccountUsage(u: AccountUsage): void {
+  ingestUsage(u);
+}
+
 function ingestUsage(u: AccountUsage): void {
   const id = u.accountProfile;
   if (!id || !snapshot.data.accounts.some((a) => a.id === id)) return;

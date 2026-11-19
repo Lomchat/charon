@@ -69,10 +69,12 @@ function statusLabel(status: string | null): string {
   return status;
 }
 
-export default function RoutinesModal({ onClose, vpsList, vpsPaths, sessions, onOpenSession, initial }: {
+export default function RoutinesModal({ onClose, vpsList, vpsPaths, sessions, onOpenSession, initial, selectId }: {
   onClose: () => void;
   /** Open on a NEW routine prefilled with these (the composer's `/routine`). */
   initial?: Pick<RoutineInput, 'vpsId' | 'cwd' | 'kind' | 'prompt'> | null;
+  /** Open on this routine (the calendar's run), else the first one. */
+  selectId?: string | null;
   vpsList: Vps[];
   vpsPaths: VpsPath[];
   /** For the folder suggestions: where sessions already run. */
@@ -99,7 +101,8 @@ export default function RoutinesModal({ onClose, vpsList, vpsPaths, sessions, on
   useEffect(() => {
     api.listRoutines().then((r) => {
       setRoutines(r.routines);
-      if (r.routines.length && !initial) { setSel(r.routines[0].id); setDraft(draftOf(r.routines[0])); }
+      const first = r.routines.find((x) => x.id === selectId) ?? r.routines[0];
+      if (first && !initial) { setSel(first.id); setDraft(draftOf(first)); }
     }).catch((e) => { setRoutines([]); setError(e instanceof Error ? e.message : String(e)); });
     loadRuns();
     const t = setInterval(() => setNow(Date.now()), 30_000);

@@ -42,6 +42,7 @@ import NewSessionWizard from '@/app/NewSessionWizard';
 import { useCacheTick } from '@/app/PromptCacheMarks';
 import { useStableCallback } from '@/app/useStable';
 import PromptModal from '@/app/PromptModal';
+import ResetsModalHost from '@/app/ResetsModalHost';
 import SessionContextMenu from '@/app/SessionContextMenu';
 import TabNotificationBadge from '@/app/TabNotificationBadge';
 import { writeWorkspacePanelTab } from '@/app/workspacePanelState';
@@ -1177,6 +1178,8 @@ export default function Desk({ vpsList, folders, vpsPaths = [], initialSummaries
       )}
 
       {help && <Help onClose={() => setHelp(false)} />}
+      {/* The drawer's usage popover opens Charon's resets modal (§14.126). */}
+      <ResetsModalHost />
     </div>
     </FileLinkContext.Provider>
   );

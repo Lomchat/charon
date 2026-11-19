@@ -18,6 +18,8 @@ import {
   fmtPct, fmtReset, paceFraction, sevClass, usageCells, windowMsOf, type UsageCell,
 } from './usageGauges';
 import UsageAccountSwitch, { type AccountSwitchTarget } from './UsageAccountSwitch';
+import { IconArrowCounterclockwise } from './icons';
+import { openAccountResets } from './resetsStore';
 
 function fmtAgo(fetchedAt: number): string {
   const s = Math.max(0, Math.round((Date.now() - fetchedAt) / 1000));
@@ -146,15 +148,25 @@ function UsageAccount({ accountLabel }: { accountLabel: string | null }) {
 }
 
 /** The popover's head (popover kit, app.css § Popover kit): whose gauges, the
- *  plan, refresh. */
-function UsageHead({ provider, vpsName, plan, onRefresh }: {
+ *  plan, the banked resets (§14.126), refresh. */
+function UsageHead({ provider, vpsName, plan, onRefresh, usage }: {
   provider?: AgentKind | null; vpsName?: string | null; plan?: string | null; onRefresh?: () => void;
+  usage?: AccountUsage | null;
 }) {
+  // Only a hub account's reading carries resets, and only it can spend one.
+  const resets = usage?.scope === 'account' && usage.accountProfile ? usage.resets?.available ?? 0 : 0;
+  const account = usage?.accountProfile;
   return (
     <div className="pop-head">
       {provider ? <AgentLogo kind={provider} size={15} /> : null}
       <span className="pop-title">Usage{vpsName ? ` · ${vpsName}` : ''}</span>
       {plan ? <span className="pop-badge">{plan}</span> : null}
+      {resets > 0 && account ? (
+        <button type="button" className="pop-action um-resets" onClick={() => openAccountResets(account)}
+          title="banked limit resets" aria-label={`${resets} limit reset${resets > 1 ? 's' : ''} available`}>
+          <IconArrowCounterclockwise />{resets} reset{resets > 1 ? 's' : ''}
+        </button>
+      ) : null}
       {onRefresh ? <button type="button" className="pop-icon-btn" onClick={onRefresh} title="Refresh" aria-label="Refresh usage">↻</button> : null}
     </div>
   );
@@ -180,7 +192,7 @@ function UsageDetail({ usage, vpsName, onRefresh, accountLabel }: {
   }
   const live = (usage.windowsAt ?? 0) > usage.fetchedAt;
   return <>
-    <UsageHead provider={usage.provider} vpsName={vpsName} plan={usage.subscriptionType} onRefresh={onRefresh} />
+    <UsageHead provider={usage.provider} vpsName={vpsName} plan={usage.subscriptionType} onRefresh={onRefresh} usage={usage} />
     <UsageAccount accountLabel={accountLabel} />
     <div className="pop-tile um-bars"><UsageBars usage={usage} /></div>
     {/* Live 5h/7d windows outdate the poll; a failing poll then only

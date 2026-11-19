@@ -1,6 +1,6 @@
 import type { AccountProfile } from './accountProfiles';
 import type { AccountLoginAttempt, AccountsResponse } from './providerAccounts';
-import type { AccountUsage } from '@/lib/server/hub/types';
+import type { AccountResetOutcome, AccountUsage } from '@/lib/server/hub/types';
 import type { AccountProfilesResponse, CreateAccountProfileResponse, UpdateAccountProfileResponse, RoutineInput, RoutineRun, RoutineView, UserCommand, UserCommandInput } from './types/api';
 import type { CustomEndpoint, EndpointState } from '@/lib/customEndpoints';
 // Typed HTTP client for the dashboard's API routes.
@@ -562,6 +562,9 @@ export const api = {
   reorderAccounts: (provider: SessionProvider, order: string[]) => send<OkResponse>('PATCH', '/api/accounts', { provider, order }),
   removeAccount: (id: string) => send<OkResponse>('DELETE', '/api/accounts', { id }),
   refreshAccountUsage: (id: string) => send<{ usage: AccountUsage | null }>('POST', `/api/accounts/${encodeURIComponent(id)}/usage`, undefined, { timeoutMs: 60_000 }),
+  /** Spend one banked limit reset (§14.126) — irreversible at the provider. */
+  claimAccountReset: (id: string, grantId: string) =>
+    send<{ outcome: AccountResetOutcome; reason: string | null; usage: AccountUsage | null }>('POST', `/api/accounts/${encodeURIComponent(id)}/resets`, { grantId }, { timeoutMs: 90_000 }),
   switchSessionAccount: (sessionId: string, accountId: string) =>
     send<OkResponse & { restarted: boolean } & ActionSyncStamp>('POST', `/api/sessions/${encodeURIComponent(sessionId)}/account`, { accountId }, { timeoutMs: 120_000 }),
   getAccountProfiles: (vpsId?: string) => send<AccountProfilesResponse>('GET', `/api/account-profiles${vpsId ? `?vpsId=${encodeURIComponent(vpsId)}` : ''}`),

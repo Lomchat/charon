@@ -311,3 +311,67 @@ describe('usage gauges', () => {
     fetchSpy.mockRestore();
   });
 });
+
+describe('banked limit resets (§14.126)', () => {
+  it('spends ONLY a grant the hub read, ONCE for a double click, as the interactive CLI', async () => {
+    claudeRow('dddddddddddddddd', {}, { oauthAccount: { accountUuid: 'u', organizationUuid: 'org-1' } });
+    let left = 1;
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockImplementation(async (url) => {
+      if (String(url).includes('/reset_rate_limits')) { left = 0; return jsonResponse(200, { result: 'reset', resets_left: 0, cleared: ['seven_day'] }); }
+      return jsonResponse(200, {
+        seven_day: { utilization: left ? 92 : 0, resets_at: null },
+        cedar_ember: { eligible: true, grants: [{ id: 'full-reset-2611', label: 'Full reset', resets_left: left, clears: ['seven_day'],
+          usable_now: true, ends_at: '2026-12-10T22:00:00+00:00', percent_used: { seven_day: 92 } }] },
+      });
+    });
+    const engine = await import('@/lib/server/accounts/engine');
+    const usage = await engine.pollAccountUsage('dddddddddddddddd', { force: true });
+    expect(usage?.resets).toMatchObject({ available: 1, grants: [{ id: 'full-reset-2611', usable: true, left: 1 }] });
+    const claims = () => fetchSpy.mock.calls.filter(([u]) => String(u).includes('/reset_rate_limits'));
+
+    // A grant the hub was never shown is refused before any call.
+    expect((await engine.claimAccountReset('dddddddddddddddd', 'made-up')).outcome).toBe('unavailable');
+    expect(claims()).toHaveLength(0);
+
+    const [a, b] = await Promise.all([
+      engine.claimAccountReset('dddddddddddddddd', 'full-reset-2611'),
+      engine.claimAccountReset('dddddddddddddddd', 'full-reset-2611'),
+    ]);
+    expect(claims()).toHaveLength(1);
+    expect(a).toBe(b);
+    expect(a.outcome).toBe('reset');
+    const [u, init] = claims()[0]!;
+    expect(String(u)).toBe('https://api.anthropic.com/api/organizations/org-1/reset_rate_limits');
+    expect(JSON.parse(String(init?.body))).toMatchObject({ program: 'cedar_ember', grant_id: 'full-reset-2611' });
+    expect((init?.headers as Record<string, string>)['User-Agent']).toMatch(/^claude-cli\/\S+ \(external, cli\)$/);
+    // The fresh reading follows at once: refilled, nothing left to spend.
+    expect(a.usage).toMatchObject({ sevenDay: { utilization: 0 }, resets: { available: 0, grants: [] } });
+    fetchSpy.mockRestore();
+  });
+
+  it('Codex: reads the credits, spends the one picked, keeps them across a pushed reading', async () => {
+    const secret: CodexSecret = { idToken: 'h.e30.s', accessToken: 'at', refreshToken: 'rt', accountId: 'acct' };
+    db.insert(schema.providerAccounts).values({ id: 'eeeeeeeeeeeeeeee', provider: 'codex', credentials: sealSecret(secret), accountKey: 'k',
+      accessExpiresAt: Date.now() + 86_400_000, status: 'ok' }).run();
+    const credit = (id: string, expires: string) => ({ id, reset_type: 'codex_rate_limits', status: 'available', granted_at: '2026-11-01T00:00:00Z', expires_at: expires, title: 'Full reset' });
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockImplementation(async (url) => {
+      const u = String(url);
+      if (u.endsWith('/consume')) return jsonResponse(200, { code: 'reset', windows_reset: 1 });
+      if (u.endsWith('/rate-limit-reset-credits')) return jsonResponse(200, { credits: [credit('c-late', '2026-12-12T00:00:00Z'), credit('c-soon', '2026-11-30T00:00:00Z')], available_count: 2 });
+      return jsonResponse(200, { plan_type: 'pro', rate_limit: { primary_window: { used_percent: 80, limit_window_seconds: 604800, reset_at: 1795611960 } },
+        rate_limit_reset_credits: { available_count: 2, applicable_available_count: 2 } });
+    });
+    const engine = await import('@/lib/server/accounts/engine');
+    const usage = await engine.pollAccountUsage('eeeeeeeeeeeeeeee', { force: true });
+    // Soonest expiry first: use it or lose it.
+    expect(usage?.resets?.grants.map((g) => g.id)).toEqual(['c-soon', 'c-late']);
+    engine.ingestAccountCodexPush('eeeeeeeeeeeeeeee', { limit_id: 'codex', primary: { used_percent: 81, window_duration_mins: 10080, resets_at: 1795611960 } });
+    await vi.waitFor(() => expect(engine.accountUsage('eeeeeeeeeeeeeeee')?.sevenDay?.utilization).toBe(81));
+    expect(engine.accountUsage('eeeeeeeeeeeeeeee')?.resets?.available).toBe(2);
+    expect((await engine.claimAccountReset('eeeeeeeeeeeeeeee', 'c-late')).outcome).toBe('reset');
+    const consume = fetchSpy.mock.calls.find(([u]) => String(u).endsWith('/consume'))!;
+    expect(String(consume[0])).toBe('https://chatgpt.com/backend-api/wham/rate-limit-reset-credits/consume');
+    expect(JSON.parse(String(consume[1]?.body))).toMatchObject({ credit_id: 'c-late' });
+    fetchSpy.mockRestore();
+  });
+});

@@ -61,6 +61,8 @@ import { useModelNotices } from './useModelNotices';
 import SessionView from './SessionView';
 import HeaderSessionNav from './HeaderSessionNav';
 import AccountNav from './AccountNav';
+import ResetCalendar from './ResetCalendar';
+import ResetsModalHost from './ResetsModalHost';
 import { accountGroupRepresentative, buildAccountGroups, type AccountGroup } from '@/lib/accountGroups';
 import { useShowHidden } from './showPaused';
 import { dropOtherLoginUsage, putUsage, useUsageFeed } from './usageStore';
@@ -986,6 +988,9 @@ export default function HubPanel({ vpsList: initialVpsList, vpsFolders: initialF
   const [routinesOpen, setRoutinesOpen] = useState(false);
   // `/routine` in a composer: the modal opens on a new routine prefilled.
   const [routineDraft, setRoutineDraft] = useState<Pick<RoutineInput, 'vpsId' | 'cwd' | 'kind' | 'prompt'> | null>(null);
+  // A calendar run: the modal opens on that routine.
+  const [routineFocus, setRoutineFocus] = useState<string | null>(null);
+  const openRoutine = useCallback((id: string) => { setRoutineFocus(id); setRoutinesOpen(true); }, []);
   const newRoutineFrom = useCallback((draft: Pick<RoutineInput, 'vpsId' | 'cwd' | 'kind' | 'prompt'>) => {
     setRoutineDraft(draft);
     setRoutinesOpen(true);
@@ -2155,6 +2160,8 @@ export default function HubPanel({ vpsList: initialVpsList, vpsFolders: initialF
           >
             <IconTelegram />
           </button>
+          {/* Every account's weekly refills and banked resets, on a month (§14.126). */}
+          <ResetCalendar enabled={backends} onOpenRoutine={openRoutine} />
           <button className="head-btn model-notice-anchor" onClick={() => setAccountsOpen(true)}
             title={accountsNeedAttention(accountsState.data, backends) ? 'accounts — action needed' : 'accounts — sign in once, for every VPS'}
             aria-label="accounts" data-label="accounts">
@@ -2552,6 +2559,8 @@ export default function HubPanel({ vpsList: initialVpsList, vpsFolders: initialF
         onDismiss={dismissInstallNotif}
       />
 
+      {/* THE resets modal (§14.126): the usage popovers and the calendar open it. */}
+      <ResetsModalHost />
       {accountsOpen && <AccountsModal enabled={(p) => backends[p]} onClose={() => setAccountsOpen(false)}
         onLogin={(provider, account) => setHubLogin({ provider, accountId: account?.id ?? null })} />}
       {hubLogin && <AccountLoginModal key={`${hubLogin.provider}:${hubLogin.accountId ?? 'new'}`} provider={hubLogin.provider}
@@ -2629,8 +2638,8 @@ export default function HubPanel({ vpsList: initialVpsList, vpsFolders: initialF
         />
       )}
 
-      {routinesOpen && <RoutinesModal onClose={() => { setRoutinesOpen(false); setRoutineDraft(null); }} vpsList={vpsList} vpsPaths={vpsPaths} sessions={sessions}
-        onOpenSession={openSessionFromPanel} initial={routineDraft} />}
+      {routinesOpen && <RoutinesModal onClose={() => { setRoutinesOpen(false); setRoutineDraft(null); setRoutineFocus(null); }} vpsList={vpsList} vpsPaths={vpsPaths} sessions={sessions}
+        onOpenSession={openSessionFromPanel} initial={routineDraft} selectId={routineFocus} />}
       {settingsOpen && <SettingsModal onClose={() => { setSettingsOpen(false); setSettingsCat(null); }} vpsList={vpsList} initialCat={settingsCat ?? undefined} modelNotices={modelNotices} onModelsSeen={markModelsSeen} />}
       {dataOpen && (
         <DataModal

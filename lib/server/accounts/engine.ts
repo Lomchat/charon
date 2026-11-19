@@ -3,7 +3,7 @@ import { randomUUID } from 'node:crypto';
 import { eq, sql } from 'drizzle-orm';
 import { db, providerAccounts, vps as vpsTable } from '@/lib/db';
 import { SESSION_PROVIDERS, providerBackendState, providerLoginPatch, type SessionProvider } from '@/lib/sessionCapabilities';
-import type { AccountUsage } from '@/lib/server/hub/types';
+import type { AccountResetOutcome, AccountUsage } from '@/lib/server/hub/types';
 import type { AccountLoginAttempt, ProviderAccount } from '@/lib/providerAccounts';
 import type { AgentClient } from '@/lib/server/agent/AgentClient';
 import { getAgentClientForVpsId, listAgentClients } from '@/lib/server/agent/AgentClientPool';
@@ -14,10 +14,11 @@ import {
   type AccountRow, type ClaudeSecret, type CodexSecret, type CursorSecret,
 } from './store';
 import {
-  ProviderHttpError, claudeAuthorize, claudeExchange, claudeProfile, claudeRefresh, claudeSecretFrom, claudeUsage, claudePlan,
-  codexDevicePoll, codexDeviceStart, codexIdentity, codexRefresh, codexUsage,
+  ProviderHttpError, claudeAuthorize, claudeClaimReset, claudeExchange, claudeProfile, claudeRefresh, claudeSecretFrom, claudeUsage, claudePlan,
+  codexConsumeReset, codexDevicePoll, codexDeviceStart, codexIdentity, codexRefresh, codexResetCredits, codexUsage,
   type ClaudeAuthorize, type CodexDevice,
 } from './oauth';
+import { claudeClaimOutcome, claudeResets, codexClaimOutcome, codexResets, spendGrant } from './resets';
 
 /**
  * Hub-owned accounts, the live half (CLAUDE.md §14.115): sign-in attempts, the
@@ -41,18 +42,26 @@ type Attempt = {
   cursor?: { vpsId: string; loginId: string };
   cancelled?: boolean;
 };
-type UsageState = { last: AccountUsage | null; lastPollAt: number; hardRetryAt: number; inflight: Promise<AccountUsage | null> | null };
+type UsageState = {
+  last: AccountUsage | null; lastPollAt: number; hardRetryAt: number; inflight: Promise<AccountUsage | null> | null;
+  /** Codex reset credits in detail, re-read when their count moves or this ages (§14.126). */
+  creditDetails?: { body: unknown; count: number; at: number } | null;
+};
+export type ResetClaim = { outcome: AccountResetOutcome; reason: string | null; usage: AccountUsage | null };
 type EngineState = {
   attempts: Map<string, Attempt>;
   refreshing: Map<string, Promise<AccountRow | undefined>>;
   usage: Map<string, UsageState>;
   timer: ReturnType<typeof setInterval> | null;
   pushFailures: Map<string, number>;
+  /** One reset claim in flight per account: a double click spends ONE. */
+  claims?: Map<string, Promise<ResetClaim>>;
 };
 const g = globalThis as unknown as { _accountsEngine?: EngineState };
 const state: EngineState = g._accountsEngine ??= {
-  attempts: new Map(), refreshing: new Map(), usage: new Map(), timer: null, pushFailures: new Map(),
+  attempts: new Map(), refreshing: new Map(), usage: new Map(), timer: null, pushFailures: new Map(), claims: new Map(),
 };
+state.claims ??= new Map();
 
 const ATTEMPT_TTL_MS = 20 * 60_000;
 const TICK_MS = 60_000;
@@ -506,11 +515,13 @@ export function pollAccountUsage(id: string, opts: { force?: boolean; steady?: b
         next = normalizeClaudeUsage(r.status === 200
           ? { ok: true, usage: r.body, subscription_type: secret.subscriptionType ?? null, org_id: r.orgId } as never
           : { ok: false, error: 'http_error', status_code: r.status } as never);
+        if (next.ok) next.resets = claudeResets(r.body?.cedar_ember);
       } else {
         const secret = openSecret<CodexSecret>(row);
         const r = await codexUsage(secret);
         if (r.status === 401) void refreshAccount(row.id);
         next = normalizeCodexUsage(r.status === 200 ? whamToAgentShape(r.body) : { ok: false, error: `HTTP ${r.status}` } as never);
+        if (next.ok) next.resets = codexResets(r.body?.rate_limit_reset_credits, await codexCreditDetails(st, secret, r.body?.rate_limit_reset_credits));
       }
     } catch (e) {
       next = { ok: false, fetchedAt: Date.now(), error: 'request_failed', statusCode: null };
@@ -521,6 +532,26 @@ export function pollAccountUsage(id: string, opts: { force?: boolean; steady?: b
   })().catch(() => null).finally(() => { st.inflight = null; });
   st.inflight = run;
   return run;
+}
+
+const CREDIT_DETAILS_MAX_AGE_MS = 30 * 60_000;
+
+/** The credits behind `wham/usage`'s count: re-read when the count moves or
+ *  the copy ages; a failed read keeps the last one (undefined = none yet). */
+async function codexCreditDetails(st: UsageState, secret: CodexSecret, summary: unknown): Promise<unknown> {
+  const count = typeof (summary as { available_count?: unknown } | null)?.available_count === 'number'
+    ? (summary as { available_count: number }).available_count : 0;
+  if (count <= 0) { st.creditDetails = null; return undefined; }
+  const held = st.creditDetails;
+  if (held && held.count === count && Date.now() - held.at < CREDIT_DETAILS_MAX_AGE_MS) return held.body;
+  try {
+    const r = await codexResetCredits(secret);
+    if (r.status === 200 && r.body && typeof r.body === 'object') {
+      st.creditDetails = { body: r.body, count, at: Date.now() };
+      return r.body;
+    }
+  } catch { /* the count alone still shows */ }
+  return held?.body;
 }
 
 /** ChatGPT `wham/usage` → the agent's `get_codex_usage` envelope. */
@@ -560,9 +591,76 @@ export function ingestAccountCodexPush(id: string, detail: unknown): void {
   const row = getAccountRow(id);
   if (!row) return;
   void import('@/lib/server/agent/usagePoll').then(({ ingestCodexUsagePush }) => {
-    const usage = ingestCodexUsagePush(`account:${id}`, detail, false);
-    if (!usage) return;
-    usageState(id).last = usage;
+    const pushed = ingestCodexUsagePush(`account:${id}`, detail, false);
+    if (!pushed) return;
+    const st = usageState(id);
+    // A push carries the windows only: the banked resets stay as last read.
+    const usage = st.last?.resets !== undefined ? { ...pushed, resets: st.last.resets } : pushed;
+    st.last = usage;
     fan(row, usage);
   }).catch(() => {});
+}
+
+// ── Banked limit resets (§14.126) ────────────────────────────────────────────
+
+/**
+ * Spend ONE banked reset of `grantId` (a grant of the account's last reading;
+ * Codex `*` = the backend's next credit). Irreversible at the provider: ONE
+ * claim in flight per account (a double click joins it), the grant must be
+ * one the hub was shown, and a fresh reading follows at once (past the 2-min
+ * floor, never past a Retry-After wall).
+ */
+export function claimAccountReset(id: string, grantId: string): Promise<ResetClaim> {
+  const claims = state.claims!;
+  const held = claims.get(id);
+  if (held) return held;
+  const run = (async (): Promise<ResetClaim> => {
+    const row = getAccountRow(id);
+    const st = usageState(id);
+    const fail = (outcome: ResetClaim['outcome'], reason: string): ResetClaim => ({ outcome, reason, usage: accountUsage(id) });
+    if (!row || row.provider === 'cursor') return fail('unavailable', 'no_resets');
+    if (row.status === 'expired') return fail('error', 'signed_out');
+    const grant = st.last?.resets?.grants.find((x) => x.id === grantId);
+    if (!grant) return fail('unavailable', 'unknown_grant');
+    const requestId = randomUUID();
+    let verdict: { outcome: ResetClaim['outcome']; reason: string | null; left?: number | null };
+    try {
+      if (row.provider === 'claude') {
+        const orgId = String(openSecret<ClaudeSecret>(row).oauthAccount?.organizationUuid ?? st.last?.orgId ?? '');
+        if (!orgId) return fail('error', 'no_organization');
+        let r = await claudeClaimReset(openSecret<ClaudeSecret>(row).accessToken, orgId, grantId, requestId);
+        // A stale token answered nothing: refresh, then the SAME attempt again.
+        if (r.status === 401) {
+          const fresh = await refreshAccount(id);
+          if (fresh?.status === 'ok') r = await claudeClaimReset(openSecret<ClaudeSecret>(fresh).accessToken, orgId, grantId, requestId);
+        }
+        verdict = r.status === 200 ? claudeClaimOutcome(r.body)
+          : { outcome: 'error', reason: r.status === 429 ? 'rate_limited' : `http_${r.status}` };
+      } else {
+        let r = await codexConsumeReset(openSecret<CodexSecret>(row), grantId === '*' ? undefined : grantId, requestId);
+        if (r.status === 401) {
+          const fresh = await refreshAccount(id);
+          if (fresh?.status === 'ok') r = await codexConsumeReset(openSecret<CodexSecret>(fresh), grantId === '*' ? undefined : grantId, requestId);
+        }
+        verdict = r.status === 200 ? codexClaimOutcome(r.body)
+          : { outcome: 'error', reason: r.status === 429 ? 'rate_limited' : `http_${r.status}` };
+      }
+    } catch (e) {
+      // The provider may have applied it: the fresh reading below tells.
+      verdict = { outcome: 'error', reason: (e instanceof Error ? e.message : String(e)).slice(0, 120) };
+    }
+    console.log(`[accounts] reset claim ${row.provider}:${id} grant=${grantId} → ${verdict.outcome}${verdict.reason ? ` (${verdict.reason})` : ''}`);
+    if (verdict.outcome === 'reset' && st.last?.resets) {
+      st.last = { ...st.last, resets: spendGrant(st.last.resets, grantId, verdict.left) };
+      fan(row, st.last);
+    }
+    // A poll already in flight read the limits BEFORE the claim: wait it out.
+    await st.inflight?.catch(() => null);
+    st.creditDetails = null;
+    st.lastPollAt = 0;
+    const usage = await pollAccountUsage(id, { force: true }).catch(() => null);
+    return { outcome: verdict.outcome, reason: verdict.reason, usage: usage ?? accountUsage(id) };
+  })().finally(() => claims.delete(id));
+  claims.set(id, run);
+  return run;
 }

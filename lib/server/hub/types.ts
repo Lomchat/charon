@@ -253,7 +253,42 @@ export type AccountUsage = {
   sevenDay?: AccountUsageWindow | null;
   limits?: AccountUsageLimit[] | null;
   extraUsage?: { isEnabled?: boolean; utilization?: number | null } | null;
+  /** Banked limit resets the provider granted (hub accounts only, §14.126).
+   *  Absent = never read; null/empty = none. */
+  resets?: AccountResets | null;
 };
+
+/** One banked reset (Claude `cedar_ember` grant, Codex reset credit). */
+export type AccountResetGrant = {
+  /** The provider's id: what a claim names. */
+  id: string;
+  title: string;
+  description?: string | null;
+  /** The windows it refills: Claude's names (`five_hour`, `seven_day`,
+   *  `seven_day_overage_included` = the model-scoped weekly, …); `all` = every
+   *  limit (Codex). */
+  clears: string[];
+  /** Those windows' use right now, 0–100, when the provider says. */
+  used?: Record<string, number> | null;
+  /** Resets left in this grant (Codex: one per credit). */
+  left: number;
+  /** ISO; null = never expires. */
+  expiresAt: string | null;
+  usable: boolean;
+  /** Why not now (`cooldown`, `nothing_to_reset`, `needs_limit`, …). */
+  blockedBy?: string | null;
+};
+export type AccountResets = {
+  /** Resets left across every grant. */
+  available: number;
+  grants: AccountResetGrant[];
+  /** Why the provider offers none (`surface`, `tier`, …). */
+  ineligible?: string | null;
+  cooldownUntil?: string | null;
+};
+/** POST /api/accounts/[id]/resets. `reset` = refilled; the others used nothing. */
+export type AccountResetOutcome =
+  | 'reset' | 'nothing_to_reset' | 'no_credit' | 'already_used' | 'cooldown' | 'ineligible' | 'unavailable' | 'error';
 
 // Synthetic events that the worker fabricates itself (not received from the bridge).
 export type SyntheticEvent =

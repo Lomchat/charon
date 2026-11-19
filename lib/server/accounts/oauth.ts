@@ -23,6 +23,7 @@ const CODEX = {
   clientId: 'app_EMoamEEZ73f0CkXaXp7hrann',
   verifyUrl: 'https://auth.openai.com/codex/device',
   usage: 'https://chatgpt.com/backend-api/wham/usage',
+  resetCredits: 'https://chatgpt.com/backend-api/wham/rate-limit-reset-credits',
 };
 const UA = 'charon-hub';
 const TIMEOUT_MS = 30_000;
@@ -105,8 +106,14 @@ export async function claudeRefresh(secret: ClaudeSecret): Promise<ClaudeTokens>
   return r.body as ClaudeTokens;
 }
 
-async function claudeGet(path: string, token: string): Promise<{ status: number; body: any; headers: Headers }> {
-  return call(`${CLAUDE.api}${path}`, { headers: { Authorization: `Bearer ${token}`, 'anthropic-beta': 'oauth-2025-04-20' } });
+/** The interactive CLI's identity (§14.126): Anthropic shows banked resets
+ *  (`cedar_ember`) to that surface ONLY — `charon-hub` and the SDK's own
+ *  `sdk-py` read `ineligible_reason: "surface"`. A `cli_version` refusal =
+ *  bump this to the bundled CLI (`claude_agent_sdk/_cli_version.py`). */
+const CLAUDE_CLI_SURFACE = { 'User-Agent': 'claude-cli/2.1.328 (external, cli)', 'x-app': 'cli' };
+
+async function claudeGet(path: string, token: string, headers: Record<string, string> = {}): Promise<{ status: number; body: any; headers: Headers }> {
+  return call(`${CLAUDE.api}${path}`, { headers: { Authorization: `Bearer ${token}`, 'anthropic-beta': 'oauth-2025-04-20', ...headers } });
 }
 
 export type ClaudeProfile = { account: Record<string, any>; organization: Record<string, any> };
@@ -155,9 +162,20 @@ export function claudeSecretFrom(t: ClaudeTokens, now: number, previous?: Claude
   };
 }
 
+/** The gauges AND the banked resets (`cedar_ember`), in one read. */
 export async function claudeUsage(token: string): Promise<{ status: number; body: any; retryAfterMs: number | null; orgId: string | null }> {
-  const r = await claudeGet('/api/oauth/usage', token);
+  const r = await claudeGet('/api/oauth/usage?cedar_ember=1', token, CLAUDE_CLI_SURFACE);
   return { status: r.status, body: r.body, retryAfterMs: retryAfterMs(r.headers), orgId: r.headers.get('anthropic-organization-id') };
+}
+
+/** Spend one reset of grant `grantId` (the CLI's `/limit-reset`). `requestId`
+ *  names the attempt. 200 carries the verdict, refusals included. */
+export async function claudeClaimReset(token: string, orgId: string, grantId: string, requestId: string): Promise<{ status: number; body: any }> {
+  const r = await call(`${CLAUDE.api}/api/organizations/${encodeURIComponent(orgId)}/reset_rate_limits`, {
+    headers: { Authorization: `Bearer ${token}`, 'anthropic-beta': 'oauth-2025-04-20', ...CLAUDE_CLI_SURFACE },
+    json: { program: 'cedar_ember', grant_id: grantId, request_id: requestId },
+  });
+  return { status: r.status, body: r.body };
 }
 
 // ── Codex (ChatGPT device code) ──────────────────────────────────────────────
@@ -225,4 +243,20 @@ export async function codexRefresh(secret: CodexSecret): Promise<{ secret: Codex
 export async function codexUsage(s: CodexSecret): Promise<{ status: number; body: any; retryAfterMs: number | null }> {
   const r = await call(CODEX.usage, { headers: { Authorization: `Bearer ${s.accessToken}`, 'ChatGPT-Account-Id': s.accountId } });
   return { status: r.status, body: r.body, retryAfterMs: retryAfterMs(r.headers) };
+}
+
+/** The banked resets in detail (`wham/usage` carries only their count). */
+export async function codexResetCredits(s: CodexSecret): Promise<{ status: number; body: any }> {
+  const r = await call(CODEX.resetCredits, { headers: { Authorization: `Bearer ${s.accessToken}`, 'ChatGPT-Account-Id': s.accountId } });
+  return { status: r.status, body: r.body };
+}
+
+/** Spend credit `creditId` (none = the backend's next one; the CLI's /usage ›
+ *  Redeem reset). `requestId` names the attempt. → `{ code, windows_reset }`. */
+export async function codexConsumeReset(s: CodexSecret, creditId: string | undefined, requestId: string): Promise<{ status: number; body: any }> {
+  const r = await call(`${CODEX.resetCredits}/consume`, {
+    headers: { Authorization: `Bearer ${s.accessToken}`, 'ChatGPT-Account-Id': s.accountId },
+    json: creditId ? { redeem_request_id: requestId, credit_id: creditId } : { redeem_request_id: requestId },
+  });
+  return { status: r.status, body: r.body };
 }
