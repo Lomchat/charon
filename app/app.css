@@ -363,6 +363,12 @@
   background: var(--acct-surface);
 }
 .app-head .acct-nav-item.is-selected:not(.has-unread):not(.has-waiting):not(.has-error) { border-color: var(--accent); }
+/* An attention class positions the item for its pulse layer, which would
+   anchor the popovers to the item, inside the strip that clips them: while
+   one is open the strip's item stays static and drops that layer (tint and
+   border stay). The phone menu's rows are positioned on purpose. */
+.acct-nav > .acct-nav-item.is-open:is(.has-unread, .has-error, .has-waiting) { position: static; }
+.acct-nav > .acct-nav-item.is-open:is(.has-unread, .has-error, .has-waiting)::before { display: none; }
 .acct-nav .usage-rings {
   display: inline-flex; position: static; height: 100%;
   --um-surface: var(--acct-surface, var(--bg-inset));

@@ -60,7 +60,9 @@ export const AccountNavItem = memo(function AccountNavItem({ group, usage, onRef
   const usageOpen = openPanel === 'usage';
   const rows = useNavRows(group.sessions);
   const attention = navAttentionClass(rows);
-  usePulsePhase(menu.wrapRef, attention);
+  // An open popover drops the item's pulse layer (app.css § acct-nav): its
+  // return is a new animation, put back in phase with the others.
+  usePulsePhase(menu.wrapRef, openPanel ? '' : attention);
   const { running } = navSections(rows);
   // UsageRings' own dismiss (outside press, Escape) only ever closes.
   const onUsageOpen = useCallback((next: boolean) => {
@@ -114,7 +116,6 @@ export const AccountNavItem = memo(function AccountNavItem({ group, usage, onRef
         aria-haspopup="menu"
         aria-expanded={open}
         aria-label={providerText.accountSessions(group.provider, group.label)}
-        title={providerText.accountSessions(group.provider, group.label)}
         onMouseEnter={() => menu.onPointerEnter('sessions')}
         onMouseLeave={menu.onTriggerLeave}
         onClick={() => { menu.onTriggerClick('sessions'); }}
