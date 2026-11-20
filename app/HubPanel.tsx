@@ -5,12 +5,13 @@ import { useSearchParams } from '@/app/navigation';
 import dynamic from '@/app/dynamic';
 import { api } from '@/lib/api';
 import {
-  PROVIDERS, SESSION_PROVIDERS, asSessionProvider, providerLoginPatch,
+  PROVIDERS, SESSION_PROVIDERS, asSessionProvider, providerLoginPatch, type SessionProvider,
 } from '@/lib/sessionCapabilities';
 import { providerName } from '@/lib/providerText';
 import { PROVIDER_LOGIN } from './loginModals';
 import type { Vps, VpsFolder, VpsPath, AgentSession } from '@/lib/db/schema';
 import type { AgentKind, RoutineInput, TabDTO, VpsStalenessBaselines } from '@/lib/types/api';
+import type { AccountUsage } from '@/lib/server/hub/types';
 import Sidebar, { type SessionListItem, type ShellListItem, type InstallInfo } from './Sidebar';
 import SidebarPathFilter from './SidebarPathFilter';
 import {
@@ -520,26 +521,46 @@ export default function HubPanel({ vpsList: initialVpsList, vpsFolders: initialF
   // the hub's snapshot (no awaited poll per account, which would hold HTTP/1.1
   // sockets on a cold load); a gauge ever fetched normally stays normal.
   const usageKeysRef = useRef(new Map<string, boolean>());
+  // One reading for what was ASKED (vps, provider, profile): shown, or the
+  // gauges of another login dropped.
+  const applyUsageReading = useCallback((vpsId: string, provider: AgentKind, profile: string, fresh: AccountUsage | null | undefined) => {
+    const currentProfile = profileState.current.find((p) => p.vpsId === vpsId && p.provider === provider && p.id === profile);
+    const sessionProvider = asSessionProvider(provider);
+    if (!fresh) {
+      // No snapshot yet for the current login: gauges stamped with ANOTHER
+      // login (changed while the hub was down) must not stay on screen.
+      const now = currentProfile?.accountKey;
+      if (now) dropOtherLoginUsage(vpsId, sessionProvider, profile, now);
+      return;
+    }
+    if (currentProfile?.accountKey && fresh.accountKey && currentProfile.accountKey !== fresh.accountKey) return;
+    // Keyed by what was ASKED (a reading names its account, §14.115).
+    putUsage(vpsId, { ...fresh, provider: sessionProvider, accountProfile: profile });
+  }, []);
   const refreshUsage = useCallback((vpsId: string | null | undefined, provider: AgentKind = 'claude', profile = 'default', force = false, cachedOnly = false) => {
     if (!vpsId) return;
     const usageKey = `${vpsId}\u0000${provider}\u0000${profile}`;
     usageKeysRef.current.set(usageKey, cachedOnly && usageKeysRef.current.get(usageKey) !== false);
     api.getVpsUsage(vpsId, provider, profile, force, cachedOnly && !force).then((r) => {
-      const fresh = r.byProvider?.[provider] ?? (provider === 'claude' ? r.usage : r.codexUsage);
-      const currentProfile = profileState.current.find((p) => p.vpsId === vpsId && p.provider === provider && p.id === profile);
-      const sessionProvider = asSessionProvider(provider);
-      if (!fresh) {
-        // No snapshot yet for the current login: gauges stamped with ANOTHER
-        // login (changed while the hub was down) must not stay on screen.
-        const now = currentProfile?.accountKey;
-        if (now) dropOtherLoginUsage(vpsId, sessionProvider, profile, now);
-        return;
-      }
-      if (currentProfile?.accountKey && fresh.accountKey && currentProfile.accountKey !== fresh.accountKey) return;
-      // Keyed by what was ASKED (a reading names its account, §14.115).
-      putUsage(vpsId, { ...fresh, provider: sessionProvider, accountProfile: profile });
+      applyUsageReading(vpsId, provider, profile, r.byProvider?.[provider] ?? (provider === 'claude' ? r.usage : r.codexUsage));
     }).catch(() => {});
-  }, []);
+  }, [applyUsageReading]);
+  // The cached readings of many logins in ONE request (page load, resync):
+  // `keys` = `${vpsId}\0${provider}\0${profile}`.
+  const hydrateCachedUsage = useCallback((keys: string[]) => {
+    if (!keys.length) return;
+    const targets = keys.map((key) => {
+      if (!usageKeysRef.current.has(key)) usageKeysRef.current.set(key, true);
+      const [vpsId, provider, profile] = key.split('\u0000');
+      return { vpsId, provider: provider as SessionProvider, profile };
+    });
+    api.getCachedUsage(targets).then((r) => {
+      for (const x of r.readings ?? []) applyUsageReading(x.vpsId, x.provider, x.profile, x.usage);
+    }).catch(() => {
+      // An older hub (no batch route): one cached GET per login.
+      for (const t of targets) refreshUsage(t.vpsId, t.provider, t.profile, false, true);
+    });
+  }, [applyUsageReading, refreshUsage]);
 
   // Load the shells list at mount + refresh when a selector changes
   useEffect(() => {
@@ -975,14 +996,10 @@ export default function HubPanel({ vpsList: initialVpsList, vpsFolders: initialF
     .join('\u0001');
   useEffect(() => {
     if (!accountUsageTargets) return;
-    for (const t of accountUsageTargets.split('\u0001')) {
-      // Only targets new to this tab: a known key is already live through
-      // `account_usage`, and a resync refetches it (usageKeysRef).
-      if (usageKeysRef.current.has(t)) continue;
-      const [vpsId, provider, profile] = t.split('\u0000');
-      refreshUsage(vpsId, provider as AgentKind, profile, false, true);
-    }
-  }, [accountUsageTargets, refreshUsage]);
+    // Only targets new to this tab: a known key is already live through
+    // `account_usage`, and a resync refetches it (usageKeysRef).
+    hydrateCachedUsage(accountUsageTargets.split('\u0001').filter((t) => !usageKeysRef.current.has(t)));
+  }, [accountUsageTargets, hydrateCachedUsage]);
   const { notices: modelNotices, markSeen: markModelsSeen, hasNewModels } = useModelNotices();
   const [dataOpen, setDataOpen] = useState(false);
   const [routinesOpen, setRoutinesOpen] = useState(false);
@@ -1605,13 +1622,16 @@ export default function HubPanel({ vpsList: initialVpsList, vpsFolders: initialF
       setShells(r?.shells ?? []);
       setShellsLoaded(true);
     }).catch(() => {});
+    const cached: string[] = [];
     for (const [key, cachedOnly] of usageKeysRef.current) {
+      if (cachedOnly) { cached.push(key); continue; }
       const [vpsId, provider, profile] = key.split('\u0000');
-      refreshUsage(vpsId, provider as AgentKind, profile, false, cachedOnly);
+      refreshUsage(vpsId, provider as AgentKind, profile, false, false);
     }
+    hydrateCachedUsage(cached);
     void refreshAllFileActivity();
     void refreshAccountProfiles();
-  }), [refreshSessions, refreshUsage]);
+  }), [refreshSessions, refreshUsage, hydrateCachedUsage]);
 
   // Version skew (FM8) and an older hub (degraded): one chip, "reload".
   const [reloadChip, setReloadChip] = useState<'build' | 'degraded' | null>(null);

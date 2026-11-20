@@ -30,6 +30,11 @@ export type { AgentSessionAttachment, AgentSessionLog } from '@/lib/db/schema';
 // (api.anthropic.com/api/oauth/usage); `codexUsage` = the Codex account
 // (app-server rate limits), present only when the VPS runs Codex. The header
 // shows the one matching the current session's kind. cf. §14.58 / §14.59.
+/** POST /api/usage: cached readings of many logins (the header's hydration). */
+export type CachedUsageBatchResponse = {
+  readings: Array<{ vpsId: string; provider: SessionProvider; profile: string; usage: AccountUsage | null }>;
+};
+
 export type VpsUsageResponse = {
   /** Historical Claude/Codex fields, kept for older clients. */
   usage: AccountUsage | null;

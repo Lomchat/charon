@@ -56,7 +56,7 @@ import type {
   SessionAttachmentsResponse, UploadSessionAttachmentResponse,
   OkResponse, OkOrErrorResponse,
   SendAgentInputBody, SendAgentInputResponse, ActionSyncStamp,
-  SessionWindowQuery, SessionProbeResponse, AgentSessionToolCallsResponse,
+  SessionWindowQuery, SessionProbeResponse, AgentSessionToolCallsResponse, CachedUsageBatchResponse,
 } from '@/lib/types/api';
 import type { TranscriptView } from '@/lib/transcriptRows';
 
@@ -250,6 +250,9 @@ export const api = {
     send<RefreshVpsAgentResponse>('POST', `/api/vps/${id}/agent/refresh`, undefined, { timeoutMs: 360_000 }),
   // Account usage (the `/usage` gauges) for a VPS's Claude account (§14.58).
   // `cachedOnly`: the hub's snapshot, never an awaited poll (header account buttons).
+  // The hub's cached readings of many logins at once (never a poll).
+  getCachedUsage: (targets: Array<{ vpsId: string; provider: SessionProvider; profile: string }>) =>
+    send<CachedUsageBatchResponse>('POST', '/api/usage', { targets }),
   getVpsUsage: (id: string, provider?: SessionProvider, profile = 'default', refresh = false, cachedOnly = false) =>
     send<VpsUsageResponse>('GET', `/api/vps/${id}/usage${provider ? `?provider=${provider}&profile=${encodeURIComponent(profile)}&refresh=${refresh ? '1' : '0'}${cachedOnly ? '&cached=1' : ''}` : ''}`),
   // Subdirectories of `path` on the VPS — wizard path autocomplete (debounced
