@@ -303,6 +303,28 @@ export function runningBgTaskDetailsIfWarm(
   return reg ? bgTaskDetails(reg, nowS) : null;
 }
 
+/** Finished background WORK the root window answers in place of the
+ *  `bg_task` rows no page carries (§14.91): newest first, at most `limit`, a
+ *  sub-agent's ended steps left out (`bgWorkItems` never shows them). `older`
+ *  = finished items beyond the limit. TOLERANT: null while a cold fold warms. */
+export const BG_HISTORY_LIMIT = 100;
+export function bgTaskHistoryIfWarm(
+  sessionId: string, limit = BG_HISTORY_LIMIT,
+): { ended: BgTask[]; older: number } | null {
+  const reg = bgRegistryIfWarm(sessionId);
+  if (!reg) return null;
+  const ended: BgTask[] = [];
+  for (const t of reg.details.values()) {
+    if (t.status === 'running' || t.ownedBySubagent) continue;
+    ended.push(t);
+  }
+  ended.sort((a, b) => (b.endedAt ?? b.startedAt) - (a.endedAt ?? a.startedAt));
+  return {
+    ended: ended.slice(0, limit).map((t) => ({ ...t })),
+    older: Math.max(0, ended.length - limit),
+  };
+}
+
 function bgTaskDetails(reg: BgRegistry, nowS: number): BgTask[] {
   const running = new Map(reg.running);
   pruneStaleBgTasks(running, nowS);

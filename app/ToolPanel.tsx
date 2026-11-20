@@ -62,6 +62,10 @@ type Props = {
    *  calls tab pages `GET …/tool-calls` itself when it opens (§14.107). */
   transcriptView?: TranscriptView | null;
   edits: Map<string, EditSnapshot>;
+  /** Edited files whose content the hub could not give. */
+  editsMissing?: ReadonlySet<string>;
+  /** The edits tab asks for the diff content of the cards it draws (§14.41). */
+  onNeedEdits?: (paths: string[]) => void;
   onRevert: () => void; // refresh signal
   // Files the user attached to this session (drag & drop / paperclip). The
   // list is owned by SessionView so this panel and the input bar always
@@ -174,9 +178,11 @@ function tabTip(id: Tab, n: number, git: 'repo' | 'none' | 'unknown'): HoverTipC
   }
 }
 
+const NO_PATHS: ReadonlySet<string> = new Set();
+
 function ToolPanel({
   sessionId, workspaceOnly = false, kind = 'claude', toolCalls: liveToolCalls, toolCallCount = null,
-  transcriptView = null, edits, onRevert,
+  transcriptView = null, edits, editsMissing = NO_PATHS, onNeedEdits, onRevert,
   attachments = [], onRemoveAttachment, onInsertPath, onOpenSession, onOpenFolder, onNewSessionIn,
   vpsId = null, cwd = null, repoBusy = false, requestedTab = null, onTabConsumed,
   onReveal, context = null, contextLoaded = false, contextLoading = false,
@@ -222,9 +228,6 @@ function ToolPanel({
   const visibleTabs = workspaceOnly
     ? TABS.filter(({ id }) => id === 'tree' || id === 'search' || id === 'git')
     : TABS;
-  // Hide content-less skeleton entries (edit_snapshot content is stripped by
-  // the GET and refilled lazily — CLAUDE.md §14 gotcha 41). A both-null entry
-  // has no diff to show; it appears once loadEdits fills its content.
   // Conversation view: the calls tab's history comes from `GET …/tool-calls`,
   // fetched lazily the first time the tab opens; live calls are merged on top.
   const pagedCalls = useConversationToolCalls(
@@ -233,10 +236,9 @@ function ToolPanel({
     () => pagedCalls.calls.length ? mergeToolCalls(pagedCalls.calls, liveToolCalls) : liveToolCalls,
     [pagedCalls.calls, liveToolCalls],
   );
-  const editArr = useMemo(
-    () => Array.from(edits.values()).filter((e) => e.before != null || e.after != null),
-    [edits],
-  );
+  // Every edited file: a card without content asks for it when it nears the
+  // viewport (`onNeedEdits`), never the whole session at once.
+  const editArr = useMemo(() => Array.from(edits.values()), [edits]);
 
   // The dirty chip in the chat header opens this panel ON the git tab. It's a
   // one-shot request rather than a controlled prop so the user can switch tabs
@@ -395,7 +397,7 @@ function ToolPanel({
         className="tp-body"
         onScroll={(event) => writeWorkspacePanelScroll(vpsId, cwd, activeTab, event.currentTarget.scrollTop)}
       >
-        {!workspaceOnly && activeTab === 'edits' && <EditsTab sessionId={sessionId} kind={kind} edits={editArr} onRevert={onRevert} />}
+        {!workspaceOnly && activeTab === 'edits' && <EditsTab sessionId={sessionId} kind={kind} edits={editArr} missing={editsMissing} onNeed={onNeedEdits} onRevert={onRevert} />}
         {activeTab === 'git' && (
           <GitTab
             key={`git:${panelScope}:${treeRoot ?? ''}`}
@@ -479,7 +481,10 @@ function ToolPanel({
 
 export default memo(ToolPanel);
 
-function EditsTab({ sessionId, kind, edits, onRevert }: { sessionId: string | null; kind: AgentKind; edits: EditSnapshot[]; onRevert: () => void }) {
+function EditsTab({ sessionId, kind, edits, missing, onNeed, onRevert }: {
+  sessionId: string | null; kind: AgentKind; edits: EditSnapshot[];
+  missing: ReadonlySet<string>; onNeed?: (paths: string[]) => void; onRevert: () => void;
+}) {
   const [busy, setBusy] = useState<string | null>(null);
   const [open, setOpen] = useState<EditSnapshot | null>(null);
 
@@ -519,6 +524,7 @@ function EditsTab({ sessionId, kind, edits, onRevert }: { sessionId: string | nu
       <div className="tp-edits">
         {edits.slice(0, shown).map((e) => (
           <EditCard key={e.toolUseId + e.filePath} edit={e} isPair={isPair}
+            missing={missing.has(e.filePath)} onNeed={onNeed}
             busy={busy === e.filePath} onSplit={setOpen} onRevert={revert} />
         ))}
         {edits.length > shown && (
@@ -620,9 +626,12 @@ function diffOffThread(filePath: string, before: string, after: string, done: (p
 
 /** One edit: its diff is computed and drawn once the card nears the panel's
  *  viewport, so opening the tab costs what is on screen. */
-const EditCard = memo(function EditCard({ edit: e, isPair, busy, onSplit, onRevert }: {
+const EditCard = memo(function EditCard({ edit: e, isPair, missing, onNeed, busy, onSplit, onRevert }: {
   edit: EditSnapshot;
   isPair: boolean;
+  /** The hub had no content for it. */
+  missing: boolean;
+  onNeed?: (paths: string[]) => void;
   busy: boolean;
   onSplit: (edit: EditSnapshot) => void;
   onRevert: (filePath: string) => void;
@@ -645,8 +654,14 @@ const EditCard = memo(function EditCard({ edit: e, isPair, busy, onSplit, onReve
     return () => io.disconnect();
   }, [near]);
 
+  // Content is fetched when the card nears the viewport, a batch per tick.
+  const hasContent = e.before != null || e.after != null;
   useEffect(() => {
-    if (!near || !isPair || diffed != null) return;
+    if (near && !hasContent && !missing) onNeed?.([e.filePath]);
+  }, [near, hasContent, missing, onNeed, e.filePath]);
+
+  useEffect(() => {
+    if (!near || !isPair || diffed != null || !hasContent) return;
     let live = true;
     const before = e.before ?? '';
     const after = e.after ?? '';
@@ -660,11 +675,11 @@ const EditCard = memo(function EditCard({ edit: e, isPair, busy, onSplit, onReve
       else diffOffThread(e.filePath, before, after, done);
     });
     return () => { live = false; cancel(); };
-  }, [near, isPair, diffed, e]);
+  }, [near, isPair, diffed, e, hasContent]);
 
   // A backend's own patch needs no diffing, only drawing. A cached diff gives
   // the counts at once; the lines wait for the card to near the viewport.
-  const patch = isPair ? diffed : (near ? (e.after ?? '') : null);
+  const patch = !hasContent ? null : isPair ? diffed : (near ? (e.after ?? '') : null);
   const stats = useMemo(() => (patch == null ? null : countDiff(patch)), [patch]);
   const body = useMemo(() => {
     if (patch == null || !near) return null;
@@ -686,8 +701,8 @@ const EditCard = memo(function EditCard({ edit: e, isPair, busy, onSplit, onReve
           </span>
           {isPair && (
             <>
-              <button className="compare" onClick={() => onSplit(e)} title="compare side by side">⇄ split</button>
-              <button className="revert" disabled={busy || e.truncated}
+              <button className="compare" disabled={!hasContent} onClick={() => onSplit(e)} title="compare side by side">⇄ split</button>
+              <button className="revert" disabled={busy || e.truncated || !hasContent}
                 title={e.truncated ? 'Cannot safely restore a truncated snapshot' : 'Restore this exact snapshot if the file has not changed since'}
                 onClick={() => onRevert(e.filePath)}>
                 {busy ? '…' : 'revert'}
@@ -697,9 +712,9 @@ const EditCard = memo(function EditCard({ edit: e, isPair, busy, onSplit, onReve
         </div>
       </div>
       {e.truncated && <div className="warn">⚠ truncated snapshot (file &gt; 256KB)</div>}
-      {isPair && e.before == null && <div className="note">new file (Write)</div>}
-      <pre className="diff-body" aria-busy={body ? undefined : true}>
-        {body ? body.nodes : <span className="dline ctx">…</span>}
+      {isPair && hasContent && e.before == null && <div className="note">new file (Write)</div>}
+      <pre className="diff-body" aria-busy={body || missing ? undefined : true}>
+        {body ? body.nodes : <span className="dline ctx">{missing ? 'no diff available' : '…'}</span>}
       </pre>
       {body && body.hidden > 0 && (
         <button type="button" className="tp-more" onClick={() => setAllLines(true)}>

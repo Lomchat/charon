@@ -24,7 +24,7 @@ import { loadMessageWindow, publicMessageColumns } from '@/lib/server/hub/messag
 import { countToolCalls, exitPlanFallback, withBgTaskLaunchers } from '@/lib/server/hub/conversationSources';
 import type { TranscriptView } from '@/lib/transcriptRows';
 import { normalizeSessionHandle } from '@/lib/server/agent/sessionHandles';
-import { runningBgTaskDetailsIfWarm } from '@/lib/server/hub/bgTaskState';
+import { bgTaskHistoryIfWarm, runningBgTaskDetailsIfWarm } from '@/lib/server/hub/bgTaskState';
 import { isRuntimeOutdated, runtimeVersionsOf } from '@/lib/server/hub/sessionRuntimes';
 import { attachPeerAssistantReplies } from '@/lib/server/hub/peerReplyContext';
 import { attachAsyncQuestionState } from '@/lib/server/agent/asyncQuestions';
@@ -270,6 +270,9 @@ export async function GET(req: Request, { params }: { params: Promise<{ id: stri
   const runningTasks = includeBackgroundSnapshot ? runningBgTaskDetailsIfWarm(id) : null;
   const backgroundTasks = runningTasks ? withBgTaskLaunchers(id, runningTasks) : undefined;
   const backgroundTasksPending = includeBackgroundSnapshot && backgroundTasks === undefined;
+  // What ended: no page carries `bg_task` rows (messageWindow.ts § pageRows).
+  // Root window only (the delta poll's `bg=1` asks about liveness alone).
+  const bgHistory = includeBackgroundSnapshot && since == null && runningTasks ? bgTaskHistoryIfWarm(id) : null;
 
   // Provider deadlines continue while the browser/hub is disconnected; the
   // sweep publishes each expiry (C07).
@@ -319,6 +322,7 @@ export async function GET(req: Request, { params }: { params: Promise<{ id: stri
     maxMessageId,
     backgroundTasks,
     ...(backgroundTasksPending ? { backgroundTasksPending: true } : {}),
+    ...(bgHistory ? { bgHistory } : {}),
     // Incremental fold; null while a cold one warms (its completion
     // broadcasts `session_token_usage`; clients keep their last value).
     tokenUsage: sessionTokenUsage(id),

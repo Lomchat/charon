@@ -255,7 +255,7 @@ export default function SessionView({
     liveActivity,
     model, fallbackModel, effort, ultracode, fastMode, fastModeVerdict, serviceTier, modelPendingApply, effortPendingApply,
     effectiveModel, liveUsage, tokenUsage, responseSpeed,
-    toolCalls, toolCallCount, edits, bgTasks,
+    toolCalls, toolCallCount, edits, editsMissing, loadEditContents, bgTasks, bgOlderEnded,
     permQueue, questionQueue, exitPlanQueue,
     prefillInput, error, isLoadingHistory, isSyncing, historyReady,
     hasMore, isLoadingMore, view: transcriptView, windowInFlight, requestWindow,
@@ -1484,7 +1484,7 @@ export default function SessionView({
             The wrapper is `display: contents` except on a phone holding two
             strips or more: then they share ONE row (app.css). */}
         <div className="status-strips">
-          <BgTasksBar tasks={bgTasks} sessionId={sessionId} vpsId={vpsId} cwd={selected.cwd || null}
+          <BgTasksBar tasks={bgTasks} olderEnded={bgOlderEnded} sessionId={sessionId} vpsId={vpsId} cwd={selected.cwd || null}
             provider={asSessionProvider(sessionKind)}
             sessionStatus={status ?? 'sleeping'} />
           {/* What will wake the session later (CronCreate / ScheduleWakeup /
@@ -1600,6 +1600,8 @@ export default function SessionView({
         toolCallCount={toolCallCount}
         transcriptView={transcriptView}
         edits={edits}
+        editsMissing={editsMissing}
+        onNeedEdits={loadEditContents}
         onRevert={revertAndRefresh}
         attachments={attachments}
         onRemoveAttachment={removeAttachment}

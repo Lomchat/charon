@@ -770,7 +770,7 @@ export async function backupDatabase(db, dbPath, destination, opts = {}) {
  * The hub creates it at boot only on a small table; a large DB gets it here,
  * offline, before ANALYZE (never from a migration on the live DB, SPEC I12).
  */
-export const CONVERSATION_INDEX_SQL = "CREATE INDEX IF NOT EXISTS idx_session_messages_conversation_chrono ON session_messages (session_id, coalesce(ts_ms, created_at * 1000), id) WHERE (role NOT IN ('edit_snapshot', 'event', 'tool_use', 'tool_result', 'thinking', 'user_question', 'exit_plan_request') OR (role = 'event' AND (CASE WHEN json_valid(content) THEN json_extract(content, '$.type') END) IN ('compaction', 'scheduled_fire', 'structured_output', 'fork_point', 'external_message', 'peer_message_status', 'bg_task', 'interaction_resolved')))";
+export const CONVERSATION_INDEX_SQL = "CREATE INDEX IF NOT EXISTS idx_session_messages_conversation_chrono ON session_messages (session_id, coalesce(ts_ms, created_at * 1000), id) WHERE (role NOT IN ('edit_snapshot', 'event', 'tool_use', 'tool_result', 'thinking', 'user_question', 'exit_plan_request') OR (role = 'event' AND (CASE WHEN json_valid(content) THEN json_extract(content, '$.type') END) IN ('compaction', 'scheduled_fire', 'structured_output', 'fork_point', 'external_message', 'peer_message_status', 'interaction_resolved')))";
 
 /** Build the conversation index, replacing one built for an older predicate
  *  (sqlite_master stores it without `IF NOT EXISTS`). */

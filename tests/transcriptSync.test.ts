@@ -336,3 +336,22 @@ describe('snapshot@R + frames>R', () => {
     expect(s.buf.thinkingOpen).toBe('Let me think');
   });
 });
+
+// No page carries `bg_task` rows (lib/server/hub/messageWindow.ts § pageRows):
+// the root window's folded registry IS the bar's history, the running set
+// still decided by `backgroundTasks` alone.
+describe('the bg registry from a root window answer', () => {
+  const task = (taskId: string, status: string, endedAt: number | null) => ({
+    taskId, description: taskId, command: null, toolUseId: null, taskType: 'local_agent', status,
+    startedAt: 50, endedAt, outputFile: null, summary: null, workflowName: null, usage: null, lastToolName: null, agents: null,
+  });
+  it('ended tasks come from bgHistory, running ones from backgroundTasks, older ones as a count', () => {
+    const s = snapshot(win(R, [{ id: 1, role: 'user', content: 'go' }], {
+      backgroundTasks: [task('run', 'running', null)] as never,
+      bgHistory: { ended: [task('done', 'completed', 90), task('stale-running-in-history', 'running', null)] as never, older: 7 },
+    }));
+    expect([...s.bgTasks.keys()].sort()).toEqual(['done', 'run']);
+    expect(s.bgTasks.get('done')?.status).toBe('completed');
+    expect(s.bgOlderEnded).toBe(7);
+  });
+});

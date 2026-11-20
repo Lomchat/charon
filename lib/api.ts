@@ -681,13 +681,11 @@ export const api = {
     return send<AgentSessionToolCallsResponse>('GET', `/api/sessions/${id}/tool-calls${qs ? '?' + qs : ''}`,
       undefined, { signal });
   },
-  // Lazily fetch the latest before/after diff content per modified file. The
-  // main session GET strips edit_snapshot content (it's re-fetched in a 5s
-  // loop — cf. CLAUDE.md §14 gotcha 41); this serves the diff content on
-  // demand, once per session view. Called by useSessionStream's
-  // auto-load effect when the edits Map has files with stripped content.
-  getSessionEdits: (id: string, signal?: AbortSignal) =>
-    send<AgentSessionEditsResponse>('GET', `/api/sessions/${id}/edits`, undefined, { signal }),
+  // The latest before/after diff content of THESE files (≤ 100). The session
+  // GET strips edit_snapshot content (§14.41); the edits tab asks for the
+  // cards it is about to draw (useSessionStream § loadEditContents).
+  getSessionEdits: (id: string, paths: string[], signal?: AbortSignal) =>
+    send<AgentSessionEditsResponse>('POST', `/api/sessions/${id}/edits`, { paths }, { signal }),
   createSession: (data: CreateAgentSessionBody) =>
     send<CreateAgentSessionResponse>('POST', '/api/sessions', data),
   importSession: (data: ImportAgentSessionBody) =>

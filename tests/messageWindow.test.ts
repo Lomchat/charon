@@ -57,7 +57,7 @@ beforeAll(async () => {
     // one attachment riding right after seq 150 (must follow its page)
     if (s === 150) {
       db.insert(schema.sessionMessages).values({
-        sessionId: SID, role: 'event', content: '{"type":"bg_task","kind":"started"}', seq: null, tsMs: at(150, 1),
+        sessionId: SID, role: 'event', content: '{"type":"structured_output","data":1}', seq: null, tsMs: at(150, 1),
       }).run();
     }
   }
@@ -116,7 +116,7 @@ describe('chronological pagination with a repaired row (Codex 18)', () => {
       sessionId: BSID, role: 'assistant', content: `c-${s}`, seq: s,
     }).run();
     const addEvent = (label: string) => db.insert(schema.sessionMessages).values({
-      sessionId: BSID, role: 'event', content: `{"type":"bg_task","label":"${label}"}`, seq: null,
+      sessionId: BSID, role: 'event', content: `{"type":"structured_output","label":"${label}"}`, seq: null,
     }).run();
     // Layout (insertion = chronological): E-lead, c1..5, E-after-5, c6..15,
     // E-after-15, c16..25, E-trail. With limit=10 the page boundaries fall
@@ -236,5 +236,25 @@ describe('chronological pagination with a repaired row (Codex 18)', () => {
     expect(snapshots).toHaveLength(4); // 2 files × before/after, not 80 rows
     expect(snapshots.every((m: any) => !m.content.includes('xxxxxxxx'))).toBe(true);
     expect(snapshots.every((m: any) => JSON.parse(m.content).tool_use_id === 'tool-20')).toBe(true);
+  });
+
+  // A workflow-heavy session held 17 k `bg_task` rows: riding with the newest
+  // conversation page (few slots span the whole history) they made one window
+  // GET 9 MB. The root window answers the folded registry instead (§14.91).
+  it('bg_task rows ride with no page, in either view', () => {
+    const GSID = '7'.repeat(32);
+    db.insert(schema.agentSessions).values({ id: GSID, vpsId: VPS_ID, cwd: '/tmp', status: 'sleeping' }).run();
+    const add = (role: string, content: string, ms: number) => db.insert(schema.sessionMessages).values({
+      sessionId: GSID, role, content, tsMs: 1_800_000_100_000 + ms,
+    }).run();
+    add('user', 'go', 0);
+    for (let i = 0; i < 50; i++) add('event', JSON.stringify({ type: 'bg_task', kind: 'started', taskId: `t${i}` }), 1 + i);
+    add('event', JSON.stringify({ type: 'interaction_resolved', kind: 'question', id: 'q' }), 60);
+    add('assistant', 'done', 70);
+    for (const view of ['full', 'conversation'] as const) {
+      const win = loadMessageWindow(GSID, 200, null, view);
+      expect(win.messages.map((m: any) => m.role === 'event' ? JSON.parse(m.content).type : m.role))
+        .toEqual(['user', 'interaction_resolved', 'assistant']);
+    }
   });
 });

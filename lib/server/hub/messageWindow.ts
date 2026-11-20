@@ -3,7 +3,6 @@ import { and, asc, desc, eq, gt, gte, inArray, isNotNull, lt, lte, notInArray, o
 import { db, sessionMessages } from '@/lib/db';
 import type { AgentSessionMessage } from '@/lib/db/schema';
 import { type TranscriptView } from '@/lib/transcriptRows';
-import { applyBgTaskEvent, isTerminalBgStatus, type BgTask, type BgTaskEventLike } from '@/app/bgTasks';
 import { CONVERSATION_NON_SLOT_ROLES as NON_SLOT, conversationPredicates } from '@/lib/db/conversationIndex';
 
 // Side-channel roles ride with the chronological chat page that owns them,
@@ -27,11 +26,15 @@ function slotRows(view: TranscriptView): SQL {
 }
 
 /** Rows a page of `view` carries: its slots plus the side channels riding
- *  with them — every non-snapshot row in `full`; in `conversation` only the
- *  CONVERSATION_EVENT_TYPES events (no tool, thinking or plan rows). The
- *  `role = 'event'` test runs first, so only event rows are parsed. */
+ *  with them — every non-snapshot row but `bg_task` events in `full`; in
+ *  `conversation` only the CONVERSATION_EVENT_TYPES events (no tool, thinking,
+ *  plan or bg_task rows). The `role = 'event'` test runs first, so only event
+ *  rows are parsed. `bg_task` rows never ride: the root window answers the
+ *  hub's folded registry (bgTaskState.ts § bgTaskHistoryIfWarm). */
+const FULL_PAGE_SQL = `("session_messages"."role" <> 'edit_snapshot' AND NOT ("session_messages"."role" = 'event'
+  AND (CASE WHEN json_valid("session_messages"."content") THEN json_extract("session_messages"."content", '$.type') END) = 'bg_task'))`;
 function pageRows(view: TranscriptView): SQL {
-  if (view === 'full') return notInArray(sessionMessages.role, ['edit_snapshot']);
+  if (view === 'full') return sql.raw(FULL_PAGE_SQL);
   return sql.raw(CONVERSATION_SQL.page);
 }
 
@@ -205,42 +208,5 @@ export function loadMessageWindow(
   // files panel reads it whatever the transcript shows.
   if (before == null) messages.push(...latestSnapshotMetadata(sessionId));
 
-  const rows = sortMessages(messages);
-  return {
-    messages: view === 'conversation' && before != null ? pruneSettledBgTasks(rows) : rows,
-    hasMore, oldestChatId: first.id,
-  };
-}
-
-/**
- * An OLDER conversation page (tools hidden) drops the `bg_task` events of every
- * task it both LAUNCHES and SETTLES: no launcher card renders in that view,
- * liveness comes from the root window's full-history registry (§14.91), and a
- * tool-heavy stretch could otherwise ship thousands of such rows riding along
- * with 200 slots. Tasks crossing the page edge (or relaunched and still
- * running at its end) keep all their events. Rows must be chronological.
- */
-export function pruneSettledBgTasks<T extends { role: string; content: string; createdAt: number }>(rows: T[]): T[] {
-  const firstKind = new Map<string, string | undefined>();
-  const state = new Map<string, BgTask>();
-  const taskOf = new Map<T, string>();
-  for (const row of rows) {
-    if (row.role !== 'event' || !row.content.includes('bg_task')) continue;
-    let ev: BgTaskEventLike & { type?: unknown };
-    try { ev = JSON.parse(row.content); } catch { continue; }
-    if (ev?.type !== 'bg_task' || typeof ev.taskId !== 'string' || !ev.taskId) continue;
-    if (!firstKind.has(ev.taskId)) firstKind.set(ev.taskId, ev.kind);
-    applyBgTaskEvent(state, ev, row.createdAt);
-    taskOf.set(row, ev.taskId);
-  }
-  const settled = new Set<string>();
-  for (const [id, kind] of firstKind) {
-    const t = state.get(id);
-    if (kind === 'started' && t && isTerminalBgStatus(t.status)) settled.add(id);
-  }
-  if (settled.size === 0) return rows;
-  return rows.filter((row) => {
-    const id = taskOf.get(row);
-    return id == null || !settled.has(id);
-  });
+  return { messages: sortMessages(messages), hasMore, oldestChatId: first.id };
 }

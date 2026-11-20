@@ -22,10 +22,12 @@ export const RENDER_NULL_ROLES = ['user_question', 'exit_plan_request'] as const
 
 /** `event` rows that ride along with their page in conversation view: they
  *  render a message (compaction, structured output, fork point, peer traffic)
- *  or carry state the conversation still needs (bg tasks, async-question
- *  resolutions). */
+ *  or carry state the conversation still needs (async-question resolutions).
+ *  `bg_task` rows ride with NO page (either view): the root window carries the
+ *  hub's folded registry instead (`backgroundTasks` + `bgHistory`, §14.91) —
+ *  a workflow-heavy session holds tens of thousands of them. */
 export const CONVERSATION_EVENT_TYPES = ['compaction', 'scheduled_fire', 'structured_output', 'fork_point', 'external_message',
-  'peer_message_status', 'bg_task', 'interaction_resolved'] as const;
+  'peer_message_status', 'interaction_resolved'] as const;
 
 /** `event` row types that produce a Msg in `rebuildStateFromMessages`. */
 export const RENDERED_EVENT_TYPES = ['thinking', 'compaction', 'scheduled_fire', 'structured_output', 'fork_point', 'external_message',

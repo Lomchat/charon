@@ -24,7 +24,7 @@ beforeAll(async () => {
   raw.prepare("INSERT OR IGNORE INTO vps_folders (id, name, position) VALUES ('default', 'default', 0)").run();
   raw.prepare("INSERT OR IGNORE INTO vps (id, name, ip, ssh_user) VALUES ('civps', 'v', '127.0.0.1', 'root')").run();
   raw.prepare("INSERT INTO agent_sessions (id, vps_id, cwd, name, status) VALUES (?, 'civps', '/tmp', 'n', 'sleeping')").run(SID);
-  // 60 turns, each: user, 300 tool rows, a thinking event, a bg_task event, assistant.
+  // 60 turns, each: user, 300 tool rows, a thinking event, a structured_output event, assistant.
   const ins = raw.prepare('INSERT INTO session_messages (session_id, role, content, ts_ms, created_at) VALUES (?, ?, ?, ?, ?)');
   let t = Date.now() - 86_400_000;
   raw.transaction(() => {
@@ -34,7 +34,7 @@ beforeAll(async () => {
         ins.run(SID, j % 2 ? 'tool_result' : 'tool_use', JSON.stringify({ id: `t${turn}-${j >> 1}`, pad: 'x'.repeat(100) }), t++, 0);
       }
       ins.run(SID, 'event', JSON.stringify({ type: 'thinking', text: 'hmm' }), t++, 0);
-      ins.run(SID, 'event', JSON.stringify({ type: 'bg_task', taskId: `b${turn}`, status: 'started' }), t++, 0);
+      ins.run(SID, 'event', JSON.stringify({ type: 'structured_output', data: { turn } }), t++, 0);
       ins.run(SID, 'assistant', `a${turn}`, t++, 0);
     }
   })();
@@ -97,7 +97,7 @@ describe('conversation partial index', () => {
     const conv = seen.filter((p) => p.sql.includes("NOT IN ('edit_snapshot'"));
     expect(conv.length).toBeGreaterThanOrEqual(4);
     for (const p of conv) expect(p.plan).toContain(ci.CONVERSATION_INDEX_NAME);
-    expect(withIdx[0].messages.length).toBeGreaterThan(20);           // 20 slots + bg_task events
+    expect(withIdx[0].messages.length).toBeGreaterThan(20);           // 20 slots + structured_output events
     expect(withIdx[0].hasMore).toBe(true);
     raw.exec(`DROP INDEX ${ci.CONVERSATION_INDEX_NAME}`);
     try {

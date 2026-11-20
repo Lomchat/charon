@@ -137,8 +137,14 @@ export type SessionStreamState = {
   /** `tool_use` rows of the whole session (window GET), null before it / older hubs. */
   toolCallCount: number | null;
   edits: Map<string, EditSnapshot>;
+  /** Edited files whose content the hub could not give (their cards say so). */
+  editsMissing: ReadonlySet<string>;
+  /** Ask for these edited files' diff content (the edits tab's cards). */
+  loadEditContents: (paths: string[]) => void;
   files: Set<string>;
   bgTasks: BgTask[];
+  /** Finished background work older than the hub's history (a count). */
+  bgOlderEnded: number;
   permQueue: PermissionRequest[];
   questionQueue: PendingQuestion[];
   exitPlanQueue: PendingExitPlan[];
@@ -192,6 +198,9 @@ export type SessionStreamActions = {
   setHistoryHold(hold: boolean): void;
   clearError(): void;
 };
+
+/** Edited files per diff-content POST (the hub takes ≤ 100). */
+const EDIT_PATHS_PER_ASK = 40;
 
 export function useSessionStream(
   sessionId: string,
@@ -593,52 +602,63 @@ export function useSessionStream(
     return () => clearInterval(timer);
   }, [status]);
 
-  // ── Lazy edit-content loading (CLAUDE.md §14 gotcha 41) ──────────────────
-  const editsLoadInflightRef = useRef(false);
-  const editsLoadAttemptedRef = useRef<Set<string>>(new Set());
-  const loadEdits = useCallback(async (targetPaths: string[]) => {
-    if (editsLoadInflightRef.current || targetPaths.length === 0) return;
-    editsLoadInflightRef.current = true;
+  // ── Edit contents, on demand (CLAUDE.md §14.41) ──────────────────────────
+  // The session GET strips edit_snapshot content. The edits tab asks for the
+  // cards it is about to draw (`loadEditContents`): asks of one tick batched,
+  // ≤ EDIT_PATHS_PER_ASK per POST, one in flight. A path answered without
+  // content is `editsMissing` (its card says so instead of waiting).
+  const editsWantedRef = useRef<Set<string>>(new Set());
+  const editsAskedRef = useRef<Set<string>>(new Set());
+  const editsInflightRef = useRef(false);
+  const editsTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const [editsMissing, setEditsMissing] = useState<ReadonlySet<string>>(() => new Set());
+  const flushEditsRef = useRef<() => void>(() => {});
+  const scheduleEditsFlush = useCallback(() => {
+    if (editsTimerRef.current == null) editsTimerRef.current = setTimeout(() => flushEditsRef.current(), 0);
+  }, []);
+  flushEditsRef.current = async () => {
+    editsTimerRef.current = null;
+    if (editsInflightRef.current) return;
+    const batch = [...editsWantedRef.current].slice(0, EDIT_PATHS_PER_ASK);
+    if (!batch.length) return;
+    for (const path of batch) { editsWantedRef.current.delete(path); editsAskedRef.current.add(path); }
+    editsInflightRef.current = true;
     try {
-      const r = await sessionApi.getEdits(sessionId);
+      const r = await sessionApi.getEdits(sessionId, batch);
       const byPath = new Map(r.edits.map((e) => [e.filePath, e] as const));
-      const prev = stateRef.current.edits;
-      const next = new Map(prev);
+      const next = new Map(stateRef.current.edits);
       let changed = false;
-      for (const path of targetPaths) {
-        const cur = next.get(path);
-        // Gone, or already loaded/filled live meanwhile.
-        if (!cur || cur.before != null || cur.after != null) continue;
+      const missing: string[] = [];
+      for (const path of batch) {
         const got = byPath.get(path);
-        if (got && (got.before != null || got.after != null)) {
-          next.set(path, { ...cur, before: got.before, after: got.after,
-            truncated: cur.truncated || got.truncated, toolUseId: got.toolUseId || cur.toolUseId });
-          changed = true;
-        }
+        if (!got || (got.before == null && got.after == null)) { missing.push(path); continue; }
+        const cur = next.get(path);
+        // Gone, or filled live meanwhile.
+        if (!cur || cur.before != null || cur.after != null) continue;
+        next.set(path, { ...cur, before: got.before, after: got.after,
+          truncated: cur.truncated || got.truncated, toolUseId: got.toolUseId || cur.toolUseId });
+        changed = true;
       }
       if (changed) {
         stateRef.current = { ...stateRef.current, edits: next };
         publish();
       }
-      for (const path of targetPaths) {
-        const got = byPath.get(path);
-        if (!got || (got.before == null && got.after == null)) editsLoadAttemptedRef.current.add(path);
-      }
+      if (missing.length) setEditsMissing((prev) => new Set([...prev, ...missing]));
     } catch {
-      // Transient: the next edits change retries. The diffs tab is non-critical.
+      // Transient: these cards ask again when they next mount. Non-critical.
+      for (const path of batch) editsAskedRef.current.delete(path);
     } finally {
-      editsLoadInflightRef.current = false;
+      editsInflightRef.current = false;
+      if (editsWantedRef.current.size) scheduleEditsFlush();
     }
-  }, [sessionId, publish]);
-  // Waits for `historyReady`: diff contents can weigh hundreds of KB.
-  useEffect(() => {
-    if (!historyReady) return;
-    const unloaded: string[] = [];
-    for (const [k, v] of state.edits) {
-      if (v.before == null && v.after == null && !editsLoadAttemptedRef.current.has(k)) unloaded.push(k);
-    }
-    if (unloaded.length) void loadEdits(unloaded);
-  }, [state.edits, loadEdits, historyReady]);
+  };
+  const loadEditContents = useCallback((paths: string[]) => {
+    for (const path of paths) if (!editsAskedRef.current.has(path)) editsWantedRef.current.add(path);
+    if (editsWantedRef.current.size) scheduleEditsFlush();
+  }, [scheduleEditsFlush]);
+  useEffect(() => () => {
+    if (editsTimerRef.current != null) clearTimeout(editsTimerRef.current);
+  }, []);
 
   // ── Actions ─────────────────────────────────────────────────────────────
   const loadMoreHistory = useCallback(async () => {
@@ -836,7 +856,7 @@ export function useSessionStream(
     modelPendingApply: state.meta.modelPendingApply, effortPendingApply: state.meta.effortPendingApply,
     effectiveModel: state.meta.effectiveModel,
     liveUsage: state.liveUsage, tokenUsage: state.tokenUsage, responseSpeed,
-    toolCalls: state.toolCalls, toolCallCount, edits: state.edits, files: state.files, bgTasks,
+    toolCalls: state.toolCalls, toolCallCount, edits: state.edits, editsMissing, loadEditContents, files: state.files, bgTasks, bgOlderEnded: state.bgOlderEnded,
     permQueue: state.queues.permissions, questionQueue: state.queues.questions, exitPlanQueue: state.queues.exitPlans,
     prefillInput, error,
     isLoadingHistory: !state.loaded && !loadFailed,
@@ -848,7 +868,7 @@ export function useSessionStream(
     clearPrefillInput, refetchHistory, requestWindow, loadMoreHistory, setHistoryHold, clearError,
   }), [
     state, status, permissionMode, modelPair.model, modelPair.fallbackModel, effort, responseSpeed,
-    toolCallCount, bgTasks, prefillInput, error, loadFailed, isSyncing, historyReady, isLoadingMore, view,
+    toolCallCount, bgTasks, editsMissing, loadEditContents, prefillInput, error, loadFailed, isSyncing, historyReady, isLoadingMore, view,
     windowInFlight,
     send, interrupt, forceStop, setMode, setModel, setEffort, setUltracode, setFastMode, setServiceTier,
     doSleep, doResume, doRestart, doDelete,

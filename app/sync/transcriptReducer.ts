@@ -450,6 +450,9 @@ export type TranscriptState = {
   files: Set<string>;
   edits: Map<string, EditSnapshot>;
   bgTasks: Map<string, BgTask>;
+  /** Finished background work older than the root window's `bgHistory` (a
+   *  count: the bar's "N finished" includes them). */
+  bgOlderEnded: number;
   /** Bash `run_in_background` launches waiting for their `bg_task started`. */
   bgLaunches: Map<string, BgLaunchCandidate>;
   queues: { permissions: PermissionQ[]; questions: QuestionQ[]; exitPlans: ExitPlanQ[] };
@@ -519,7 +522,7 @@ export function createTranscriptState(sessionId: string, provider?: SessionProvi
   const p = asSessionProvider(provider);
   return {
     sessionId, rows: [], messages: [], toolCalls: [], files: new Set(), edits: new Map(),
-    bgTasks: new Map(), bgLaunches: new Map(),
+    bgTasks: new Map(), bgOlderEnded: 0, bgLaunches: new Map(),
     queues: { permissions: [], questions: [], exitPlans: [] },
     status: null, compacting: false, held: [], runtimeOutdated: false, runtimeVersions: null, activity: null, buf: { assistant: '', streamingInto: null, thinkingOpen: '' }, thinkingKnown: 0,
     sends: new Map(), knownRowIds: new Set(), livePlans: new Map(), durablePlans: new Set(), localResolved: new Map(),
@@ -1196,7 +1199,13 @@ export function applySnapshot(s: TranscriptState, r: SessionWindowResponse,
   const reconciled = reconcileOptimisticBubbles(messages, s.sends, knownRowIds);
   messages = reconciled.messages;
 
-  const bg = bgTasksAfterWindowAnswer(rebuilt.bgTasks, r, s.bgTasks.values());
+  // No page carries `bg_task` rows (an older hub's did): what ended comes as
+  // the hub's folded history, the rows' rebuild completing it.
+  const history = Array.isArray(r.bgHistory?.ended) ? r.bgHistory!.ended : [];
+  const fromRows = history.length
+    ? [...new Map([...history, ...rebuilt.bgTasks].map((t) => [t.taskId, t] as const)).values()]
+    : rebuilt.bgTasks;
+  const bg = bgTasksAfterWindowAnswer(fromRows, r, s.bgTasks.values());
   const sess = r.session as (SessionWindowResponse['session'] & { model?: string | null; fallbackModel?: string | null; effort?: string | null; ultracode?: boolean; fastMode?: boolean; serviceTier?: string | null }) | undefined;
   const pm = sess?.permissionMode as SessionMode | undefined;
   const tailKeepsPaging = kept.length > 0;
@@ -1207,6 +1216,7 @@ export function applySnapshot(s: TranscriptState, r: SessionWindowResponse,
     files: view === 'full' ? rebuilt.files : new Set([...s.files, ...rebuilt.files]),
     edits: mergeEdits(s.edits, rebuilt.edits),
     bgTasks: new Map(bg.map((t) => [t.taskId, { ...t }])),
+    bgOlderEnded: typeof r.bgHistory?.older === 'number' ? r.bgHistory.older : s.bgOlderEnded,
     queues,
     status: liveStatus,
     compacting: r.liveCompacting === true,

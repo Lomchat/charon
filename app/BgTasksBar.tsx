@@ -97,8 +97,10 @@ function taskKind(t: BgTask): string {
     : t.taskType === 'local_agent' ? backgroundWorkText.agent : backgroundWorkText.task;
 }
 
-function BgTasksBarImpl({ tasks, sessionId, provider, sessionStatus, vpsId, cwd }: {
+function BgTasksBarImpl({ tasks, olderEnded = 0, sessionId, provider, sessionStatus, vpsId, cwd }: {
   tasks: BgTask[];
+  /** Finished items older than the hub's history (counted, not listed). */
+  olderEnded?: number;
   sessionId: string;
   vpsId: string;
   cwd: string | null;
@@ -397,7 +399,7 @@ function BgTasksBarImpl({ tasks, sessionId, provider, sessionStatus, vpsId, cwd 
           title="Background work"
           subtitle={<>
             {runningCount > 0 ? `${runningCount} running` : 'Nothing running'}
-            {ended.length > 0 && ` · ${ended.length} finished`}
+            {ended.length > 0 && ` · ${ended.length + olderEnded} finished`}
             {' · stopping one leaves the session running'}
           </>}
           onClose={close}
@@ -423,7 +425,7 @@ function BgTasksBarImpl({ tasks, sessionId, provider, sessionStatus, vpsId, cwd 
           {terminalError && <div className="tm-error">Process list refresh failed: {terminalError}</div>}
           {ended.length > 0 && <section className="bgc-history">
             <button type="button" className="bgc-history-toggle" aria-expanded={historyOpen} onClick={() => setHistoryOpen((value) => !value)}>
-              {historyOpen ? '⌄' : '›'} {backgroundWorkText.finished} <span>{ended.length}</span>
+              {historyOpen ? '⌄' : '›'} {backgroundWorkText.finished} <span>{ended.length + olderEnded}</span>
             </button>
             {historyOpen && <div className="tm-cards">{ended.slice(0, historyLimit).map(renderTask)}
               {ended.length > historyLimit && <button type="button" className="bgc-more" onClick={() => setHistoryLimit((n) => n + 20)}>{backgroundWorkText.showMore}</button>}

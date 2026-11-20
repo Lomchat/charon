@@ -1465,6 +1465,9 @@ export type AgentSessionDetailResponse = {
   // registry warming in background slices): the running tasks already held
   // stay, and the warm set arrives as a `bg_tasks_snapshot` frame.
   backgroundTasksPending?: boolean;
+  // Finished background work, newest first (≤ 100; `older` = beyond): no page
+  // carries `bg_task` rows. Root window only, absent while the registry warms.
+  bgHistory?: { ended: SessionBackgroundTask[]; older: number };
   pendingPermissions: PendingPermissionPayload[];
   pendingQuestions: PendingQuestionPayload[];
   // `plan` is filled server-side when the request came without one (the plan
