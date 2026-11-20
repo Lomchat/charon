@@ -316,6 +316,10 @@ export class Game {
           this.float(actor.x, actor.y - 30, `LEVEL ${level}`, '#ffe066', 'big');
           this.rings.push({ x: actor.x, y: actor.y - 2, t: 0, max: 900, colour: '#ffe066', r: 26 });
         }
+        // Its station moved (the board was re-packed): the robot moves with it,
+        // at once. It only ever walks between its console and its rest spot.
+        actor.x += station.restX - actor.station.restX;
+        actor.y += station.restY - actor.station.restY;
         actor.session = session;
         actor.station = station;
         actor.mood = mood;
