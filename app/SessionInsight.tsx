@@ -197,9 +197,11 @@ export default function SessionInsight({
   const loadRetryAttempt = useRef(0);
   const loadLastStartedAt = useRef(0);
   const forceAfterInflight = useRef(false);
-  const loadRef = useRef<(force?: boolean) => Promise<void>>(async () => {});
+  const loadRef = useRef<(force?: boolean, only?: ReadonlySet<keyof LoadedState>) => Promise<void>>(async () => {});
 
-  const load = useCallback((force = false): Promise<void> => {
+  // `only`: a retry round re-reads just the sections that asked for it (a
+  // settled answer read again changes nothing).
+  const load = useCallback((force = false, only?: ReadonlySet<keyof LoadedState>): Promise<void> => {
     if (loadInflight.current) {
       if (force) forceAfterInflight.current = true;
       return loadInflight.current;
@@ -238,6 +240,7 @@ export default function SessionInsight({
     const promise = (async () => {
       let shouldRetry = false;
       let serverRetryAfterMs = 0;
+      const retryKeys = new Set<keyof LoadedState>();
       // Sequential browser reads leave several HTTP/1.1 connections free for
       // chat input even behind a proxy. The first three routes themselves
       // return non-blocking snapshots; security is last because older agents
@@ -270,12 +273,13 @@ export default function SessionInsight({
       }
 
       for (const request of requests) {
+        if (only && !only.has(request.key)) continue;
         const value = await get(request.path);
         if (controller.signal.aborted || loadGeneration.current !== generation) return;
         const requestState = insightSnapshotRequestState(value);
-        // A retry round re-reads every section while one refreshes (~10 s
-        // apart for as long as it lasts): an answer with the stamp already
-        // on screen keeps its state object, so nothing re-renders.
+        // A retry round re-reads a section while it refreshes (~10 s apart
+        // for as long as it lasts): an answer with the stamp already on
+        // screen keeps its state object, so nothing re-renders.
         const stamp = snapshotStamp(value);
         if (!requestState.waiting && (stamp == null || appliedStamp.current[request.key] !== stamp)) {
           finish(request.key, () => {
@@ -286,6 +290,7 @@ export default function SessionInsight({
         }
         if (requestState.shouldRetry) {
           shouldRetry = true;
+          retryKeys.add(request.key);
           serverRetryAfterMs = Math.max(serverRetryAfterMs, requestState.retryAfterMs);
         }
       }
@@ -297,7 +302,7 @@ export default function SessionInsight({
         const backoff = Math.min(10_000, 500 * (2 ** Math.min(5, attempt)));
         loadRetryTimer.current = setTimeout(() => {
           loadRetryTimer.current = null;
-          void loadRef.current(false);
+          void loadRef.current(false, retryKeys);
         }, Math.max(serverRetryAfterMs, backoff));
       } else {
         loadRetryAttempt.current = 0;
