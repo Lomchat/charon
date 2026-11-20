@@ -458,7 +458,8 @@ function SessionErrorMessage({ m, error, onReauth, onContinue, onScheduleResume,
   const hasDetails = error.message.includes('\n') || error.message.length > firstLine.length;
   const kindLabel = error.kind === 'authentication' ? 'authentication'
     : error.kind === 'rate_limit' ? 'rate limit'
-    : error.kind === 'transport' ? 'connection' : 'API';
+    : error.kind === 'transport' ? 'connection'
+    : error.kind === 'interrupted' ? 'interrupted' : 'API';
   const resetAt = error.kind === 'rate_limit' ? resolveResetAtMs(error.resetAt, error.message) : null;
   const isFolded = useBubbleFold(m.id);
   return (

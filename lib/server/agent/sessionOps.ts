@@ -43,7 +43,7 @@ import { isClaudeAuthExpired } from '@/lib/authExpired';
 import {
   classifyTerminalClaudeError, type TerminalClaudeErrorKind,
 } from '@/lib/terminalClaudeError';
-import { classifySessionError, type SessionErrorPayload } from '@/lib/sessionError';
+import { classifySessionError, interruptedSessionError, type SessionErrorPayload } from '@/lib/sessionError';
 import { pickVpsRuntimeFields } from '@/lib/vpsRuntimeFields';
 import { normalizeResetAtMs, resolveResetAtMs } from '@/lib/rateLimitReset';
 import { purgeSessionBlobs } from '@/lib/server/hub/attachments';
@@ -958,6 +958,10 @@ export class SessionStream {
   // and no model output followed: that turn's `stop` is not a finish, the
   // input's own turn comes next (§14.125). Cleared by output, stop, sleep.
   private heldAwaitingTurn = false;
+  // The running turn is being interrupted (§14.127): `Manual` = the stop
+  // button (hub-sent), `Seen` = the agent's `interrupted`. Consumed by `stop`.
+  private interruptManual = false;
+  private interruptSeen = false;
   // Live command/MCP output of RUNNING tools (`tool_progress`, sync refonte
   // I6 `covered`): the session GET returns it as `streamingToolOutput`, so a
   // refetch mid-command keeps what was printed so far. Tail-bounded
@@ -1742,6 +1746,12 @@ export class SessionStream {
           this._endCompactRequest();
           this.heldAwaitingTurn = false;
         } else this._scheduleRelease();
+        // An interrupt mark with no `stop` behind it (an idle interrupt, a
+        // forced stop) never reaches a later turn.
+        if (ev.status !== 'active') {
+          this.interruptManual = false;
+          this.interruptSeen = false;
+        }
         // A new SDK client applies the queued config (the reducer's rule).
         if (ev.status === 'starting') { this.pendingApply.model = false; this.pendingApply.effort = false; }
         // The Claude daemon returns to idle after ResultMessage even when the
@@ -2778,9 +2788,19 @@ export class SessionStream {
         const strictViolation = this.isReplaying ? null : this.strictViolation;
         this.strictViolation = null;
         if (strictViolation) this.pendingBlockingErrorRecorded = true;
-        const typedFailure = ev.is_error === true
+        // Interrupted on purpose (§14.127): the stop button or a parent's
+        // interrupt_sub_session. The provider says so (Claude `aborted_*` +
+        // is_error, Codex `interrupted`, Cursor `cancelled`), the marks cover
+        // what it does not. A card, no failure — but the strict model's own.
+        const interrupted = strictViolation == null && (this.interruptManual || this.interruptSeen
+          || String(ev.terminal_reason ?? '').startsWith('aborted')
+          || ev.subtype === 'interrupted' || ev.subtype === 'cancelled');
+        const interruptedBy = interrupted && !this.interruptManual ? this._parentHandle() : null;
+        this.interruptManual = false;
+        this.interruptSeen = false;
+        const typedFailure = (!interrupted && (ev.is_error === true
           || ev.terminal_reason === 'api_error'
-          || ev.subtype === 'error'
+          || ev.subtype === 'error'))
           || this.pendingAgentError?.fatal === true
           || strictViolation != null;
         const assistantTerminalError = strictViolation ? null : this.pendingTerminalAssistantError;
@@ -2835,6 +2855,10 @@ export class SessionStream {
             },
           );
         }
+        const interruptedStop = interrupted && !terminalError;
+        if (interruptedStop && !this.pendingBlockingErrorRecorded) {
+          this._recordBlockingError(null, { turnFailure: false, payload: interruptedSessionError(this.kind, interruptedBy) });
+        }
         this.pendingTerminalAssistantError = null;
         this.pendingAgentError = null;
         this.pendingTurnErrorKind = null;
@@ -2846,11 +2870,11 @@ export class SessionStream {
         // what put a green "done" on sessions that were still busy (§14.91). A
         // failed turn still wins — it is the more urgent thing to report.
         const bgPending = !alreadyFinished && !terminalError && this.hasRunningBgTasks();
-        // Inputs held by a compaction (§14.125) still wait, or one went out
-        // into this turn unanswered: the next turn is theirs, this stop is
-        // not a finish (no unread marker, push or Telegram). Errors still are.
-        const notFinish = !this.isReplaying && !terminalError
-          && (this.held.length > 0 || this.heldAwaitingTurn);
+        // Not a finish (no unread marker, push or Telegram; errors still are):
+        // an interrupted turn, or inputs held by a compaction (§14.125) still
+        // wait / one went out into this turn unanswered — the next turn is theirs.
+        const notFinish = interruptedStop || (!this.isReplaying && !terminalError
+          && (this.held.length > 0 || this.heldAwaitingTurn));
         if (!this.isReplaying) this.heldAwaitingTurn = false;
         if (terminalError && !alreadyFinished) {
           this.terminalErrorLatched = true;
@@ -2892,7 +2916,7 @@ export class SessionStream {
         }
         // A recap under the answer (§14.122): live, new, successful finishes
         // only — never a replayed one, which would re-ask for every old turn.
-        if (!this.isReplaying && isNewFinish && !terminalError && typeof finalAssistantId === 'number') {
+        if (!this.isReplaying && isNewFinish && !terminalError && !interrupted && typeof finalAssistantId === 'number') {
           this._scheduleRecap(finalAssistantId);
         }
         // Order (§14.47): stop → status → unread (DB + `session_unread`) →
@@ -2979,6 +3003,8 @@ export class SessionStream {
         break;
       }
       case 'interrupted':
+        // A forced one sleeps the session: no `stop` follows (§14.127).
+        if (!this.isReplaying && ev.forced !== true) this.interruptSeen = true;
         this._broadcast({ type: 'mode_changed', mode: this.permissionMode }); // free-form
         break;
       case 'error':
@@ -3248,9 +3274,26 @@ export class SessionStream {
     }
   }
 
-  async sendInterrupt(): Promise<void> {
+  /** `manual`: the user's stop button — its turn ends as "Interrupted
+   *  manually", no failure, no notification (§14.127). */
+  async sendInterrupt(manual = false): Promise<void> {
+    if (manual && (this.status === 'thinking' || this.status === 'starting')) this.interruptManual = true;
     const client = getAgentClientForVpsId(this.vpsId);
     await client.call('interrupt', { session_id: this.id });
+  }
+
+  /** `@handle` of the session that spawned this one (§14.93), or null. */
+  private _parentHandle(): string | null {
+    try {
+      const row = db.select({ parent: agentSessions.parentSessionId }).from(agentSessions)
+        .where(eq(agentSessions.id, this.id)).get();
+      if (!row?.parent) return null;
+      const parent = db.select({ handle: agentSessions.handle }).from(agentSessions)
+        .where(eq(agentSessions.id, row.parent)).get();
+      return parent?.handle ? `@${parent.handle}` : null;
+    } catch {
+      return null;
+    }
   }
 
   /** Strict model (§14.118): another model answered this turn — write the
@@ -4112,6 +4155,8 @@ export class SessionStream {
       hint?: string | null;
       apiStatus?: string | number | null;
       resetAt?: number | null;
+      /** A card built by the caller (an interrupted turn), not classified. */
+      payload?: SessionErrorPayload;
     },
   ): SessionErrorPayload | null {
     const seq = this.currentEventSeq;
@@ -4119,7 +4164,7 @@ export class SessionStream {
       this.pendingBlockingErrorRecorded = true;
       return null;
     }
-    const payload = classifySessionError({
+    const payload = opts.payload ?? classifySessionError({
       provider: this.kind,
       message,
       turnFailure: opts.turnFailure,

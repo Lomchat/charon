@@ -3,7 +3,9 @@ import { isSessionProvider, type SessionProvider } from './sessionCapabilities';
 // Durable, provider-neutral description of a blocking session error. Stored in
 // session_messages with role='error': the historical table name is a
 // compatibility detail, while this payload is shared by Claude and Codex.
-export type SessionErrorKind = 'authentication' | 'rate_limit' | 'transport' | 'api';
+// `interrupted`: a turn stopped on purpose (stop button, a parent's
+// interrupt_sub_session) — a card, never a failure (`interruptedSessionError`).
+export type SessionErrorKind = 'authentication' | 'rate_limit' | 'transport' | 'api' | 'interrupted';
 export type SessionErrorAction = 'sign_in' | 'continue' | null;
 
 export type SessionErrorPayload = {
@@ -59,13 +61,22 @@ export function classifySessionError(input: {
   };
 }
 
+/** The card of an interrupted turn: no action, no failure. */
+export function interruptedSessionError(provider: SessionProvider, by: string | null): SessionErrorPayload {
+  return {
+    type: 'session_error', provider, kind: 'interrupted',
+    message: by ? `Interrupted by ${by}.` : 'Interrupted manually.',
+    action: null, fatal: false, resetAt: null,
+  };
+}
+
 export function parseSessionError(value: string | null | undefined): SessionErrorPayload | null {
   if (!value) return null;
   try {
     const p = JSON.parse(value) as Partial<SessionErrorPayload>;
     if (p?.type !== 'session_error') return null;
     if (!isSessionProvider(p.provider)) return null;
-    if (!['authentication', 'rate_limit', 'transport', 'api'].includes(String(p.kind))) return null;
+    if (!['authentication', 'rate_limit', 'transport', 'api', 'interrupted'].includes(String(p.kind))) return null;
     if (typeof p.message !== 'string' || !p.message.trim()) return null;
     const action = p.action === 'sign_in' || p.action === 'continue' ? p.action : null;
     return {

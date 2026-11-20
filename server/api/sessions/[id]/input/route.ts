@@ -24,7 +24,7 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
   const body = await req.json();
   try {
     if (body.type === 'interrupt') {
-      await stream.sendInterrupt();
+      await stream.sendInterrupt(true);
       return Response.json({ ok: true });
     }
     const content = String(body.content ?? '').trim();

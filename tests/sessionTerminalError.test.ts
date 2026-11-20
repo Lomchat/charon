@@ -2,6 +2,7 @@ import { beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { eq } from 'drizzle-orm';
 
 process.env.DATABASE_URL = path.join(
   fs.mkdtempSync(path.join(os.tmpdir(), 'charon-terminal-error-test-')),
@@ -287,6 +288,41 @@ describe('terminal Claude assistant errors', () => {
       .toContain('Codex ended with an API error');
     expect(telegramMocks.sendPlainToTelegram.mock.calls[0][0])
       .not.toContain('finished its response');
+  });
+
+  it('an interrupt is no failure and no finish: a card, ready, no unread marker, no Telegram (§14.127)', async () => {
+    const unread = () => db.select().from(schema.agentSessions).all()
+      .find((row: any) => row.id === SID)?.unreadStop;
+    const PARENT = 'p'.repeat(32);
+    db.insert(schema.agentSessions).values({
+      id: PARENT, vpsId: VPS_ID, cwd: '/tmp', name: 'parent', status: 'active', handle: 'boss',
+    }).run();
+    db.update(schema.agentSessions).set({ parentSessionId: PARENT }).where(eq(schema.agentSessions.id, SID)).run();
+
+    // The parent's interrupt_sub_session, Claude-shaped: is_error + aborted_streaming.
+    const claude = createStream('claude');
+    claude._onAgentEvent({ event: 'status', session_id: SID, status: 'thinking', seq: 50 });
+    claude._onAgentEvent({ event: 'interrupted', session_id: SID, seq: 51 });
+    claude._onAgentEvent({ event: 'assistant_text', session_id: SID, delta: 'Je regarde', seq: 52 });
+    claude._onAgentEvent({
+      event: 'stop', session_id: SID, subtype: 'error_during_execution', is_error: true,
+      terminal_reason: 'aborted_streaming', peer_request_id: null, seq: 53,
+    });
+    expect(claude.status).toBe('active');
+    expect(sessionStatus()).toBe('active');
+    expect(persistedErrors()).toMatchObject([{ kind: 'interrupted', message: 'Interrupted by @boss.', action: null }]);
+    expect(unread()).toBe(0);
+
+    // The stop button on a Codex turn.
+    db.delete(schema.sessionMessages).run();
+    const codex = createStream('codex');
+    codex._onAgentEvent({ event: 'status', session_id: SID, status: 'thinking', seq: 60 });
+    await codex.sendInterrupt(true);
+    codex._onAgentEvent({ event: 'stop', session_id: SID, subtype: 'interrupted', peer_request_id: null, seq: 61 });
+    expect(codex.status).toBe('active');
+    expect(persistedErrors()).toMatchObject([{ kind: 'interrupted', message: 'Interrupted manually.' }]);
+    expect(unread()).toBe(0);
+    expect(telegramMocks.sendPlainToTelegram).not.toHaveBeenCalled();
   });
 
   it('turns a prompt-hook veto into a durable failure instead of a false success', () => {
