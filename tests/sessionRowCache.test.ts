@@ -562,23 +562,26 @@ describe('cold folds are sliced', () => {
     const slicesBefore = rowCache.sessionRowCacheStats().slices;
     const first = rowCache.foldSessionEventRows('recorded', a, opts);
     expect(first.complete).toBe(false);
-    // ONE synchronous slice = the first 7 session rows.
-    expect(first.state.ids).toEqual(all.filter((id) => id <= sessionRows[6]));
+    // ONE synchronous slice = the first 7 EVENT rows (the user rows between
+    // them are never read: the scan seeks event rows only).
+    expect(first.state.ids).toEqual(all.slice(0, 7));
     expect(steps()).toBe(first.state.ids.length);
     expect(rowCache.sessionRowCacheStats().chains).toBe(1);
 
-    // A second synchronous call while warming advances one more slice and
-    // never starts a second chain.
+    // A second call while warming folds nothing in its own tick (the pump
+    // owns the pace) and never starts a second chain.
     const second = rowCache.foldSessionEventRows('recorded', a, opts);
     expect(second.complete).toBe(false);
-    expect(second.state.ids).toEqual(all.filter((id) => id <= sessionRows[13]));
+    expect(second.state.ids).toEqual(all.slice(0, 7));
+    expect(steps()).toBe(7);
     expect(rowCache.sessionRowCacheStats().chains).toBe(1);
 
     const final = await done;
     expect(final.ids).toEqual(all);
     expect(completions).toHaveLength(1);
     expect(rowCache.sessionRowCacheStats().chains).toBe(0);
-    expect(rowCache.sessionRowCacheStats().slices - slicesBefore).toBe(Math.ceil(50 / 7));
+    expect(rowCache.sessionRowCacheStats().slices - slicesBefore).toBe(Math.ceil(all.length / 7));
+    expect(sessionRows.length).toBe(50);
     const again = rowCache.foldSessionEventRows('recorded', a, opts);
     expect(again).toEqual({ state: { ids: all }, complete: true });
   });
@@ -597,7 +600,9 @@ describe('cold folds are sliced', () => {
 });
 
 describe('eviction and module copies', () => {
-  it('drops entries untouched for 30 min (one unref sweeper, stopped when empty)', () => {
+  it('drops entries untouched for ROW_CACHE_IDLE_EVICT_MS (one unref sweeper, stopped when empty)', () => {
+    const IDLE = rowCache.ROW_CACHE_IDLE_EVICT_MS;
+    const MIN = 60_000;
     vi.useFakeTimers();
     rowCache.invalidateSessionRowCaches();   // the sweeper restarts under fake timers
     const a = newSession();
@@ -607,11 +612,11 @@ describe('eviction and module copies', () => {
     sessionTokenUsage(a);
     bg.runningBgTasksFromDb(b);
     expect(rowCache.sessionRowCacheStats()).toMatchObject({ entries: 2, sweeping: true });
-    vi.advanceTimersByTime(20 * 60_000);
-    bg.runningBgTasksFromDb(b);              // touched at 20 min
-    vi.advanceTimersByTime(11 * 60_000);     // a: 31 min idle, b: 11
+    vi.advanceTimersByTime(IDLE - 10 * MIN);
+    bg.runningBgTasksFromDb(b);              // touched 10 min before a's limit
+    vi.advanceTimersByTime(11 * MIN);        // a: past the limit, b: 11 min idle
     expect(rowCache.sessionRowCacheStats()).toMatchObject({ entries: 1, sweeping: true });
-    vi.advanceTimersByTime(20 * 60_000);     // b: 31 min idle
+    vi.advanceTimersByTime(IDLE);            // b: past the limit
     expect(rowCache.sessionRowCacheStats()).toMatchObject({ entries: 0, sweeping: false });
     // An evicted entry simply re-folds.
     expect(sessionTokenUsage(a)).toEqual(refTokens(a));
@@ -710,9 +715,10 @@ describe('the context route while the recorded fold warms', () => {
 // S1 step review (second round).
 describe('the fold scan plan', () => {
   // Under real statistics (prod's stat1+stat4) the planner chose the TABLE's
-  // rowid range for some sessions: a cold "20 k-row slice" walked every row
-  // of every session below `hi`. The scan is pinned to the session index.
-  it('a cold range always plans on idx_…_session_id_id, even under statistics favouring the rowid range', () => {
+  // rowid range for some sessions: a cold slice walked every row of every
+  // session below `hi`. The scan is pinned to the session's EVENT rows (the
+  // (session_id, id) walk read every tool/edit row of the span to test its role).
+  it('a cold range always plans on the event rows of idx_…_snapshot_lookup, even under statistics favouring the rowid range', () => {
     const a = newSession();
     insert(a, 'event', { type: 'turn_usage', provider: 'codex', inputTokens: 1, outputTokens: 1 });
     sessionTokenUsage(a);                                            // prepares the 2-LIKE scan
@@ -736,7 +742,8 @@ describe('the fold scan plan', () => {
       ]) ins.run(idx, stat);
       h.exec('ANALYZE sqlite_schema');
       expect(plan(scan.source)).toBe(
-        'SEARCH session_messages USING INDEX idx_session_messages_session_id_id (session_id=? AND id>? AND id<?)');
+        'SEARCH session_messages USING INDEX idx_session_messages_snapshot_lookup '
+        + '(session_id=? AND role=? AND snapshot_file_path=? AND snapshot_phase=? AND id>? AND id<?)');
       // Negative control: the same scan, unpinned, walks the table's rowid range.
       expect(plan(scan.source.replace(/INDEXED BY \S+/, ''))).toBe(
         'SEARCH session_messages USING INTEGER PRIMARY KEY (rowid>? AND rowid<?)');
@@ -785,7 +792,7 @@ describe('the bg registry: strict and tolerant readers', () => {
   let ops: typeof import('@/lib/server/agent/sessionOps');
   beforeAll(async () => { ops = await import('@/lib/server/agent/sessionOps'); });
 
-  /** A session of three 20 k-row slices and a bit: bg rows near both ends. */
+  /** A session of many slices: bg rows near both ends. */
   function bigSession(kind = 'codex'): string {
     const a = newSession(kind, 'active');
     const ins = rawSqlite().prepare('INSERT INTO session_messages (session_id, role, content, ts_ms) VALUES (?, ?, ?, ?)');
@@ -808,7 +815,9 @@ describe('the bg registry: strict and tolerant readers', () => {
     expect(bg.bgRegistrySnapshotFromDb(a, true)).toBeNull();
     expect(bg.runningBgTaskDetailsIfWarm(a)).toBeNull();             // the window GET omits it
     expect(bg.runningBgTasksIfWarm(a)).toBeNull();                   // the quiet gate counts busy, the list 0
-    expect(rowCache.sessionRowCacheStats().slices - slices).toBe(3); // one slice per call
+    // One slice in the first caller's tick; the next ones find the chain
+    // warming and fold nothing (the pump owns the pace).
+    expect(rowCache.sessionRowCacheStats().slices - slices).toBe(1);
     expect(rowCache.sessionRowCacheStats().chains).toBe(1);
     // A strict reader (a status decision) needs the whole registry now.
     checkBg(a);

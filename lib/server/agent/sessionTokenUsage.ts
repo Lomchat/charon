@@ -1,14 +1,14 @@
 import 'server-only';
 import type { SessionTokenUsage } from '@/lib/sessionTokenUsage';
-import { foldSessionEventRows, type FoldRow } from './sessionRowCache';
+import { FOLD_SLICE_EVENT_ROWS, foldSessionEventRows, warmSessionEventRows, type FoldOptions, type FoldRow } from './sessionRowCache';
 
 const count = (value: unknown): number | null => typeof value === 'number' && Number.isSafeInteger(value) && value >= 0 ? value : null;
 
 type TokenFold = { usage: SessionTokenUsage; requests: Set<string> };
 
 const TOKEN_LIKES = ['%"type":"endpoint_usage"%', '%"type":"turn_usage"%'];
-/** Session rows per synchronous slice of a cold fold (G1). */
-export const TOKEN_FOLD_SLICE_ROWS = 20_000;
+/** Event rows per synchronous slice of a cold fold (G1). */
+export const TOKEN_FOLD_SLICE_ROWS = FOLD_SLICE_EVENT_ROWS;
 
 /** One row of the left fold, in id order. True when it set `revision`. */
 function stepTokens(s: TokenFold, row: FoldRow): boolean {
@@ -58,13 +58,8 @@ function publishWarmed(sessionId: string, usage: SessionTokenUsage): void {
     .catch(() => { /* the next GET/poll reads the warm fold anyway */ });
 }
 
-/** Full session, independent of chat pagination. Request rows include tool
- * round trips and survive aborted turns; SDK final rows must not count twice.
- * Incremental (sessionRowCache.ts): only rows newer than the cached fold are
- * read. NULL while a cold fold still warms — "unknown, keep the last value"
- * (`mergeSessionTokenUsage(prev, null) = prev`); its completion broadcasts. */
-export function sessionTokenUsage(sessionId: string): SessionTokenUsage | null {
-  const { state, complete } = foldSessionEventRows<TokenFold>('tokens', sessionId, {
+function tokenFold(sessionId: string): FoldOptions<TokenFold> {
+  return {
     likes: TOKEN_LIKES,
     init: () => ({
       usage: {
@@ -80,6 +75,20 @@ export function sessionTokenUsage(sessionId: string): SessionTokenUsage | null {
     step: stepTokens,
     sliceRows: TOKEN_FOLD_SLICE_ROWS,
     onComplete: (s) => publishWarmed(sessionId, s.usage),
-  });
+  };
+}
+
+/** Warm the fold in the background (hub boot, sessionFoldWarmup.ts). */
+export function warmSessionTokenUsage(sessionId: string): void {
+  warmSessionEventRows('tokens', sessionId, tokenFold(sessionId));
+}
+
+/** Full session, independent of chat pagination. Request rows include tool
+ * round trips and survive aborted turns; SDK final rows must not count twice.
+ * Incremental (sessionRowCache.ts): only rows newer than the cached fold are
+ * read. NULL while a cold fold still warms — "unknown, keep the last value"
+ * (`mergeSessionTokenUsage(prev, null) = prev`); its completion broadcasts. */
+export function sessionTokenUsage(sessionId: string): SessionTokenUsage | null {
+  const { state, complete } = foldSessionEventRows<TokenFold>('tokens', sessionId, tokenFold(sessionId));
   return complete ? state.usage : null;
 }

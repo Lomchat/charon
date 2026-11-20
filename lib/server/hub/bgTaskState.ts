@@ -1,5 +1,5 @@
 import 'server-only';
-import { foldSessionEventRows } from '@/lib/server/agent/sessionRowCache';
+import { FOLD_SLICE_EVENT_ROWS, foldSessionEventRows, warmSessionEventRows, type FoldOptions } from '@/lib/server/agent/sessionRowCache';
 import {
   applyBgTaskEvent, BG_OWNER_TASK_TYPES, BG_TASK_MAX_AGE_S, bgTasksToArray, isTerminalBgStatus,
   type BgTask,
@@ -62,7 +62,7 @@ export function isBgTaskDone(
  *    (it finishes a warming one);
  *  - TOLERANT (`…IfWarm`: the window GET, the session list, the auto-update
  *    quiet gate, a codex stream's attach): get null while a cold fold warms
- *    in 20 k-row slices in the background (G1), and answer conservatively. */
+ *    in budgeted slices in the background (G1), and answer conservatively. */
 type BgRowStamp = { seq: number | null; tsMs: number | null; createdAt: number };
 /** A task's latest `started` row naming a launcher tool_use. */
 type BgLaunchAnchor = { rowId: number; toolUseId: string };
@@ -85,8 +85,8 @@ type BgRegistry = {
   launch: Map<string, BgLaunchAnchor>;
 };
 
-/** Session rows per synchronous slice of a TOLERANT cold fold. */
-export const BG_FOLD_SLICE_ROWS = 20_000;
+/** Event rows per synchronous slice of a TOLERANT cold fold. */
+export const BG_FOLD_SLICE_ROWS = FOLD_SLICE_EVENT_ROWS;
 
 function stepBgRegistry(reg: BgRegistry, row: { id: number; content: string; createdAt: number; seq: number | null; tsMs: number | null }): void {
   let ev: any;
@@ -115,8 +115,8 @@ function stepBgRegistry(reg: BgRegistry, row: { id: number; content: string; cre
 // The fold hands its accumulator to the readers below WITHOUT a copy (a copy
 // is O(tasks) per read): they only READ it, synchronously, and every value
 // they return is a fresh Map/Set/array. Never export the registry itself.
-function bgFold(sessionId: string, sliceRows?: number): { state: BgRegistry; complete: boolean } {
-  return foldSessionEventRows<BgRegistry>('bg', sessionId, {
+function bgFoldOptions(sessionId: string, sliceRows?: number): FoldOptions<BgRegistry> {
+  return {
     likes: ['%"bg_task"%'],
     init: () => ({
       details: new Map(), running: new Map(), last: new Map(), types: new Map(), owned: new Set(), launch: new Map(),
@@ -127,7 +127,16 @@ function bgFold(sessionId: string, sliceRows?: number): { state: BgRegistry; com
       return true;
     },
     ...(sliceRows != null ? { sliceRows, onComplete: () => publishBgWarm(sessionId) } : {}),
-  });
+  };
+}
+
+function bgFold(sessionId: string, sliceRows?: number): { state: BgRegistry; complete: boolean } {
+  return foldSessionEventRows<BgRegistry>('bg', sessionId, bgFoldOptions(sessionId, sliceRows));
+}
+
+/** Warm the registry in the background (hub boot, sessionFoldWarmup.ts). */
+export function warmBgRegistry(sessionId: string): void {
+  warmSessionEventRows('bg', sessionId, bgFoldOptions(sessionId, BG_FOLD_SLICE_ROWS));
 }
 
 /** A tolerant cold fold finished: a codex stream whose attach found it cold

@@ -1,5 +1,5 @@
 import 'server-only';
-import { foldSessionEventRows, type FoldRow } from './sessionRowCache';
+import { FOLD_SLICE_EVENT_ROWS, foldSessionEventRows, warmSessionEventRows, type FoldOptions, type FoldRow } from './sessionRowCache';
 
 export type RecordedSessionUsage = {
   turns: number;
@@ -14,8 +14,8 @@ export type RecordedSessionUsage = {
 
 type RecordedFold = { total: Omit<RecordedSessionUsage, 'models'>; models: Set<string> };
 
-/** Session rows per synchronous slice of a cold fold (G1). */
-export const RECORDED_FOLD_SLICE_ROWS = 20_000;
+/** Event rows per synchronous slice of a cold fold (G1). */
+export const RECORDED_FOLD_SLICE_ROWS = FOLD_SLICE_EVENT_ROWS;
 
 const num = (value: unknown) => typeof value === 'number' && Number.isFinite(value) ? value : 0;
 
@@ -39,6 +39,26 @@ function stepRecorded(s: RecordedFold, row: FoldRow): boolean {
   } catch { return false; /* one corrupt historical row cannot hide every good total */ }
 }
 
+const RECORDED_FOLD: FoldOptions<RecordedFold> = {
+  likes: ['%"type":"turn_usage"%'],
+  init: () => ({
+    total: {
+      turns: 0, input_tokens: 0, output_tokens: 0,
+      cache_read_tokens: 0, cache_write_tokens: 0,
+      duration_ms: 0, cost_usd: 0,
+    },
+    models: new Set(),
+  }),
+  clone: (s) => ({ total: { ...s.total }, models: new Set(s.models) }),
+  step: stepRecorded,
+  sliceRows: RECORDED_FOLD_SLICE_ROWS,
+};
+
+/** Warm the fold in the background (hub boot, sessionFoldWarmup.ts). */
+export function warmRecordedSessionUsage(sessionId: string): void {
+  warmSessionEventRows('recorded', sessionId, RECORDED_FOLD);
+}
+
 /** Aggregate the provider-neutral final-usage rows recorded since agent 0.67.
  *  This intentionally says "recorded", never "lifetime": older turns predate
  *  the durable event and must not be presented as zero-cost history.
@@ -46,20 +66,7 @@ function stepRecorded(s: RecordedFold, row: FoldRow): boolean {
  *  `usage` is then null, never a partial sum (the context route answers
  *  `recordedPending` and the client asks again shortly). */
 export function recordedSessionUsage(sessionId: string): { usage: RecordedSessionUsage | null; pending: boolean } {
-  const { state, complete } = foldSessionEventRows<RecordedFold>('recorded', sessionId, {
-    likes: ['%"type":"turn_usage"%'],
-    init: () => ({
-      total: {
-        turns: 0, input_tokens: 0, output_tokens: 0,
-        cache_read_tokens: 0, cache_write_tokens: 0,
-        duration_ms: 0, cost_usd: 0,
-      },
-      models: new Set(),
-    }),
-    clone: (s) => ({ total: { ...s.total }, models: new Set(s.models) }),
-    step: stepRecorded,
-    sliceRows: RECORDED_FOLD_SLICE_ROWS,
-  });
+  const { state, complete } = foldSessionEventRows<RecordedFold>('recorded', sessionId, RECORDED_FOLD);
   if (!complete) return { usage: null, pending: true };
   if (!state.total.turns) return { usage: null, pending: false };
   return {

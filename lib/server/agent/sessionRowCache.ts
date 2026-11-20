@@ -20,15 +20,27 @@ import { timeSection } from '@/lib/server/perf/loopLag';
 // (rollback) must call `invalidateSessionRowCaches(id)` (I11). A fold must not
 // run inside a transaction that may roll back (none does today).
 //
-// A cold fold of a huge session is SLICED (`sliceRows` session rows per
-// synchronous slice, G1): the caller gets `complete:false`, and ONE
-// `setImmediate` chain per (key, session) finishes it in the background, then
-// calls `onComplete`. Entries untouched for 30 min are evicted by one `unref`
-// 60 s sweeper; an evicted entry simply re-folds on next use.
+// The scan reads EVENT rows only: `idx_…_snapshot_lookup` = (session_id,
+// role, snapshot_file_path, snapshot_phase, id), whose snapshot columns are
+// NULL on every non-edit row (messageWire.ts § deriveMessageStorage), so the
+// equality prefix + `id` range seeks them in id order. Walking (session_id, id)
+// instead read every tool_result/edit_snapshot row of the span from disk
+// (hundreds of MB in a heavy session) just to test its role.
 //
-// All state lives on `globalThis.__charonRowCaches` (Next loads server
-// modules in several copies, §14.106): every copy shares entries, chains and
-// the prepared statements (bound to the shared handle).
+// Work is CHUNKED by event rows (CHUNK_EVENT_ROWS, bounded by an index-only
+// seek: one SQLite call never walks an unbounded run of non-matching rows). A
+// TOLERANT fold (`sliceRows`) does at most one slice in the caller's tick —
+// `sliceRows` event rows and FOLD_SLICE_MS of work — answers `complete:false`,
+// and ONE background chain per (key, session) finishes it; a tolerant call
+// finding that chain running answers at once. Every chain runs from ONE
+// shared pump (≤ PUMP_BUDGET_MS of slices per event-loop turn, round-robin):
+// N cold sessions (a hub boot) never queue N slices into one check phase.
+// Entries untouched for ROW_CACHE_IDLE_EVICT_MS are evicted by one `unref`
+// 60 s sweeper; an evicted entry simply re-folds.
+//
+// All state lives on `globalThis.__charonRowCaches` (module copies, §14.106):
+// every copy shares entries, chains, the pump and the prepared statements
+// (bound to the shared handle).
 
 export type FoldKey = 'tokens' | 'recorded' | 'bg';
 
@@ -43,11 +55,21 @@ export type FoldOptions<T> = {
   /** Applies one row in id order; true = the row counted (it becomes the
    *  validation anchor `lastHitId`). */
   step: (s: T, row: FoldRow) => boolean;
-  /** Cold-fold slicing; undefined = synchronous to the end. */
+  /** TOLERANT: at most this many EVENT rows (and FOLD_SLICE_MS) per slice,
+   *  the rest in the background. Undefined = STRICT: to the end, now. */
   sliceRows?: number;
   /** Called once when a sliced fold finishes in the background. */
   onComplete?: (state: T) => void;
 };
+
+/** Event rows read per SQLite call. */
+export const CHUNK_EVENT_ROWS = 256;
+/** Work one tolerant slice may do (checked between chunks). */
+export const FOLD_SLICE_MS = 8;
+/** Slices the shared pump runs per event-loop turn. */
+export const PUMP_BUDGET_MS = 12;
+/** Event rows per tolerant slice (the three folds' default). */
+export const FOLD_SLICE_EVENT_ROWS = 4_096;
 
 type Entry = {
   state: unknown;
@@ -62,9 +84,11 @@ type Statements = {
   handle: Database.Database;
   maxId: Database.Statement;
   hit: Database.Statement;
-  sliceEnd: Database.Statement;
+  chunkEnd: Database.Statement;
   scans: Map<number, Database.Statement>;
 };
+
+type Job = { key: FoldKey; chainKey: string; token: number; run: () => boolean };
 
 type RowCaches = {
   byKey: Map<FoldKey, Map<string, Entry>>;
@@ -72,6 +96,9 @@ type RowCaches = {
   /** `${key}\0${sessionId}` → token of the live continuation chain. */
   chains: Map<string, number>;
   nextChain: number;
+  /** The background chains' next slices, round-robin (one pump). */
+  jobs: Job[];
+  pumping: boolean;
   statements: Statements | null;
   stats: RowCacheStats;
 };
@@ -84,20 +111,31 @@ export type RowCacheStats = {
   evicted: number;
 };
 
-export const ROW_CACHE_IDLE_EVICT_MS = 30 * 60_000;
+/** Idle time before an entry is dropped. Every resync and summary publish
+ *  reads each non-archived session's registry, so this only frees sessions
+ *  nobody looked at for hours (archive/delete free theirs at once). */
+export const ROW_CACHE_IDLE_EVICT_MS = 6 * 3_600_000;
 const SWEEP_EVERY_MS = 60_000;
+
+const EVENT_ROWS = `session_id = ? AND role = 'event' AND snapshot_file_path IS NULL AND snapshot_phase IS NULL`;
+const EVENT_INDEX = 'idx_session_messages_snapshot_lookup';
 
 const g = globalThis as typeof globalThis & { __charonRowCaches?: RowCaches };
 
 function caches(): RowCaches {
-  return g.__charonRowCaches ??= {
+  const c = g.__charonRowCaches ??= {
     byKey: new Map(),
     sweeper: null,
     chains: new Map(),
     nextChain: 0,
+    jobs: [],
+    pumping: false,
     statements: null,
     stats: { rowsScanned: 0, slices: 0, dropped: 0, evicted: 0 },
   };
+  c.jobs ??= [];
+  c.pumping ??= false;
+  return c;
 }
 
 // Prepared lazily (nothing needs the schema at import time, §14.69). A new
@@ -107,14 +145,16 @@ function statements(c: RowCaches): Statements {
   if (c.statements?.handle === handle) return c.statements;
   for (const m of c.byKey.values()) m.clear();
   c.chains.clear();
+  c.jobs.length = 0;
   c.statements = {
     handle,
     // idx_…_session_id_id, covering.
     maxId: handle.prepare('SELECT max(id) AS m FROM session_messages WHERE session_id = ?'),
     hit: handle.prepare('SELECT 1 AS one FROM session_messages WHERE id = ? AND session_id = ?'),
-    // Index-only seek: the id `sliceRows` rows past lastId.
-    sliceEnd: handle.prepare(
-      'SELECT id FROM session_messages WHERE session_id = ? AND id > ? ORDER BY id LIMIT 1 OFFSET ?'),
+    // Index-only seek: the id of the Nth event row past lastId.
+    chunkEnd: handle.prepare(
+      `SELECT id FROM session_messages INDEXED BY ${EVENT_INDEX}
+        WHERE ${EVENT_ROWS} AND id > ? ORDER BY id LIMIT 1 OFFSET ?`),
     scans: new Map(),
   };
   return c.statements;
@@ -124,16 +164,13 @@ function scanStatement(s: Statements, likes: number): Database.Statement {
   let st = s.scans.get(likes);
   if (!st) {
     const like = Array.from({ length: likes }, () => 'content LIKE ?').join(' OR ');
-    // The plan is PINNED to idx_…_session_id_id (session_id=? AND id range):
-    // the slice bound is a session-row count only on that index. Under real
-    // statistics the planner may pick the table's rowid range instead, which
-    // walks EVERY session's rows below `hi` (a cold fold read the whole
-    // table), or (session_id, role) (idx_…_snapshot_lookup: every event row
-    // of a reasoning-heavy session; `+role` keeps it out too).
+    // PINNED to the event-row index (header): under real statistics the
+    // planner may pick the table's rowid range (every session's rows below
+    // `hi`) or (session_id, id) (every role of the span).
     st = s.handle.prepare(
       `SELECT id, content, created_at AS createdAt, seq, ts_ms AS tsMs
-        FROM session_messages INDEXED BY idx_session_messages_session_id_id
-        WHERE session_id = ? AND id > ? AND id <= ? AND +role = 'event' AND (${like}) ORDER BY id`);
+        FROM session_messages INDEXED BY ${EVENT_INDEX}
+        WHERE ${EVENT_ROWS} AND id > ? AND id <= ? AND (${like}) ORDER BY id`);
     s.scans.set(likes, st);
   }
   return st;
@@ -156,9 +193,8 @@ function stopSweeper(c: RowCaches): void {
   c.sweeper = null;
 }
 
-/** Validate, then fold at most one slice. */
-function advance<T>(c: RowCaches, key: FoldKey, sessionId: string, opts: FoldOptions<T>): { entry: Entry; complete: boolean } {
-  const s = statements(c);
+/** The validated entry (a fresh one when absent or invalid) + max(id). */
+function entryFor<T>(c: RowCaches, s: Statements, key: FoldKey, sessionId: string, opts: FoldOptions<T>): { entry: Entry; maxId: number } {
   const map = keyMap(c, key);
   let entry = map.get(sessionId);
   if (entry && entry.lastHitId != null && !s.hit.get(entry.lastHitId, sessionId)) {
@@ -178,28 +214,58 @@ function advance<T>(c: RowCaches, key: FoldKey, sessionId: string, opts: FoldOpt
     ensureSweeper(c);
   }
   entry.touchedAt = Date.now();
+  return { entry, maxId };
+}
+
+/** Validate, then fold one slice (TOLERANT) or to the end (STRICT). */
+function advance<T>(c: RowCaches, key: FoldKey, sessionId: string, opts: FoldOptions<T>): { entry: Entry; complete: boolean } {
+  const s = statements(c);
+  const { entry, maxId } = entryFor(c, s, key, sessionId, opts);
   if (maxId <= entry.lastId) return { entry, complete: true };
-  let hi = maxId;
-  if (opts.sliceRows != null && opts.sliceRows > 0) {
-    const end = s.sliceEnd.get(sessionId, entry.lastId, opts.sliceRows - 1) as { id: number } | undefined;
-    if (end && end.id < maxId) hi = end.id;
-  }
-  // `.all()` before any `step`: a failing read leaves the entry untouched.
-  const rows = scanStatement(s, opts.likes.length).all(sessionId, entry.lastId, hi, ...opts.likes) as FoldRow[];
+  const tolerant = opts.sliceRows != null && opts.sliceRows > 0;
+  const sliceRows = tolerant ? opts.sliceRows! : Infinity;
+  const started = performance.now();
+  const scan = scanStatement(s, opts.likes.length);
   const state = entry.state as T;
-  let lastHitId = entry.lastHitId;
-  try {
-    for (const row of rows) if (opts.step(state, row)) lastHitId = row.id;
-  } catch (e) {
-    // A half-applied slice cannot be resumed exactly: start over next time.
-    map.delete(sessionId);
-    throw e;
+  let eventRows = 0;
+  while (entry.lastId < maxId) {
+    const n = Math.min(CHUNK_EVENT_ROWS, sliceRows - eventRows);
+    const end = s.chunkEnd.get(sessionId, entry.lastId, n - 1) as { id: number } | undefined;
+    const hi = end && end.id < maxId ? end.id : maxId;
+    // `.all()` before any `step`: a failing read leaves the entry untouched.
+    const rows = scan.all(sessionId, entry.lastId, hi, ...opts.likes) as FoldRow[];
+    let lastHitId = entry.lastHitId;
+    try {
+      for (const row of rows) if (opts.step(state, row)) lastHitId = row.id;
+    } catch (e) {
+      // A half-applied chunk cannot be resumed exactly: start over next time.
+      keyMap(c, key).delete(sessionId);
+      throw e;
+    }
+    entry.lastHitId = lastHitId;
+    entry.lastId = hi;
+    c.stats.rowsScanned += rows.length;
+    eventRows += n;
+    if (tolerant && (eventRows >= sliceRows || performance.now() - started >= FOLD_SLICE_MS)) break;
   }
-  entry.lastHitId = lastHitId;
-  entry.lastId = hi;
-  c.stats.rowsScanned += rows.length;
   c.stats.slices++;
-  return { entry, complete: hi >= maxId };
+  return { entry, complete: entry.lastId >= maxId };
+}
+
+function pump(): void {
+  const c = caches();
+  const started = performance.now();
+  while (c.jobs.length && performance.now() - started < PUMP_BUDGET_MS) {
+    const job = c.jobs.shift()!;
+    // Invalidated (or replaced by a newer chain) meanwhile: dropped.
+    if (c.chains.get(job.chainKey) !== job.token) continue;
+    if (!timeSection(`fold:${job.key}`, job.run)) c.jobs.push(job);
+  }
+  // NOT unref'd: an unref'd immediate leaves libuv's poll phase free to
+  // block, so each slice would wait for an unrelated wake-up. The queue is
+  // finite (a chain ends when its fold completes or is invalidated).
+  if (c.jobs.length) setImmediate(pump);
+  else c.pumping = false;
 }
 
 function continueInBackground<T>(c: RowCaches, key: FoldKey, sessionId: string, opts: FoldOptions<T>): void {
@@ -207,29 +273,31 @@ function continueInBackground<T>(c: RowCaches, key: FoldKey, sessionId: string, 
   if (c.chains.has(chainKey)) return;
   const token = ++c.nextChain;
   c.chains.set(chainKey, token);
-  const run = (): void => {
+  const sliced: FoldOptions<T> = { ...opts, sliceRows: opts.sliceRows ?? FOLD_SLICE_EVENT_ROWS };
+  // One slice; true = the chain is over.
+  const run = (): boolean => {
     const cur = caches();
-    // Invalidated (or replaced by a newer chain) meanwhile: stop.
-    if (cur.chains.get(chainKey) !== token) return;
-    if (!cur.byKey.get(key)?.has(sessionId)) { cur.chains.delete(chainKey); return; }
+    if (!cur.byKey.get(key)?.has(sessionId)) { cur.chains.delete(chainKey); return true; }
     let res: { entry: Entry; complete: boolean };
     try {
-      res = timeSection(`fold:${key}`, () => advance(cur, key, sessionId, opts));
+      res = advance(cur, key, sessionId, sliced);
     } catch (e) {
       cur.chains.delete(chainKey);
       console.warn(`[rowcache] ${key} fold of ${sessionId} failed: ${(e as Error)?.message ?? e}`);
-      return;
+      return true;
     }
-    if (!res.complete) { setImmediate(run); return; }
+    if (!res.complete) return false;
     cur.chains.delete(chainKey);
     try { opts.onComplete?.(opts.clone(res.entry.state as T)); } catch (e) {
       console.warn(`[rowcache] ${key} completion of ${sessionId} failed: ${(e as Error)?.message ?? e}`);
     }
+    return true;
   };
-  // NOT unref'd: an unref'd immediate leaves libuv's poll phase free to
-  // block, so each slice would wait for an unrelated wake-up. The chain is
-  // short (ends when the fold completes or is invalidated).
-  setImmediate(run);
+  c.jobs.push({ key, chainKey, token, run });
+  if (!c.pumping) {
+    c.pumping = true;
+    setImmediate(pump);
+  }
 }
 
 /** The session's fold for `key`, brought up to date. `complete:false` = a cold
@@ -238,10 +306,27 @@ function continueInBackground<T>(c: RowCaches, key: FoldKey, sessionId: string, 
 export function foldSessionEventRows<T>(key: FoldKey, sessionId: string, opts: FoldOptions<T>): { state: T; complete: boolean } {
   return timeSection(`fold:${key}`, () => {
     const c = caches();
+    if (opts.sliceRows != null && c.chains.has(`${key}\u0000${sessionId}`)) {
+      // Warming already: the pump owns the pace, nothing is folded in this
+      // tick. A strict read may have finished it meanwhile (the chain still
+      // owes its onComplete): then it is complete.
+      const { entry, maxId } = entryFor(c, statements(c), key, sessionId, opts);
+      return { state: opts.clone(entry.state as T), complete: entry.lastId >= maxId };
+    }
     const { entry, complete } = advance(c, key, sessionId, opts);
     if (!complete) continueInBackground(c, key, sessionId, opts);
     return { state: opts.clone(entry.state as T), complete };
   });
+}
+
+/** Warm the fold in the background, nothing folded in the caller's tick
+ *  (boot: every live session's folds, paced by the pump). No-op when warm or
+ *  already warming. */
+export function warmSessionEventRows<T>(key: FoldKey, sessionId: string, opts: FoldOptions<T>): void {
+  const c = caches();
+  if (c.chains.has(`${key}\u0000${sessionId}`)) return;
+  const { entry, maxId } = entryFor(c, statements(c), key, sessionId, opts);
+  if (maxId > entry.lastId) continueInBackground(c, key, sessionId, opts);
 }
 
 /** Drop a session's entries (every key), or every entry when no id is given.
@@ -252,6 +337,7 @@ export function invalidateSessionRowCaches(sessionId?: string): void {
   if (sessionId == null) {
     for (const m of c.byKey.values()) m.clear();
     c.chains.clear();
+    c.jobs.length = 0;
     stopSweeper(c);
     return;
   }
@@ -261,7 +347,8 @@ export function invalidateSessionRowCaches(sessionId?: string): void {
   }
 }
 
-/** Evict entries untouched for 30 min (the sweeper's tick). Returns how many. */
+/** Evict entries untouched for ROW_CACHE_IDLE_EVICT_MS (the sweeper's tick).
+ *  Returns how many. */
 export function sweepSessionRowCaches(now = Date.now()): number {
   const c = caches();
   let evicted = 0;
