@@ -7,6 +7,7 @@
 //   node scripts/compact-thinking.mjs --db <path> --offline --backup-to <file> [--no-check]
 //   node scripts/compact-thinking.mjs --db <path> --offline --apply [--verify] [--batch <n>] [--session <id>] [--report <f.json>]
 //   node scripts/compact-thinking.mjs --db <path> --offline --vacuum [--no-analyze]
+//   node scripts/compact-thinking.mjs --db <path> --offline --index
 //
 // What it does: merges a delta provider's per-token reasoning rows (one
 // `event` row per Codex/Cursor delta, written before the hub coalesced them)
@@ -57,6 +58,8 @@ Modes (one per run; default --dry-run):
                                   file), quick_check
   --offline --apply               merge consecutive delta-provider thinking rows (<= last_seen_seq);
                                   Ctrl-C stops after the current batch (rerun to resume)
+  --offline --index               checkpoint, conversation index, ANALYZE of that index, checkpoint
+                                  (the index alone: seconds where a VACUUM rewrites the whole file)
   --offline --vacuum              checkpoint, conversation index, ANALYZE, VACUUM, checkpoint, quick_check,
                                   foreign_key_check, FTS integrity-check (temp files: <db dir>/tmp)
                                   (writing modes fail only on foreign-key violations they ADDED;
@@ -85,11 +88,11 @@ export class RefusedError extends Error {}
 export function parseArgs(argv) {
   /** @type {{ db: string | null, dryRun: boolean, offline: boolean, apply: boolean, verify: boolean,
    *  session: string | null, batch: number, report: string | null, backupTo: string | null, noCheck: boolean,
-   *  vacuum: boolean, noAnalyze: boolean, timings: boolean, help: boolean,
-   *  mode: 'dry-run' | 'apply' | 'backup' | 'vacuum' }} */
+   *  vacuum: boolean, index: boolean, noAnalyze: boolean, timings: boolean, help: boolean,
+   *  mode: 'dry-run' | 'apply' | 'backup' | 'vacuum' | 'index' }} */
   const o = {
     db: null, dryRun: false, offline: false, apply: false, verify: false, session: null, batch: DEFAULT_BATCH,
-    report: null, backupTo: null, noCheck: false, vacuum: false, noAnalyze: false, timings: false, help: false,
+    report: null, backupTo: null, noCheck: false, vacuum: false, index: false, noAnalyze: false, timings: false, help: false,
     mode: 'dry-run',
   };
   let batchGiven = false;
@@ -119,6 +122,7 @@ export function parseArgs(argv) {
       case '--backup-to': o.backupTo = value(); break;
       case '--no-check': o.noCheck = true; break;
       case '--vacuum': o.vacuum = true; break;
+      case '--index': o.index = true; break;
       case '--no-analyze': o.noAnalyze = true; break;
       case '--timings': o.timings = true; break;
       case '-h': case '--help': o.help = true; break;
@@ -127,19 +131,19 @@ export function parseArgs(argv) {
   }
   if (o.help) return o;
   if (!o.db) throw new UsageError('--db <path> is required (this script never reads .env)');
-  const writing = [o.apply && '--apply', o.backupTo != null && '--backup-to', o.vacuum && '--vacuum'].filter(Boolean);
+  const writing = [o.apply && '--apply', o.backupTo != null && '--backup-to', o.vacuum && '--vacuum', o.index && '--index'].filter(Boolean);
   if (writing.length > 1) throw new UsageError(`one maintenance step per run: ${writing.join(' + ')}`);
   if (o.dryRun && writing.length) throw new UsageError(`--dry-run writes nothing: drop ${writing[0]}`);
   if (writing.length && !o.offline) {
     throw new UsageError(`${writing[0]} requires --offline (hub masked and stopped, autodeploy stopped — CLAUDE.md §14.109)`);
   }
-  if (o.offline && !writing.length) throw new UsageError('--offline only applies to --apply, --backup-to or --vacuum');
+  if (o.offline && !writing.length) throw new UsageError('--offline only applies to --apply, --backup-to, --vacuum or --index');
   if (o.verify && !o.apply) throw new UsageError('--verify only applies to --apply');
   if (batchGiven && !o.apply) throw new UsageError('--batch only applies to --apply');
-  if (o.session != null && (o.backupTo != null || o.vacuum)) throw new UsageError('--session only applies to --dry-run/--apply');
+  if (o.session != null && (o.backupTo != null || o.vacuum || o.index)) throw new UsageError('--session only applies to --dry-run/--apply');
   if (o.noCheck && o.backupTo == null) throw new UsageError('--no-check only applies to --backup-to');
   if (o.noAnalyze && !o.vacuum) throw new UsageError('--no-analyze only applies to --vacuum');
-  o.mode = o.apply ? 'apply' : o.backupTo != null ? 'backup' : o.vacuum ? 'vacuum' : 'dry-run';
+  o.mode = o.apply ? 'apply' : o.backupTo != null ? 'backup' : o.vacuum ? 'vacuum' : o.index ? 'index' : 'dry-run';
   return o;
 }
 
@@ -784,6 +788,29 @@ export function ensureConversationIndexOffline(db) {
 }
 
 /**
+ * The conversation index alone (`--index`): built (or rebuilt for a changed
+ * predicate), then ANALYZE of THAT index only — the planner gets its stats
+ * without a pass over every other index — between two TRUNCATE checkpoints.
+ *
+ * @param {import('better-sqlite3').Database} db
+ * @param {{ timer?: ReturnType<typeof createTimer>,
+ *   checkpoint?: (db: import('better-sqlite3').Database) => { busy: number, log: number, checkpointed: number } }} [opts]
+ */
+export function buildConversationIndex(db, opts = {}) {
+  const timer = opts.timer ?? createTimer();
+  const checkpoint = opts.checkpoint ?? checkpointTruncate;
+  const ck1 = timer.time('checkpoint', () => checkpoint(db));
+  if (ck1.busy !== 0) throw new RefusedError(`wal_checkpoint(TRUNCATE) reported busy=${ck1.busy}`);
+  timer.time('conversation index', () => ensureConversationIndexOffline(db));
+  timer.time('analyze index', () => db.exec('ANALYZE idx_session_messages_conversation_chrono'));
+  const ck2 = timer.time('checkpoint', () => checkpoint(db));
+  if (ck2.busy !== 0) throw new Error(`wal_checkpoint(TRUNCATE) after the index reported busy=${ck2.busy}`);
+  const rows = db.prepare('SELECT count(*) AS n FROM session_messages INDEXED BY idx_session_messages_conversation_chrono WHERE ' +
+    CONVERSATION_INDEX_SQL.slice(CONVERSATION_INDEX_SQL.indexOf(' WHERE ') + 7)).get();
+  return { indexedRows: rows.n };
+}
+
+/**
  * In-place VACUUM on the `openOffline` handle (WAL mode: the rebuilt file goes
  * through the WAL; temp files where `SQLITE_TMPDIR` points — the CLI sets
  * `<db dir>/tmp`). `analyze: false` keeps the existing sqlite_stat* (prod's
@@ -1006,6 +1033,9 @@ export async function main(argv, io = {}) {
         check: !o.noCheck, timer, log: out,
       });
       out(`backup: ${report.backup.dest} (${report.backup.bytes} bytes, mode 600)`);
+    } else if (o.mode === 'index') {
+      report.index = buildConversationIndex(db, { timer });
+      out(`conversation index: ${report.index.indexedRows} rows`);
     } else {
       report.vacuum = vacuumDatabase(db, { analyze: !o.noAnalyze, timer, log: out });
     }

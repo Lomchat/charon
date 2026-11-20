@@ -12,7 +12,7 @@
 // No migration builds it (SPEC I12: the build migrates the LIVE DB and must
 // never scan session_messages): boot creates it only while the table
 // is small (`ensureConversationIndex`), a large DB gets it OFFLINE from
-// `scripts/compact-thinking.mjs --offline --vacuum` (same SQL, test-pinned).
+// `scripts/compact-thinking.mjs --offline --index` (same SQL, test-pinned).
 // Missing, the queries are still correct — only the plan is the slow one.
 import type Database from 'better-sqlite3';
 import { CONVERSATION_EVENT_TYPES, RENDER_NULL_ROLES, TECHNICAL_ROLES } from '@/lib/transcriptRows';

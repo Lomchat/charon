@@ -62,7 +62,7 @@ const STEPS: Step[] = [
     run: () => {
       if (ensureConversationIndex(rawSqlite()) === 'deferred') {
         console.warn(`[seed] ${CONVERSATION_INDEX_NAME} missing on a large table: the tools-hidden window `
-          + 'stays on the slow plan until `scripts/compact-thinking.mjs --offline --vacuum` creates it');
+          + 'stays on the slow plan until `scripts/compact-thinking.mjs --offline --index` creates it');
       }
     },
   },
