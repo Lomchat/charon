@@ -188,7 +188,7 @@ _PEER_ACCEPT_STATUSES = _PEER_RECEIVE_STATUSES | {"starting", "thinking"}
 _PEER_FINAL_STATUSES = frozenset({"replied", "failed"})
 # Sub-sessions (peer_spawn). Mirrored by the hub (sessionOps.ts).
 MAX_SUBSESSION_DEPTH = 3
-MAX_LIVE_SUBSESSIONS = 6
+MAX_LIVE_SUBSESSIONS = 10
 _SPAWN_HUB_TIMEOUT_S = 25.0
 _SPAWN_READY_TIMEOUT_S = 20.0
 _SPAWN_BG_DEADLINE_S = 5 * 60.0

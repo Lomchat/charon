@@ -16,7 +16,7 @@ import { getAgentClientForVpsId } from '@/lib/server/agent/AgentClientPool';
 import { isBackendEnabled } from './settings';
 
 export const MAX_SUBSESSION_DEPTH = 3;
-export const MAX_LIVE_SUBSESSIONS = 6;
+export const MAX_LIVE_SUBSESSIONS = 10;
 /** Child statuses that still count against the parent's budget. */
 export const LIVE_CHILD_STATUSES = ['starting', 'active', 'thinking', 'background', 'failed'] as const;
 
