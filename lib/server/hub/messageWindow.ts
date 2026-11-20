@@ -64,6 +64,10 @@ export const publicMessageColumns = {
 
 type Key = { id: number; ts: number };
 
+/** The edits tab's skeleton: ONE compact row per changed file — its newest
+ *  snapshot row's file, phase, tool_use_id and truncated flag. Contents never
+ *  ride (a card asks `POST …/edits`, §14.41); the before/after pair rode
+ *  twice the rows for two null contents, with every field the agent wrote. */
 function latestSnapshotMetadata(sessionId: string): AgentSessionMessage[] {
   const ids = db.select({ id: sql<number>`max(${sessionMessages.id})` })
     .from(sessionMessages)
@@ -72,14 +76,29 @@ function latestSnapshotMetadata(sessionId: string): AgentSessionMessage[] {
       eq(sessionMessages.role, 'edit_snapshot'),
       isNotNull(sessionMessages.snapshotFilePath),
     ))
-    .groupBy(sessionMessages.snapshotFilePath, sessionMessages.snapshotPhase)
+    .groupBy(sessionMessages.snapshotFilePath)
     .all().map((r) => r.id);
   const out: AgentSessionMessage[] = [];
   // Stay below SQLite's common 999-variable ceiling for pathological repos.
   for (let i = 0; i < ids.length; i += 900) {
-    out.push(...db.select(publicMessageColumns).from(sessionMessages)
+    const rows = db.select({
+      id: sessionMessages.id, filePath: sessionMessages.snapshotFilePath, phase: sessionMessages.snapshotPhase,
+      toolUseId: sessionMessages.snapshotToolUseId, truncated: sessionMessages.snapshotTruncated,
+      tsMs: sessionMessages.tsMs, createdAt: sessionMessages.createdAt,
+    }).from(sessionMessages)
       .where(inArray(sessionMessages.id, ids.slice(i, i + 900)))
-      .all());
+      .all();
+    for (const r of rows) {
+      out.push({
+        id: r.id, sessionId, role: 'edit_snapshot',
+        content: JSON.stringify({
+          type: 'edit_snapshot', file_path: r.filePath, phase: r.phase, tool_use_id: r.toolUseId,
+          truncated: r.truncated === 1, content: null, contentStripped: true,
+        }),
+        model: null, assistantFinal: null, seq: null, tsMs: r.tsMs, cliUuid: null, turnUsageJson: null,
+        createdAt: r.createdAt,
+      } as AgentSessionMessage);
+    }
   }
   return out;
 }

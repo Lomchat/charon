@@ -233,9 +233,10 @@ describe('chronological pagination with a repaired row (Codex 18)', () => {
     }
     const win = loadMessageWindow(SSID, 10, null);
     const snapshots = win.messages.filter((m: any) => m.role === 'edit_snapshot');
-    expect(snapshots).toHaveLength(4); // 2 files × before/after, not 80 rows
+    expect(snapshots).toHaveLength(2); // ONE per file, not 80 rows (nor a before/after pair)
     expect(snapshots.every((m: any) => !m.content.includes('xxxxxxxx'))).toBe(true);
-    expect(snapshots.every((m: any) => JSON.parse(m.content).tool_use_id === 'tool-20')).toBe(true);
+    expect(snapshots.map((m: any) => JSON.parse(m.content)).map((e: any) => [e.file_path, e.phase, e.tool_use_id]).sort())
+      .toEqual([['/a.ts', 'after', 'tool-20'], ['/b.ts', 'after', 'tool-20']]);
   });
 
   // A workflow-heavy session held 17 k `bg_task` rows: riding with the newest
