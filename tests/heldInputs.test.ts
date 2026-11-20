@@ -88,6 +88,37 @@ describe('inputs held by a compaction', () => {
     expect(s.heldInputs()).toEqual([]);
   });
 
+  it('make the compaction\'s stop no finish (no unread marker): their turn comes next', async () => {
+    db.insert(schema.agentSessions).values({ id: SID, vpsId: VPS_ID, cwd: '/tmp', status: 'active' }).run();
+    const unread = () => db.select({ v: schema.agentSessions.unreadStop })
+      .from(schema.agentSessions).where(eq(schema.agentSessions.id, SID)).get()?.v;
+    const s = getOrCreateStream(SID);
+    const ev = (e: Record<string, unknown>) => s._onAgentEvent({ session_id: SID, ...e });
+
+    // The stop lands while the input still waits (same tick as the boundary).
+    ev({ event: 'status', status: 'thinking', seq: 1 });
+    ev({ event: 'compacting', active: true });
+    await s.sendUserMessage('queued', undefined, { clientMessageId: 'n-1' });
+    ev({ event: 'compaction', trigger: 'manual', seq: 2 });
+    ev({ event: 'stop', subtype: 'success', peer_request_id: null, seq: 3 });
+    expect(unread()).toBe(0);
+    await vi.waitFor(() => expect(sentIds()).toEqual(['n-1']));
+    // Its own turn's stop is the finish.
+    ev({ event: 'status', status: 'thinking', seq: 4 });
+    ev({ event: 'stop', subtype: 'success', peer_request_id: null, seq: 5 });
+    expect(unread()).toBe(1);
+
+    // The input already went out into the compaction's turn when it stops.
+    db.update(schema.agentSessions).set({ unreadStop: 0 }).run();
+    ev({ event: 'status', status: 'thinking', seq: 6 });
+    ev({ event: 'compacting', active: true });
+    await s.sendUserMessage('queued too', undefined, { clientMessageId: 'n-2' });
+    ev({ event: 'compaction', trigger: 'manual', seq: 7 });
+    await vi.waitFor(() => expect(s.heldInputs()).toEqual([]));
+    ev({ event: 'stop', subtype: 'success', peer_request_id: null, seq: 8 });
+    expect(unread()).toBe(0);
+  });
+
   it('survive a hub restart and a failed delivery: released after the reconnect, retried, never dropped', async () => {
     db.insert(schema.agentSessions).values({
       id: RESTARTED, vpsId: VPS_ID, cwd: '/tmp', status: 'thinking',

@@ -954,6 +954,10 @@ export class SessionStream {
   private compactRequestTimer: ReturnType<typeof setTimeout> | null = null;
   private releasingHeld = false;
   private heldRetryTimer: ReturnType<typeof setTimeout> | null = null;
+  // A held input reached the agent inside a running turn (the compaction's)
+  // and no model output followed: that turn's `stop` is not a finish, the
+  // input's own turn comes next (§14.125). Cleared by output, stop, sleep.
+  private heldAwaitingTurn = false;
   // Live command/MCP output of RUNNING tools (`tool_progress`, sync refonte
   // I6 `covered`): the session GET returns it as `streamingToolOutput`, so a
   // refetch mid-command keeps what was printed so far. Tail-bounded
@@ -1734,8 +1738,10 @@ export class SessionStream {
         // A gone worker ends a compaction request; any live status may free
         // held inputs — the post-replay one after a hub restart included
         // (§14.125). Deferred past this handler: a release shows `thinking`.
-        if (ev.status === 'sleeping' || ev.status === 'error' || ev.status === 'killed') this._endCompactRequest();
-        else this._scheduleRelease();
+        if (ev.status === 'sleeping' || ev.status === 'error' || ev.status === 'killed') {
+          this._endCompactRequest();
+          this.heldAwaitingTurn = false;
+        } else this._scheduleRelease();
         // A new SDK client applies the queued config (the reducer's rule).
         if (ev.status === 'starting') { this.pendingApply.model = false; this.pendingApply.effort = false; }
         // The Claude daemon returns to idle after ResultMessage even when the
@@ -1833,6 +1839,8 @@ export class SessionStream {
         this._broadcast({ type: 'session_id', id: ev.claude_session_id });
         break;
       case 'assistant_text': {
+        // The turn went on past a released held input: its stop is a finish.
+        if (!this.isReplaying) this.heldAwaitingTurn = false;
         // One open buffer at a time ⇒ row id order matches chronology.
         if (this.coalesceThinking) this._flushThinking();
         // No identity gate here: deltas never write their own row (their
@@ -2005,6 +2013,7 @@ export class SessionStream {
         break;
       }
       case 'tool_use':
+        if (!this.isReplaying) this.heldAwaitingTurn = false;
         if (this._replayAlreadyPersisted(ev)) { this._dropReplayedAssistantBuffer(); break; }
         if (!this._flushAssistant()) break; // order-preserving stop (16.3)
         if (this._legacyForToolRow()?.toolUseIds.has(String(ev.id))) break;
@@ -2837,6 +2846,12 @@ export class SessionStream {
         // what put a green "done" on sessions that were still busy (§14.91). A
         // failed turn still wins — it is the more urgent thing to report.
         const bgPending = !alreadyFinished && !terminalError && this.hasRunningBgTasks();
+        // Inputs held by a compaction (§14.125) still wait, or one went out
+        // into this turn unanswered: the next turn is theirs, this stop is
+        // not a finish (no unread marker, push or Telegram). Errors still are.
+        const notFinish = !this.isReplaying && !terminalError
+          && (this.held.length > 0 || this.heldAwaitingTurn);
+        if (!this.isReplaying) this.heldAwaitingTurn = false;
         if (terminalError && !alreadyFinished) {
           this.terminalErrorLatched = true;
           this.terminalErrorText = terminalError.text;
@@ -2894,7 +2909,7 @@ export class SessionStream {
         // advance below keep later reconnect-replays from re-marking it.
         // The green unread marker and final background-work notice still
         // wait for the last task (§14.91).
-        if (isNewFinish && !bgPending && (terminalError || !this.peerDrivenFinish)) {
+        if (isNewFinish && !bgPending && !notFinish && (terminalError || !this.peerDrivenFinish)) {
           try {
             db.update(agentSessions).set({ unreadStop: 1 })
               .where(eq(agentSessions.id, this.id)).run();
@@ -2928,7 +2943,7 @@ export class SessionStream {
           } catch {}
         }
         // Announce the response even while tasks remain, with their count.
-        if (!this.isReplaying && isNewFinish && !this.fatalErrorNotified
+        if (!this.isReplaying && isNewFinish && !this.fatalErrorNotified && !notFinish
           && (terminalError || !this.peerDrivenFinish)) {
           const terminalError = this.terminalErrorLatched;
           const providerLabel = providerDisplayName(this.kind);
@@ -3200,9 +3215,13 @@ export class SessionStream {
     if (this.releasingHeld || !this.held.length || this.holdsInputs()) return;
     this.releasingHeld = true;
     if (this.heldRetryTimer) { clearTimeout(this.heldRetryTimer); this.heldRetryTimer = null; }
+    // Into the compaction's own turn (its `stop` still to come), not into the
+    // `thinking` our first delivery shows.
+    const intoTurn = this.status === 'thinking';
     try {
       while (this.held.length && !this.holdsInputs()) {
         const next = this.held[0]!;
+        if (intoTurn) this.heldAwaitingTurn = true;
         try {
           await this._deliverInput(next.content, next.codexInputs, next.clientMessageId, true);
         } catch (e) {
