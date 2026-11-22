@@ -51,6 +51,13 @@ class EndpointTests(unittest.TestCase):
         self.assertEqual(env['CHARON_ENDPOINT_TOKEN'], 'secret-for-test')
         self.assertEqual(dict(os.environ), before)
 
+    def test_claude_never_assumes_1m_context_for_an_endpoint_model(self):
+        # The CLI gives an unknown model 1M: past the real window every turn fails.
+        self.assertEqual(claude_env(self.endpoint, 'custom', None)['CLAUDE_CODE_DISABLE_1M_CONTEXT'], '1')
+        measured = {**self.endpoint, 'models': [{'id': 'custom', 'checks': {'claude': {'contextWindow': 131072}}}]}
+        env = claude_env(measured, 'custom', None)
+        self.assertEqual((env['CLAUDE_CODE_MAX_CONTEXT_TOKENS'], env.get('CLAUDE_CODE_DISABLE_1M_CONTEXT')), ('131072', None))
+
     def test_no_auth_does_not_reuse_subscription_credentials(self):
         env = claude_env({**self.endpoint, 'auth': 'none', 'token': ''}, 'custom', None)
         self.assertEqual(env['ANTHROPIC_AUTH_TOKEN'], '')

@@ -43,7 +43,30 @@ def claude_env(endpoint: dict, model: str, effort: str | None) -> dict[str, str]
     if auth == "none": result["ANTHROPIC_API_KEY"] = "charon-no-auth"
     for family in ("OPUS", "SONNET", "HAIKU", "FABLE"):
         result[f"ANTHROPIC_DEFAULT_{family}_MODEL"] = model
+    # The CLI assumes 1M of context for a model it does not know: past the
+    # real window every turn fails until /clear. The probed window sets it
+    # (auto-compaction follows); unknown ⇒ the CLI's former 200K.
+    window = _context_window(endpoint, "claude", model)
+    if window:
+        result["CLAUDE_CODE_MAX_CONTEXT_TOKENS"] = str(window)
+    else:
+        result["CLAUDE_CODE_DISABLE_1M_CONTEXT"] = "1"
     return result
+
+
+def _context_window(endpoint: dict, engine: str, model: str) -> int | None:
+    """The context window the endpoint check measured for THIS model: the
+    model's own check first, else the endpoint's (lib/customEndpoints.ts)."""
+    for item in endpoint.get("models") or []:
+        if isinstance(item, dict) and item.get("id") == model:
+            check = (item.get("checks") or {}).get(engine) or {}
+            if isinstance(check.get("contextWindow"), int):
+                return check["contextWindow"] if check["contextWindow"] > 0 else None
+    check = (endpoint.get("checks") or {}).get(engine) or {}
+    window = check.get("contextWindow")
+    if check.get("model") == model and isinstance(window, int) and window > 0:
+        return window
+    return None
 
 
 def codex_overrides(endpoint: dict, model: str, effort: str | None) -> tuple[list[str], dict[str, str]]:
@@ -74,7 +97,7 @@ def codex_overrides(endpoint: dict, model: str, effort: str | None) -> tuple[lis
         'shell_environment_policy.exclude=["CHARON_ENDPOINT_TOKEN"]',
     ]
     overrides.append('model_reasoning_effort="none"')
-    check = (endpoint.get("checks") or {}).get("codex") or {}
-    if check.get("model") == model and isinstance(check.get("contextWindow"), int):
-        overrides.append("model_context_window=" + str(check["contextWindow"]))
+    window = _context_window(endpoint, "codex", model)
+    if window:
+        overrides.append("model_context_window=" + str(window))
     return overrides, {"CHARON_ENDPOINT_TOKEN": token}
