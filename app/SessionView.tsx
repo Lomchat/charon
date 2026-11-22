@@ -251,7 +251,7 @@ export default function SessionView({
     provider: asSessionProvider(selected.kind),
   });
   const {
-    messages, currentAssistant, streamingInto, status, compacting: liveCompacting, held, runtimeOutdated, runtimeVersions, permissionMode,
+    messages, currentAssistant, streamingInto, status, compacting: liveCompacting, held, waiting, runtimeOutdated, runtimeVersions, permissionMode,
     liveActivity,
     model, fallbackModel, effort, ultracode, fastMode, fastModeVerdict, serviceTier, modelPendingApply, effortPendingApply,
     effectiveModel, liveUsage, tokenUsage, responseSpeed,
@@ -259,7 +259,7 @@ export default function SessionView({
     permQueue, questionQueue, exitPlanQueue,
     prefillInput, error, isLoadingHistory, isSyncing, historyReady,
     hasMore, isLoadingMore, view: transcriptView, windowInFlight, requestWindow,
-    send: streamSend, interrupt, forceStop, setMode, setModel, setEffort, setUltracode, setFastMode, setServiceTier,
+    send: streamSend, sendNow, interrupt, forceStop, setMode, setModel, setEffort, setUltracode, setFastMode, setServiceTier,
     doSleep, doResume, doRestart,
     respondPermission, respondQuestion, respondExitPlan,
     clearPrefillInput, loadMoreHistory, setHistoryHold, clearError,
@@ -816,6 +816,11 @@ export default function SessionView({
     return null;
   }, [messages, finishCue]);
   // The user rows a compaction holds (§14.125), by bubble id (memo, §14.38).
+  // Sent mid-turn, not read yet: row key → its clientMessageId (send now).
+  const waitingById = useMemo(
+    () => new Map(waiting.map((w) => [rowKey(w.rowId), w.clientMessageId] as const)),
+    [waiting],
+  );
   const heldById = useMemo(
     () => new Map(held.map((h) => [rowKey(h.rowId), h] as const)),
     [held],
@@ -1356,6 +1361,7 @@ export default function SessionView({
                   currentAccount={currentAccount}
                   onContinueWithAccount={continueWithAccount}
                   finishMsgId={finishMsgId} finishCue={finishCue} heldById={heldById}
+                  waitingById={waitingById} onSendNow={sendNow}
                   // Conservative on purpose: `reconnecting` means we don't
                   // know yet, and a wrong "interrupted" is worse than a
                   // late one.
@@ -1654,7 +1660,7 @@ export default function SessionView({
 // of <Message> elements; only the small live-tail bubble changes.
 const MessageHistory = memo(function MessageHistory({
   renderable, kind, vpsId, cwd, onReauth, authMsgId, continuableMsgId, schedulableMsgId, onContinue, onScheduleResume, onCancelScheduledResume, turnInFlight,
-  limitMsgId, currentAccount, onContinueWithAccount, finishMsgId, finishCue, heldById,
+  limitMsgId, currentAccount, onContinueWithAccount, finishMsgId, finishCue, heldById, waitingById, onSendNow,
   siblings, onOpenPeerSession, onPeerRequestHover, onPeerRequestJump, peerReplyToById,
   liveRow, substitute, selectedModel,
 }: {
@@ -1687,6 +1693,9 @@ const MessageHistory = memo(function MessageHistory({
   finishCue: 'unread' | 'error' | null;
   // User rows a compaction holds (§14.125): only those bubbles see a value.
   heldById: ReadonlyMap<string, HeldInputState>;
+  // User rows the CLI has not read yet → their clientMessageId (send now).
+  waitingById: ReadonlyMap<string, string>;
+  onSendNow: (clientMessageId: string) => void;
   // Is a turn in flight right now? A tool_use with no tool_result can only
   // still be running while one is: outside a turn nothing can produce that
   // result anymore (§14.91). Only the unresolved tool cards receive the
@@ -1720,6 +1729,8 @@ const MessageHistory = memo(function MessageHistory({
       peerReplyTo={peerReplyToById.get(msg.id)}
       finishCue={msg.id === finishMsgId ? finishCue : null}
       held={msg.role === 'user' ? heldById.get(msg.id) ?? null : null}
+      waitingId={msg.role === 'user' ? waitingById.get(msg.id) ?? null : null}
+      onSendNow={onSendNow}
     />;
   });
 });
@@ -1811,7 +1822,7 @@ const ChatInputBar = memo(function ChatInputBar({
   kind: AgentKind;
   permissionMode: SessionMode;
   onSetMode: (mode: SessionMode) => void;
-  onSend: (content: string, codexInputs?: Array<Record<string, unknown>>) => Promise<void>;
+  onSend: (content: string, codexInputs?: Array<Record<string, unknown>>, now?: boolean) => Promise<void>;
   prefillInput: string | null;
   clearPrefillInput: () => void;
   pending: PendingUpload[];
@@ -2206,7 +2217,8 @@ const ChatInputBar = memo(function ChatInputBar({
 
   // A compaction leaves the box open: what it sends waits for the end
   // (hub-held, §14.125) and its bubble says so.
-  const send = useCallback(async () => {
+  // `now`: Ctrl/⌘+Shift+Enter — mid-turn, the CLI reads it at once.
+  const send = useCallback(async (now = false) => {
     const content = input.trim();
     if (!content) return;
     setInput('');
@@ -2223,7 +2235,7 @@ const ChatInputBar = memo(function ChatInputBar({
     // A user command goes out as the prompt it names (the transcript shows it).
     const text = expandUserCommand(content, slashItems) ?? content;
     const skills = skillInputItems(text, slashItems);
-    await onSend(text, skills.length ? [{ type: 'text', text }, ...skills] : undefined);
+    await onSend(text, skills.length ? [{ type: 'text', text }, ...skills] : undefined, now);
   }, [input, onSend, setInput, slashItems, onSlashAction]);
 
   const aside = useCallback(async () => {
@@ -2417,6 +2429,11 @@ const ChatInputBar = memo(function ChatInputBar({
             void aside();
             return;
           }
+          if (e.shiftKey && (e.ctrlKey || e.metaKey) && !e.altKey) {
+            e.preventDefault();
+            void send(true);
+            return;
+          }
           if (e.shiftKey || e.ctrlKey || e.metaKey || e.altKey) return;
           e.preventDefault();
           send();
@@ -2446,7 +2463,7 @@ const ChatInputBar = memo(function ChatInputBar({
           </button>
         )}
         {/* The word on a desktop, the icon on a phone (app.css). */}
-        <button className="send" onClick={send} disabled={!input.trim()} aria-label="send"
+        <button className="send" onClick={() => void send()} disabled={!input.trim()} aria-label="send"
           title={compacting ? providerText.composerCompacting(kind) : undefined}>
           <span className="send-label">send</span><IconSend className="send-icon" />
         </button>
@@ -2530,15 +2547,20 @@ function InlinePermissionCard({ perm, kind, onRespond }: {
   kind: AgentKind;
   onRespond: (allow: boolean, always: boolean, suggestion?: number) => void;
 }) {
-  const summary = summarizeToolInput(perm.tool, perm.input);
+  // The CLI's own sentence ("Claude wants to read foo.txt") beats ours.
+  const prompt = perm.prompt;
+  const summary = prompt?.title ?? summarizeToolInput(perm.tool, perm.input);
   return (
     <div className="inline-perm-card">
       <header className="ip-head">
         <span className="ip-tag">🔒 permission</span>
         <span className="ip-tool">{perm.tool}</span>
+        {prompt?.agentId && <span className="ip-chip" title={prompt.agentId}>sub-agent</span>}
         {summary && <span className="ip-summary">{summary}</span>}
       </header>
       <ApprovalDeadline expiresAt={perm.expiresAt} />
+      {prompt?.description && <p className="ip-desc">{prompt.description}</p>}
+      {prompt?.blockedPath && <p className="ip-path"><span aria-hidden>📁</span> <code>{prompt.blockedPath}</code></p>}
       {perm.reason && <p className="ip-reason">{perm.reason}</p>}
       <pre className="ip-input">{JSON.stringify(perm.input, null, 2).slice(0, 1200)}</pre>
       <footer className="ip-actions">

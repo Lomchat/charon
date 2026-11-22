@@ -19,7 +19,7 @@ import {
   vps as vpsTable,
 } from '@/lib/db';
 import type { PermissionMode } from '@/lib/server/hub/types';
-import type { WorkerEvent, WorkerStatus, AccountUsage } from '@/lib/server/hub/types';
+import type { WorkerEvent, WorkerStatus, AccountUsage, WaitingInput } from '@/lib/server/hub/types';
 import { getAgentClientForVpsId } from './AgentClientPool';
 import { handlePeerKillRequest, handlePeerSpawnRequest } from '@/lib/server/hub/subSessions';
 import type { AgentSessionInfo } from './types';
@@ -87,7 +87,7 @@ import { markAsyncQuestionDelivering } from '@/lib/server/agent/asyncQuestionDel
 import { providerText, providerName } from '@/lib/providerText';
 import { parseHeldInputs, publicHeldInputs, type HeldInput, type HeldInputState } from '@/lib/heldInputs';
 import {
-  allowRulesOf, offeredSuggestions, parseSuggestions, type PermissionSuggestion,
+  allowRulesOf, offeredSuggestions, parsePermissionPrompt, parseSuggestions, type PermissionPrompt, type PermissionSuggestion,
 } from '@/lib/permissionSuggestions';
 import { sidebarOrderAfterDelete } from '@/app/sidebarPathGroups';
 import {
@@ -215,16 +215,18 @@ export function parseProviderConfig(value: string | null | undefined): ProviderS
 }
 
 /** What a permission card carries beyond the tool call itself. */
-export type PermissionGateExtras = { reason?: string; suggestions?: PermissionSuggestion[] };
+export type PermissionGateExtras = { reason?: string; suggestions?: PermissionSuggestion[]; prompt?: PermissionPrompt };
 
 /** Sanitize the agent's optional card fields. Suggestions are forwarded in
  *  the agent's order (answers pick by index), capped, never re-shaped. */
-export function permissionGateExtras(reason: unknown, suggestions: unknown): PermissionGateExtras {
+export function permissionGateExtras(reason: unknown, suggestions: unknown, prompt?: unknown): PermissionGateExtras {
   const out: PermissionGateExtras = {};
   if (typeof reason === 'string' && reason.trim()) out.reason = reason.trim().slice(0, 2000);
   if (Array.isArray(suggestions) && suggestions.length) {
     out.suggestions = suggestions.slice(0, 16) as PermissionSuggestion[];
   }
+  const parsed = parsePermissionPrompt(prompt);
+  if (parsed) out.prompt = parsed;
   return out;
 }
 
@@ -257,6 +259,12 @@ export function withRememberedRules<T extends object | null>(
   const rules = rememberedRules(raw);
   if (!rules.length) return config;
   return { ...(config ?? {}), allowedTools: rules } as NonNullable<T> & { allowedTools: string[] };
+}
+
+/** Tell the agent a session nobody watches (§14.119) at each start/resume:
+ *  Claude then waits out rate and usage limits itself. */
+export function withUnattended<T extends object | null>(config: T, unattended: boolean): T | (NonNullable<T> & { unattended: true }) {
+  return unattended ? { ...(config ?? {}), unattended: true } as NonNullable<T> & { unattended: true } : config;
 }
 
 /** Resolve the safety reviewer once, when a Codex session is created.
@@ -896,6 +904,9 @@ export class SessionStream {
   private currentEventTs: number | null = null;
   // Scheduled-task fires already named by a `scheduled_fire` row (`fireKey`).
   private firedScheduledTasks = new Set<string>();
+  // Provider notices already in this transcript (`provider_notice`): one row
+  // per distinct summary. Seeded from the DB on first use.
+  private providerNotices: Set<string> | null = null;
   // First seq of the still-unflushed assistant accumulation. The DURABLE
   // cursor is held back to (pendingAssistantSince - 1): after a hard crash
   // the whole unflushed text is re-delivered and rebuilt instead of losing
@@ -958,6 +969,14 @@ export class SessionStream {
   // and no model output followed: that turn's `stop` is not a finish, the
   // input's own turn comes next (§14.125). Cleared by output, stop, sleep.
   private heldAwaitingTurn = false;
+  // The same inputs by `clientMessageId`: a `stop` that names the inputs it
+  // took (`inputs`) answers for them exactly, output or not.
+  private heldAwaitingIds = new Set<string>();
+  // Inputs sent while a turn ran that the CLI has not read yet (`sendNow`
+  // capability): clientMessageId → user row. Their bubbles say they wait and
+  // offer "send now". Cleared by `inputs_taken`, `stop.inputs` (all, from an
+  // agent that does not name them) and any non-live status.
+  private waitingInputsById = new Map<string, number>();
   // The running turn is being interrupted (§14.127): `Manual` = the stop
   // button (hub-sent), `Seen` = the agent's `interrupted`. Consumed by `stop`.
   private interruptManual = false;
@@ -1745,6 +1764,8 @@ export class SessionStream {
         if (ev.status === 'sleeping' || ev.status === 'error' || ev.status === 'killed') {
           this._endCompactRequest();
           this.heldAwaitingTurn = false;
+          this.heldAwaitingIds.clear();
+          if (!this.isReplaying) this._takeWaiting(null);
         } else this._scheduleRelease();
         // An interrupt mark with no `stop` behind it (an idle interrupt, a
         // forced stop) never reaches a later turn.
@@ -2151,7 +2172,9 @@ export class SessionStream {
         // applies them itself (they ride every start as `allowedTools`). What
         // arrives here is a real question, with the provider's reason and —
         // Claude — its own options, picked by index (lib/permissionSuggestions.ts).
-        const gate = permissionGateExtras(ev.reason, ev.suggestions);
+        const gate = permissionGateExtras(ev.reason, ev.suggestions, {
+          title: ev.title, description: ev.description, blockedPath: ev.blocked_path, agentId: ev.agent_id,
+        });
         try {
           db.insert(sessionPendingPermissions).values({
             id: ev.id,
@@ -2162,6 +2185,7 @@ export class SessionStream {
             expiresAt,
             reason: gate.reason ?? null,
             suggestions: gate.suggestions ? JSON.stringify(gate.suggestions) : null,
+            prompt: gate.prompt ? JSON.stringify(gate.prompt) : null,
           }).onConflictDoNothing().run();
         } catch (e) {
           // A REAL insert failure (not a dup — onConflictDoNothing absorbs
@@ -2544,6 +2568,39 @@ export class SessionStream {
         this._broadcast(withRowId(payload, this._persist('event', payload)));
         break;
       }
+      case 'inputs_taken':
+        if (!this.isReplaying && Array.isArray(ev.client_message_ids)) this._takeWaiting(ev.client_message_ids);
+        break;
+      case 'provider_notice': {
+        if (this._replayAlreadyPersisted(ev)) break;
+        const summary = typeof ev.summary === 'string' ? ev.summary.trim().slice(0, 500) : '';
+        if (!summary) break;
+        if (!this.providerNotices) {
+          this.providerNotices = new Set();
+          try {
+            const rows = db.select({ content: sessionMessages.content }).from(sessionMessages).where(and(
+              eq(sessionMessages.sessionId, this.id), eq(sessionMessages.role, 'event'),
+              // The payload's own JSON (type first): no per-row JSON parse.
+              sql`${sessionMessages.content} LIKE '{"type":"provider_notice"%'`,
+            )).all();
+            for (const r of rows) {
+              try { this.providerNotices.add(String(JSON.parse(r.content).summary ?? '')); } catch {}
+            }
+          } catch {}
+        }
+        // A provider repeats its notices at every start: one row says it.
+        if (this.providerNotices.has(summary)) break;
+        if (!this._flushAssistant()) break; // order-preserving stop (16.3)
+        this.providerNotices.add(summary);
+        const payload = {
+          type: 'provider_notice' as const, summary,
+          ...(typeof ev.provider === 'string' ? { provider: ev.provider } : {}),
+          ...(typeof ev.kind === 'string' ? { kind: ev.kind } : {}),
+          ...(typeof ev.details === 'string' && ev.details.trim() ? { details: ev.details.trim().slice(0, 2000) } : {}),
+        };
+        this._broadcast(withRowId(payload, this._persist('event', payload)));
+        break;
+      }
       case 'session_info':
         // The CLI's init frame. Kept in memory only: it describes the CURRENT
         // CLI process, so persisting it would let a stale snapshot outlive the
@@ -2873,9 +2930,20 @@ export class SessionStream {
         // Not a finish (no unread marker, push or Telegram; errors still are):
         // an interrupted turn, or inputs held by a compaction (§14.125) still
         // wait / one went out into this turn unanswered — the next turn is theirs.
+        // The turn's own list of the inputs it took, when the agent states it:
+        // an awaited one missing from it is answered by the NEXT turn, even if
+        // this one went on talking (the output was its own).
+        const took = Array.isArray(ev.inputs) ? new Set(ev.inputs) : null;
+        const heldUnanswered = took && this.heldAwaitingIds.size
+          ? [...this.heldAwaitingIds].some((id) => !took.has(id))
+          : this.heldAwaitingTurn;
         const notFinish = interruptedStop || (!this.isReplaying && !terminalError
-          && (this.held.length > 0 || this.heldAwaitingTurn));
-        if (!this.isReplaying) this.heldAwaitingTurn = false;
+          && (this.held.length > 0 || heldUnanswered));
+        if (!this.isReplaying) {
+          this.heldAwaitingTurn = false; this.heldAwaitingIds.clear();
+          // An agent that does not name what the turn took: nothing waits on.
+          this._takeWaiting(took ? [...took] : null);
+        }
         if (terminalError && !alreadyFinished) {
           this.terminalErrorLatched = true;
           this.terminalErrorText = terminalError.text;
@@ -3058,7 +3126,7 @@ export class SessionStream {
   async sendUserMessage(
     content: string,
     codexInputs?: Array<Record<string, unknown>>,
-    opts?: { persist?: boolean; broadcastUser?: boolean; clientMessageId?: string; rowId?: number },
+    opts?: { persist?: boolean; broadcastUser?: boolean; clientMessageId?: string; rowId?: number; sendNow?: boolean },
   ): Promise<{ rowId: number | null; held?: boolean }> {
     await (await loadEndpointOps()).applyPendingEndpoint(this.id);
     // A new turn is not the wrong-model one (§14.118).
@@ -3096,8 +3164,43 @@ export class SessionStream {
         return { rowId, held: true };
       }
     }
-    await this._deliverInput(content, codexInputs, clientMessageId, known == null);
+    // A turn is running: the CLI reads this at its next step (it waits).
+    const waits = known == null && rowId != null && this.status === 'thinking'
+      && supportsSessionCapability(this.kind, 'sendNow');
+    await this._deliverInput(content, codexInputs, clientMessageId, known == null, opts?.sendNow === true);
+    if (waits && rowId != null) {
+      this.waitingInputsById.set(clientMessageId, rowId);
+      this._publishWaiting();
+    }
     return { rowId };
+  }
+
+  /** The user rows the CLI has not read yet (window GET `waitingInputs`). */
+  waitingInputs(): WaitingInput[] {
+    return [...this.waitingInputsById].map(([clientMessageId, rowId]) => ({ rowId, clientMessageId }));
+  }
+
+  private _publishWaiting(): void {
+    this._broadcast({ type: 'waiting_inputs', inputs: this.waitingInputs() });
+  }
+
+  /** These inputs were read (null: all of them). */
+  private _takeWaiting(ids: readonly unknown[] | null): void {
+    if (!this.waitingInputsById.size) return;
+    let changed = false;
+    if (ids == null) { this.waitingInputsById.clear(); changed = true; }
+    else for (const id of ids) if (typeof id === 'string' && this.waitingInputsById.delete(id)) changed = true;
+    if (changed) this._publishWaiting();
+  }
+
+  /** Have the CLI read a waiting input NOW: it stops the running step
+   *  (command included) and answers it (`send_now`, Claude). */
+  async sendNow(clientMessageId: string): Promise<{ ok: boolean; outcome?: string; error?: string }> {
+    if (!supportsSessionCapability(this.kind, 'sendNow')) return { ok: false, error: 'not supported' };
+    const client = getAgentClientForVpsId(this.vpsId);
+    const res = await client.call('send_now', { session_id: this.id, client_message_id: clientMessageId }) as
+      { ok?: boolean; outcome?: string; error?: string } | null;
+    return { ok: res?.ok === true, ...(res?.outcome ? { outcome: res.outcome } : {}), ...(res?.error ? { error: res.error } : {}) };
   }
 
   /** `send_input` with its recoveries. `fresh`: a new turn's input (not a
@@ -3108,6 +3211,7 @@ export class SessionStream {
     codexInputs: Array<Record<string, unknown>> | undefined,
     clientMessageId: string,
     fresh: boolean,
+    sendNow = false,
   ): Promise<void> {
     const client = getAgentClientForVpsId(this.vpsId);
     // A send that fails for good reverts the optimistic `thinking` (S4, C13):
@@ -3133,6 +3237,7 @@ export class SessionStream {
       session_id: this.id, content,
       client_message_id: clientMessageId,
       ...(codexInputs?.length ? { codex_inputs: codexInputs } : {}),
+      ...(sendNow ? { send_now: true } : {}),
     };
     try {
       await client.call('send_input', params);
@@ -3247,7 +3352,10 @@ export class SessionStream {
     try {
       while (this.held.length && !this.holdsInputs()) {
         const next = this.held[0]!;
-        if (intoTurn) this.heldAwaitingTurn = true;
+        if (intoTurn) {
+          this.heldAwaitingTurn = true;
+          if (next.clientMessageId) this.heldAwaitingIds.add(next.clientMessageId);
+        }
         try {
           await this._deliverInput(next.content, next.codexInputs, next.clientMessageId, true);
         } catch (e) {
@@ -5066,12 +5174,13 @@ export class SessionStream {
       type: 'permission_request', id, tool, input, expiresAt,
       ...(gate.reason ? { reason: gate.reason } : {}),
       ...(gate.suggestions ? { suggestions: gate.suggestions } : {}),
+      ...(gate.prompt ? { prompt: gate.prompt } : {}),
     });
     this._log('info', 'permission', { id, tool });
     this._maybePush({
       event: 'permission',
       title: `🔒 ${this.vpsName} · ${this._label()} : permission`,
-      body: `tool ${tool} — tap to approve`,
+      body: gate.prompt?.title ?? `tool ${tool} — tap to approve`,
       tag: `perm-${this.id}`,
     });
     // Telegram's "Always" is the first CLI option for Claude (hidden when the
@@ -5692,7 +5801,7 @@ export async function startNewSession(opts: {
       model: cfg.model,
       fallback_model: cfg.fallbackModel,
       effort: effortPersist,
-      session_config: runtimeConnection(providerConfig),
+      session_config: withUnattended(runtimeConnection(providerConfig), opts.unattended === true),
       // Compatibility with an older agent that only reads this key.
       codex_config: kind === 'codex' ? runtimeConnection(providerConfig) : null,
       // Stable Charon peer address. Claude also mirrors it to native --name.
@@ -5802,7 +5911,7 @@ export async function resumeSession(sessionId: string): Promise<SessionStream> {
         session_id: sessionId,
         handle: row.handle,
         cli_name: row.handle,
-        session_config: withRememberedRules(kind, runtimeConnection(parseProviderConfig(row.providerConfig)), row.alwaysAllowTools),
+        session_config: withUnattended(withRememberedRules(kind, runtimeConnection(parseProviderConfig(row.providerConfig)), row.alwaysAllowTools), row.unattended === 1),
         model: row.model, fallback_model: row.fallbackModel, effort: row.effort,
       });
       const agentStatus = (rpcRes as { status?: string } | undefined)?.status;
@@ -5836,7 +5945,7 @@ export async function resumeSession(sessionId: string): Promise<SessionStream> {
           model: row.model ?? null,
           fallback_model: row.fallbackModel ?? null,
           effort: row.effort ?? null,
-          session_config: withRememberedRules(kind, runtimeConnection(parseProviderConfig(row.providerConfig)), row.alwaysAllowTools),
+          session_config: withUnattended(withRememberedRules(kind, runtimeConnection(parseProviderConfig(row.providerConfig)), row.alwaysAllowTools), row.unattended === 1),
           codex_config: kind === 'codex' ? runtimeConnection(parseProviderConfig(row.providerConfig)) : null,
           // Reassert both provider-neutral identity and Claude's native name.
           handle: row.handle,

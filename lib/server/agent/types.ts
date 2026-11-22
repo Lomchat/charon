@@ -226,7 +226,12 @@ export type AgentEvent = (
   | { event: 'plan_update'; session_id: string; id: string; explanation?: string | null; steps: Array<{ step: string; status: string }> }
   | { event: 'tool_activity'; session_id: string; kind: string; id: string; status: string; detail?: any }
   | { event: 'codex_signal'; session_id: string; kind: string; id: string; status: string; detail?: any }
-  | { event: 'permission_request'; session_id: string; id: string; tool: string; input: any; expires_at?: number; reason?: string; suggestions?: unknown[] }
+  | {
+      event: 'permission_request'; session_id: string; id: string; tool: string; input: any; expires_at?: number;
+      reason?: string; suggestions?: unknown[];
+      // Claude: the CLI's card text (lib/permissionSuggestions.ts § PermissionPrompt).
+      title?: string; description?: string; blocked_path?: string; agent_id?: string;
+    }
   | { event: 'user_question'; session_id: string; id: string; questions: any[]; expires_at?: number; delivery?: 'async' }
   | { event: 'exit_plan_request'; session_id: string; id: string; plan: string; expires_at?: number }
   // Provider-side timeout/cancellation. Durable in the agent event log so a
@@ -338,6 +343,9 @@ export type AgentEvent = (
       peer_request_id?: string | null;
       terminal_reason?: string; stop_reason?: string;
       api_error_status?: number | string; is_error?: boolean;
+      // The hub inputs (`client_message_id`) this turn took in, as the CLI
+      // states it (Claude, agent >= 0.141.0). Absent = not stated.
+      inputs?: string[];
     }
   // compaction (agent >= 0.36.0): the CLI replaced the conversation with a
   // summary. Charon's own transcript is untouched (it lives in SQLite, not in
@@ -346,6 +354,11 @@ export type AgentEvent = (
   // persisted as a role='event' row so it survives a refetch and keeps its
   // place in history.
   | { event: 'compaction'; session_id: string; trigger?: string; pre_tokens?: number; post_tokens?: number }
+  // The CLI read these inputs (Claude, agent >= 0.142.0): their bubbles stop
+  // saying they wait.
+  | { event: 'inputs_taken'; session_id: string; client_message_ids: string[] }
+  // A provider's own non-blocking warning (Codex deprecation/config/warning).
+  | { event: 'provider_notice'; session_id: string; provider?: string; kind?: string; summary: string; details?: string }
   // session_info (agent >= 0.36.0): the CLI's init frame. `capabilities` is the
   // sanctioned feature-detection channel (CLI >= 2.1.205) — prefer it to
   // comparing version strings. `model_efforts` is per-model effort support,
@@ -603,6 +616,7 @@ export type AgentMethodName =
   | 'force_stop'
   // Stop ONE background task, leaving the session running (agent >= 0.35.0).
   | 'stop_bg_task'
+  | 'send_now'
   | 'set_permission_mode'
   | 'set_model'
   | 'set_effort'

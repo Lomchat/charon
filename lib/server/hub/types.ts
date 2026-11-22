@@ -2,7 +2,9 @@
 // SSE clients). We keep a wide TS union + guard helpers.
 import type { ClaudeEffort, ClaudeMode, SessionProvider } from '@/lib/sessionCapabilities';
 import type { SessionErrorPayload } from '@/lib/sessionError';
-import type { PermissionSuggestion } from '@/lib/permissionSuggestions';
+import type { PermissionPrompt, PermissionSuggestion } from '@/lib/permissionSuggestions';
+/** A user row its provider has not read yet (`waiting_inputs`). */
+export type WaitingInput = { rowId: number; clientMessageId: string };
 
 // One sub-agent inside a running Workflow-tool task (from the SDK's raw
 // TaskProgressMessage.workflow_progress[]). Carried by bg_task_progress. §14.54.
@@ -38,6 +40,10 @@ export type BridgeEvent =
   // The inputs a compaction holds, in send order (§14.125): the WHOLE list
   // on every change. Durable (`held_inputs`), mirrored by `heldInputs`.
   | { type: 'held_inputs'; inputs: import('@/lib/heldInputs').HeldInputState[] }
+  // The user rows the provider has not read yet (sent mid-turn, `sendNow`
+  // capability): the WHOLE list on every change. Hub memory, mirrored by the
+  // window GET's `waitingInputs`.
+  | { type: 'waiting_inputs'; inputs: WaitingInput[] }
   // The session still runs the agent code of before an update (§14.117):
   // the header says so until the agent moves it. Hub memory, mirrored by
   // the window GET's `liveRuntimeOutdated`.
@@ -50,7 +56,7 @@ export type BridgeEvent =
   | { type: 'plan_progress'; id: string; text: string }
   | { type: 'plan_update'; id: string; explanation?: string | null; steps: Array<{ step: string; status: string }>; rowId?: number }
   | { type: 'tool_activity'; kind: string; id: string; status: string; detail?: any }
-  | { type: 'permission_request'; id: string; tool: string; input: any; expiresAt?: number; reason?: string; suggestions?: PermissionSuggestion[] }
+  | { type: 'permission_request'; id: string; tool: string; input: any; expiresAt?: number; reason?: string; suggestions?: PermissionSuggestion[]; prompt?: PermissionPrompt }
   | { type: 'user_question'; id: string; questions: UserQuestion[]; expiresAt?: number; delivery?: 'async'; createdAt?: number; snapshot?: boolean; rowId?: number }
   | { type: 'exit_plan_request'; id: string; plan: string; expiresAt?: number; rowId?: number }
   // An async question's answer delivery started/ended (W4 review): open views
@@ -147,6 +153,10 @@ export type BridgeEvent =
       type: 'scheduled_fire'; source: string; prompt: string;
       taskId?: string; schedule?: string; recurring?: boolean; rowId?: number;
     }
+  // provider_notice = a non-blocking warning the provider addressed to the
+  // user (Codex deprecation/config/warning notifications). Persisted as a
+  // role='event' row, once per distinct summary per session.
+  | { type: 'provider_notice'; provider?: string; kind?: string; summary: string; details?: string; rowId?: number }
   // side_question / side_answer = a question beside the conversation (Claude
   // `side_question`, §14.119): never part of the model's context. Two
   // role='event' rows; the answer names its question's row.

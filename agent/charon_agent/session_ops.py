@@ -14,6 +14,7 @@ protocol test scrapes those (with server.py's) against `protocol.METHODS`.
 from __future__ import annotations
 
 import asyncio
+import inspect
 import os
 import re
 import sys
@@ -29,6 +30,23 @@ from .protocol import (
     RpcError,
 )
 from .providers import get_provider
+
+
+def input_kwargs(session: Any, client_message_id: Any, send_now: Any = False) -> dict[str, Any]:
+    """`client_message_id` / `send_now` for a `send_input` that takes them
+    (Claude matches its prompts' turns by the id, §14.125, and can read one
+    at once); none for one that does not."""
+    try:
+        params = inspect.signature(session.send_input).parameters
+    except (TypeError, ValueError):
+        return {}
+    out: dict[str, Any] = {}
+    if isinstance(client_message_id, str) and client_message_id and "client_message_id" in params:
+        out["client_message_id"] = client_message_id
+    if send_now is True and "send_now" in params:
+        out["send_now"] = True
+    return out
+
 
 PEER_HANDLE_RE = re.compile(r"^[a-z0-9](?:[a-z0-9-]{0,30}[a-z0-9])?$")
 _PEER_HANDLE_RE = PEER_HANDLE_RE
@@ -180,6 +198,7 @@ OPS = frozenset({
     "sleep_session",
     "stop_background_terminal",
     "stop_bg_task",
+    "send_now",
 })
 
 
@@ -301,6 +320,15 @@ async def run(method: str, params: dict[str, Any], session: Any, host: Any) -> A
                            "stop_bg_task is not supported for this session kind")
         await fn(task_id)
         return {"ok": True}
+
+    if method == "send_now":
+        cmid = params.get("client_message_id")
+        if not isinstance(cmid, str) or not cmid:
+            raise RpcError(ERR_INVALID_PARAMS, "client_message_id must be a non-empty string")
+        fn = getattr(session, "send_now", None)
+        if fn is None:
+            raise RpcError(ERR_METHOD_NOT_FOUND, "send_now is not supported for this session kind")
+        return await fn(cmid)
 
     if method == "set_permission_mode":
         s = session
@@ -887,10 +915,12 @@ async def run(method: str, params: dict[str, Any], session: Any, host: Any) -> A
         peer_request_id = params.get("peer_request_id")
         if isinstance(peer_request_id, str) and peer_request_id:
             await session.send_input(content, peer_request_id=peer_request_id)
-        elif codex_inputs is not None:
-            await session.send_input(content, codex_inputs)
+            return {"ok": True}
+        kw = input_kwargs(session, params.get("client_message_id"), params.get("send_now"))
+        if codex_inputs is not None:
+            await session.send_input(content, codex_inputs, **kw)
         else:
-            await session.send_input(content)
+            await session.send_input(content, **kw)
         return {"ok": True}
 
     if method == "sleep_session":

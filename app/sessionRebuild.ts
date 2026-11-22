@@ -22,6 +22,7 @@ import { DEFAULT_SESSION_PROVIDER, PROVIDERS, isSessionProvider, type SessionPro
 import { appendThinkingMessage, closeThinkingMessage } from './thinkingMessages';
 import { parseAsyncQuestion, resolveAsyncQuestionMessages } from '@/lib/asyncQuestions';
 import { scheduledFireContent } from '@/lib/scheduledTasks';
+import { providerNoticeContent } from '@/lib/providerNotice';
 import { parseTurnLedger } from '@/lib/promptCache';
 
 // Shape of a message as it comes from the `GET /api/sessions/[id]` API.
@@ -141,6 +142,11 @@ export function rebuildStateFromMessages(
             id: 'm' + m.id, role: 'compaction',
             content: typeof ev.trigger === 'string' ? ev.trigger : '',
             createdAt: m.createdAt,
+          });
+        }
+        if (ev.type === 'provider_notice') {
+          out.messages.push({
+            id: 'm' + m.id, role: 'provider_notice', content: providerNoticeContent(ev), createdAt: m.createdAt,
           });
         }
         // A scheduled task's prompt opened this turn (lib/scheduledTasks.ts).

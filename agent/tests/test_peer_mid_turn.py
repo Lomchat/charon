@@ -160,6 +160,72 @@ class PeerMidTurnTestCase(unittest.TestCase):
             ("stop", None, "m2", None, None),
         ])
 
+    def test_claude_result_uuids_undo_a_read_that_was_not_one(self):
+        """`requesting` marked it read, but the turn's result does not list its
+        prompt: that turn is not its reply; the turn that names it is."""
+        events = []
+        s = AgentSession("t", cwd="/tmp", name=None, permission_mode="default",
+                         claude_session_id=None, emit=events.append, on_state_change=lambda: None)
+
+        async def run():
+            human = s._prompt_uuid(cmid="c-1", peer=None)
+            peer = s._prompt_uuid(cmid=None, peer="m3")
+            s._uuid_echo = True
+            s._begin_turn()
+            s._peer_turn_done.clear()
+            s._peer_pending_id = "m3"
+            s._peer_note_request_start()          # the heuristic read
+            s._emit("assistant_text", delta="for the human")
+            s._peer_check_result({human})         # the result names the human's only
+            s._emit("stop", subtype="success")
+            s._end_turn()
+            s._peer_note_result()
+            self.assertFalse(s._peer_turn_done.is_set())
+            # The next turn's first message names it: read exactly now.
+            s._peer_note_taken({peer})
+            s._begin_turn()
+            s._emit("assistant_text", delta="answer")
+            s._peer_check_result({peer})
+            s._emit("stop", subtype="success")
+            s._end_turn()
+            s._peer_note_result()
+            self.assertTrue(s._peer_turn_done.is_set())
+
+        asyncio.run(run())
+        rows = [(e["event"], e.get("delta"), e.get("_peer_request_id"), e.get("_peer_shared"))
+                for e in events if e["event"] in ("assistant_text", "stop", "peer_untake")]
+        self.assertEqual(rows, [
+            ("assistant_text", "for the human", "m3", None),
+            ("peer_untake", None, "m3", None),
+            ("stop", None, None, None),
+            ("assistant_text", "answer", "m3", None),
+            ("stop", None, "m3", None),
+        ])
+
+        # The daemon drops what an untake disowns from the reply.
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            server = Server(socket_path=base / "agent.sock", state_path=base / "state.json")
+            server.sessions["s"] = _Fake("s", "src", "active")
+            server.sessions["t"] = _Fake("t", "tgt", "thinking")
+            wire = []
+            server.subscribers["t"] = {_Sink(wire)}
+
+            async def relay():
+                mid = (await server.dispatch(
+                    "peer_send", {"source_session_id": "s", "handle": "tgt", "message": "hi"}, None))["message_id"]
+                for e in events:
+                    e = dict(e)
+                    if e.get("_peer_request_id") == "m3":
+                        e["_peer_request_id"] = mid
+                    server._emit(e)
+                await asyncio.sleep(0.05)
+                return mid
+
+            mid = asyncio.run(relay())
+            self.assertEqual(server.peer_messages[mid]["reply"], "answer")
+            self.assertFalse([p for p in wire if p.get("event") == "peer_untake"])
+
 
 if __name__ == "__main__":
     unittest.main()

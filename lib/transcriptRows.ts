@@ -31,7 +31,7 @@ export const CONVERSATION_EVENT_TYPES = ['compaction', 'scheduled_fire', 'struct
 
 /** `event` row types that produce a Msg in `rebuildStateFromMessages`. */
 export const RENDERED_EVENT_TYPES = ['thinking', 'compaction', 'scheduled_fire', 'structured_output', 'fork_point', 'external_message',
-  'plan_update', 'peer_message_status'] as const;
+  'plan_update', 'peer_message_status', 'provider_notice'] as const;
 
 /** `event` row types the rebuild reads WITHOUT rendering a message of their
  *  own (registries, resolutions, turn boundaries) or ignores on purpose. */
@@ -91,6 +91,7 @@ export const FRAME_SNAPSHOT_CLASS: Record<KnownFrameType, SnapshotClass> = {
   structured_output: 'durable',
   compaction: 'durable',
   scheduled_fire: 'durable',
+  provider_notice: 'durable',
   side_question: 'durable',
   side_answer: 'durable',
   external_message: 'durable',
@@ -110,6 +111,7 @@ export const FRAME_SNAPSHOT_CLASS: Record<KnownFrameType, SnapshotClass> = {
   status: 'durable',                 // `liveStatus` (stream memory, set before the publish)
   compacting: 'durable',             // `liveCompacting` (same)
   held_inputs: 'durable',            // `heldInputs` (the column, written before the publish)
+  waiting_inputs: 'durable',         // `waitingInputs` (hub memory, set before the publish)
   runtime_outdated: 'durable',       // `liveRuntimeOutdated` (hub memory, set before the publish)
   mode_changed: 'durable',
   model_changed: 'durable',

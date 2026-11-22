@@ -748,7 +748,7 @@ export const api = {
   // client's ready — give it a generous timeout.
   restartSession: (id: string) =>
     send<ResumeAgentSessionResponse>('POST', `/api/sessions/${id}/restart`, undefined, { timeoutMs: 60_000 }),
-  sendSessionInput: (id: string, content: string, clientMessageId?: string, codexInputs?: Array<Record<string, unknown>>) =>
+  sendSessionInput: (id: string, content: string, clientMessageId?: string, codexInputs?: Array<Record<string, unknown>>, sendNow?: boolean) =>
     // A message is the one request that must outlive the agent RPC's 60s
     // bound. Inspector traffic is isolated separately, but a real VPS/network
     // stall should still produce a precise error rather than Chrome's opaque
@@ -759,6 +759,7 @@ export const api = {
       content, ...(clientMessageId ? { clientMessageId } : {}),
       // Codex only: the text plus `skill` items for the `$name`s it holds.
       ...(codexInputs?.length ? { codexInputs } : {}),
+      ...(sendNow ? { sendNow: true } : {}),
     } satisfies SendAgentInputBody, {
       timeoutMs: 90_000,
       timeoutMessage: 'Sending the message timed out after 90s. It may already have been accepted; the transcript will reconcile automatically.',
@@ -820,6 +821,9 @@ export const api = {
     `/api/sessions/${id}/attachments/${attId}${opts?.inline ? '?inline=1' : ''}`,
   interruptSession: (id: string) =>
     send<OkResponse>('POST', `/api/sessions/${id}/input`, { type: 'interrupt' }),
+  /** A waiting input (sent mid-turn): the CLI reads it NOW. */
+  sendSessionInputNow: (id: string, clientMessageId: string) =>
+    send<{ ok: boolean; outcome?: string; error?: string }>('POST', `/api/sessions/${id}/input`, { type: 'send_now', clientMessageId }),
   forceStop: (id: string) =>
     send<OkResponse>('POST', `/api/sessions/${id}/force-stop`),
   // Kill one BACKGROUND task, not the session (§14.91). The bar clears on the
@@ -916,6 +920,7 @@ export const sessionApi = {
   resume: api.resumeSession,
   restart: api.restartSession,
   sendInput: api.sendSessionInput,
+  sendInputNow: api.sendSessionInputNow,
   interrupt: api.interruptSession,
   forceStop: api.forceStop,
   stopBackgroundTask: api.stopSessionBgTask,

@@ -60,6 +60,7 @@ export function feedFromSummaries(sessions: readonly SessionSummary[], nowSec?: 
           ...(g.preview != null ? { preview: g.preview } : {}),
           ...(g.reason ? { reason: g.reason } : {}),
           ...(g.suggestions?.length ? { suggestions: g.suggestions } : {}),
+          ...(g.prompt ? { prompt: g.prompt } : {}),
           ...(isSessionProvider(s.kind) ? { kind: s.kind } : {}),
         });
       } else if (g.kind === 'question') {

@@ -1,0 +1,1 @@
+ALTER TABLE `session_pending_permissions` ADD `prompt` text;

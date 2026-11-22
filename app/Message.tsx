@@ -18,6 +18,7 @@ import { isTurnInterrupted } from '@/lib/turnInterrupted';
 import { parseSessionError, type SessionErrorPayload } from '@/lib/sessionError';
 import { parseScheduledResume } from '@/lib/scheduledResume';
 import { describeSchedule, parseScheduledFire, scheduledTaskBody, scheduledTaskTitle } from '@/lib/scheduledTasks';
+import { parseProviderNotice } from '@/lib/providerNotice';
 import { resolveResetAtMs } from '@/lib/rateLimitReset';
 import { formatMessageTime, useTodayStart } from './messageTime';
 import { findTextLinks, messageFileTarget, remarkCodeUrls, remarkFilePaths } from './messageLinks';
@@ -136,6 +137,9 @@ type Props = {
   // A user row a compaction holds (§14.125): sent when it ends; `error` = its
   // last delivery failed (the hub retries).
   held?: HeldInputState | null;
+  /** Sent mid-turn, not read by the CLI yet: its clientMessageId. */
+  waitingId?: string | null;
+  onSendNow?: (clientMessageId: string) => void;
 };
 
 /** The bubble class of an unread finish (`.finish-cue`, app.css). */
@@ -146,7 +150,7 @@ function finishCueClass(cue: Props['finishCue']): string {
 // The roles drawn by Message's own bubble below (the others have their own component).
 const TEXT_BUBBLE_ROLES = new Set(['user', 'assistant', 'external', 'peer_status']);
 
-function Message({ m, vpsId, cwd, streaming = false, attachedResult, kind = 'claude', onReauth, onContinue, substitutedFor, onScheduleResume, onCancelScheduledResume, onContinueWithAccount, currentAccount, orphaned = false, peerSessionId, onOpenPeerSession, onPeerRequestHover, onPeerRequestJump, peerReplyTo, finishCue, held }: Props) {
+function Message({ m, vpsId, cwd, streaming = false, attachedResult, kind = 'claude', onReauth, onContinue, substitutedFor, onScheduleResume, onCancelScheduledResume, onContinueWithAccount, currentAccount, orphaned = false, peerSessionId, onOpenPeerSession, onPeerRequestHover, onPeerRequestJump, peerReplyTo, finishCue, held, waitingId, onSendNow }: Props) {
   const foldKey = TEXT_BUBBLE_ROLES.has(m.role) && !streaming ? m.id : null;
   const isFolded = useBubbleFold(foldKey);
   if (m.role === 'tool_use') return <ToolUseCard m={m} attachedResult={attachedResult} orphaned={orphaned} />;
@@ -158,6 +162,7 @@ function Message({ m, vpsId, cwd, streaming = false, attachedResult, kind = 'cla
   if (m.role === 'thinking') return <ThinkingBubble m={m} />;
   if (m.role === 'compaction') return <CompactionMarker m={m} kind={kind} finishCue={finishCue} />;
   if (m.role === 'scheduled_fire') return <ScheduledFireBubble m={m} />;
+  if (m.role === 'provider_notice') return <ProviderNoticeMarker m={m} kind={kind} />;
   if (m.role === 'side') return <SideBubble m={m} vpsId={vpsId} cwd={cwd} />;
   if (m.role === 'forkpoint') return <ForkMarker m={m} />;
   if (m.role === 'plan') return <PlanCard m={m} />;
@@ -219,6 +224,15 @@ function Message({ m, vpsId, cwd, streaming = false, attachedResult, kind = 'cla
               ? `Not delivered yet: ${held.error}\nRetried automatically`
               : 'Queued: sent after the compaction, in order'}>
             <IconArrowsCollapse aria-hidden />{held.error ? 'not sent' : 'queued'}
+          </span>
+        )}
+        {waitingId && !held && (
+          <span className="held-chip waiting-chip">
+            <IconArrowsCollapse aria-hidden />waiting
+            {onSendNow && (
+              <button type="button" className="send-now" onClick={() => onSendNow(waitingId)}
+                title="Send now (Ctrl+Shift+Enter): stops the current step">now</button>
+            )}
           </span>
         )}
         {isExternal && m.fromProvider && (
@@ -685,6 +699,23 @@ function CompactionMarker({ m, kind, finishCue }: { m: Msg; kind: AgentKind; fin
       <span className="cm-label">
         Conversation compacted{auto ? ' automatically' : ''} — {providerName(kind)} no longer
         remembers the messages above
+      </span>
+    </div>
+  );
+}
+
+/** A provider's own warning (deprecation, config): one line, its details
+ *  folded. */
+function ProviderNoticeMarker({ m, kind }: { m: Msg; kind: AgentKind }) {
+  const notice = parseProviderNotice(m.content);
+  if (!notice) return null;
+  return (
+    <div className="compaction-marker provider-notice" role="note">
+      <span className="cm-label">
+        ⚠ {providerName(kind)} · {notice.summary}
+        {notice.details && (
+          <details className="pn-details"><summary>details</summary>{notice.details}</details>
+        )}
       </span>
     </div>
   );

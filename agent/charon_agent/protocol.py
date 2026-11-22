@@ -205,6 +205,9 @@ METHODS = {
     # working. Terminal state arrives on the normal stream as a bg_task with a
     # terminal status. Claude-kind only; Codex has no equivalent.
     "stop_bg_task",
+    # Read a waiting input NOW (Claude: interrupt `send_now` + its uuid): the
+    # CLI stops the running step and takes it (agent >= 0.142.0).
+    "send_now",
     "set_permission_mode",
     "set_model",
     "set_effort",

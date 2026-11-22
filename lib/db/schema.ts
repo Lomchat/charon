@@ -487,6 +487,9 @@ export const sessionPendingPermissions = sqliteTable('session_pending_permission
   // Claude: the CLI's own "don't ask again" options, JSON in its wire shape
   // (lib/permissionSuggestions.ts). The answer picks one BY INDEX.
   suggestions: text('suggestions'),
+  // Claude: the CLI's own card text, JSON `PermissionPrompt` (title,
+  // description, blocked path, asking sub-agent). NULL when it gave none.
+  prompt: text('prompt'),
 }, (t) => [
   // GET session detail + SSE init snapshot filter by (session_id, status='pending').
   index('idx_session_pending_permissions_session_id_status').on(t.sessionId, t.status),

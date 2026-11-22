@@ -33,7 +33,7 @@ import { listVpsRuntimeSnapshots } from '@/lib/server/agent/vpsRuntimeSnapshot';
 import { deriveAttention } from '@/lib/sessionAttention';
 import { isAsyncQuestionDelivering } from '@/lib/server/agent/asyncQuestionDelivery';
 import { summaryKey, type SessionSummary, type SummaryGate } from '@/lib/sessionSummary';
-import { parseSuggestions, type PermissionSuggestion } from '@/lib/permissionSuggestions';
+import { parsePermissionPrompt, parseSuggestions, type PermissionPrompt, type PermissionSuggestion } from '@/lib/permissionSuggestions';
 import type { SyncRev } from '@/lib/sync/rev';
 import type { WorkerStatus } from '@/lib/types/api';
 import {
@@ -52,7 +52,7 @@ const IN_CHUNK = 400;
 
 type GateText = {
   sessionId: string; title: string; preview?: string;
-  reason?: string; suggestions?: PermissionSuggestion[];
+  reason?: string; suggestions?: PermissionSuggestion[]; prompt?: PermissionPrompt;
 };
 
 type SummariesState = {
@@ -126,10 +126,11 @@ function permissionText(id: string, sessionId: string, toolName: string): GateTe
   const row = db.get(sql`
     SELECT substr(tool_input, 1, ${GATE_PREVIEW_PARSE_MAX + 1}) AS head,
            length(CAST(tool_input AS BLOB)) AS bytes,
-           substr(reason, 1, ${GATE_PREVIEW_CHARS}) AS reason, suggestions
+           substr(reason, 1, ${GATE_PREVIEW_CHARS}) AS reason, suggestions, prompt
     FROM session_pending_permissions WHERE id = ${id}
   `) as {
     head: string | null; bytes: number | null; reason: string | null; suggestions: string | null;
+    prompt: string | null;
   } | undefined;
   const head = row?.head ?? '';
   let preview = head.slice(0, GATE_PREVIEW_CHARS);
@@ -139,10 +140,12 @@ function permissionText(id: string, sessionId: string, toolName: string): GateTe
   // Suggestions stay in the agent's order: a cross-session answer picks one
   // by index, exactly like the focused card (lib/permissionSuggestions.ts).
   const suggestions = parseSuggestions(row?.suggestions ?? null);
+  const prompt = parsePermissionPrompt(row?.prompt ?? null);
   return {
     sessionId, title: toolName || 'tool', preview,
     ...(row?.reason ? { reason: row.reason } : {}),
     ...(suggestions.length ? { suggestions: suggestions as PermissionSuggestion[] } : {}),
+    ...(prompt ? { prompt } : {}),
   };
 }
 
@@ -197,6 +200,7 @@ function loadGates(sessionIds: string[]): { gates: Map<string, SummaryGate[]>; c
         title: text.title, ...(text.preview != null ? { preview: text.preview } : {}),
         ...(text.reason ? { reason: text.reason } : {}),
         ...(text.suggestions ? { suggestions: text.suggestions } : {}),
+        ...(text.prompt ? { prompt: text.prompt } : {}),
       });
     }
     const qs = db.select({

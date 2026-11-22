@@ -3029,6 +3029,13 @@ html[data-density='small'] .cs-sub-fold { font-size: 8.5px; }
   background: color-mix(in srgb, var(--danger) 12%, transparent);
   color: var(--danger-strong);
 }
+/* Sent mid-turn, not read by the CLI yet: the same chip, plus "now". */
+.bubble .waiting-chip .send-now {
+  margin-left: 2px; padding: 0 5px; border-radius: var(--radius-sm);
+  border: 1px solid color-mix(in srgb, var(--warning) 60%, transparent);
+  background: transparent; color: inherit; font: inherit; cursor: pointer;
+}
+.bubble .waiting-chip .send-now:hover { background: color-mix(in srgb, var(--warning) 25%, transparent); }
 /* A turn that ended on its compaction: the marker is the finish (§14.47) — its
    label takes the answer's halo, its rules the colour. */
 .compaction-marker.finish-cue { --finish: var(--success); color: var(--text); }
@@ -3125,6 +3132,10 @@ html[data-density='small'] .cs-sub-fold { font-size: 8.5px; }
   margin: 14px 2px; color: var(--text-muted);
   font-size: 11px; letter-spacing: 0.01em;
 }
+.compaction-marker.provider-notice { color: var(--warning); }
+.provider-notice .cm-label { max-width: 80%; text-align: center; overflow-wrap: anywhere; }
+.provider-notice .pn-details { color: var(--text-muted); text-align: left; white-space: pre-wrap; }
+.provider-notice .pn-details > summary { cursor: pointer; text-align: center; }
 .compaction-marker::before,
 .compaction-marker::after {
   content: ''; flex: 1 1 auto; height: 1px;
@@ -5056,6 +5067,14 @@ html[data-density='small'] .cs-sub-fold { font-size: 8.5px; }
   color: var(--text-muted); margin-left: auto;
   max-width: 60%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
+.inline-perm-card .ip-chip,
+.perm-card .pp-chip {
+  font-family: var(--body); font-size: 10px; padding: 1px 6px; margin-left: 6px;
+  border: 1px solid var(--border); border-radius: 999px; color: var(--text-muted);
+}
+.inline-perm-card .ip-desc { margin: 0 0 6px; color: var(--text-muted); font-size: 12px; overflow-wrap: anywhere; }
+.inline-perm-card .ip-path { margin: 0 0 8px; font-size: 12px; overflow-wrap: anywhere; }
+.inline-perm-card .ip-path code { font-family: var(--mono); color: var(--warning); }
 .inline-perm-card .ip-reason {
   margin: 0 0 8px; color: var(--text);
   font-family: var(--body); font-size: 13px; line-height: 1.4;

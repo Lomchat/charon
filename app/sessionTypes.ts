@@ -1,6 +1,6 @@
 // Types for the chat view (HubPanel + SessionView +
 import type { SessionProvider } from '@/lib/sessionCapabilities';
-import type { PermissionSuggestion } from '@/lib/permissionSuggestions';
+import type { PermissionPrompt, PermissionSuggestion } from '@/lib/permissionSuggestions';
 // useSessionStream). Before this file, the desktop and the old separate
 // mobile view each redeclared the same types locally (Msg, ToolCallEntry,
 // EditSnapshot, PermissionRequest, PendingQuestion, PendingExitPlan)
@@ -87,6 +87,8 @@ export type PermissionRequest = {
   reason?: string;
   /** Claude: the CLI's "don't ask again" options (lib/permissionSuggestions.ts). */
   suggestions?: PermissionSuggestion[];
+  /** Claude: the CLI's own card text (title, subtitle, blocked path, sub-agent). */
+  prompt?: PermissionPrompt;
 };
 
 export type QuestionOption = { label: string; description?: string };

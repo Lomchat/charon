@@ -362,6 +362,13 @@ def _enum_val(v: Any) -> Any:
 
 _UNSET: Any = object()
 
+#: Codex notifications that are a warning for the user, not session state.
+_NOTICE_KINDS = {
+    "DeprecationNoticeNotification": "deprecation",
+    "ConfigWarningNotification": "config",
+    "WarningNotification": "warning",
+}
+
 
 def _service_tier_id(v: Any) -> str | None:
     """A speed tier: a catalog id (`priority`, `ultrafast`…), the legacy
@@ -764,6 +771,9 @@ class CodexSession:
         self._external_probe_lock: asyncio.Lock | None = None
         self._starting_turn = False
         self._stdin_queue: asyncio.Queue = asyncio.Queue()
+        # Provider notices already sent (`provider_notice`): Codex repeats its
+        # deprecation/config warnings at every app-server start.
+        self._notices_sent: set[tuple[str, str]] = set()
         # Server-initiated SDK requests run on the SDK reader thread. Futures
         # below live on the agent loop; the callback blocks only that reader
         # until the dashboard responds, exactly as app-server expects.
@@ -2730,6 +2740,20 @@ class CodexSession:
             elif pt == "ContextCompactedNotification":
                 out.append({"event": "compaction", "trigger": "auto"})
 
+            elif pt in _NOTICE_KINDS:
+                notice = self._provider_notice(pt, payload)
+                if notice is not None:
+                    out.append(notice)
+
+            elif pt == "ThreadSettingsUpdatedNotification":
+                # The settings the thread now RUNS with: after a resume they
+                # can differ from what was asked (Codex restores its own).
+                # The model is what labels the bubbles that follow.
+                model = getattr(getattr(payload, "thread_settings", None), "model", None)
+                if isinstance(model, str) and model and model != self._effective_model:
+                    self._effective_model = model
+                    out.append({"event": "effective_model", "model": model})
+
             elif pt == "ModelReroutedNotification":
                 model = getattr(payload, "to_model", None)
                 if isinstance(model, str) and model:
@@ -2853,6 +2877,8 @@ class CodexSession:
             elif pt not in (
                 "TurnStartedNotification", "ReasoningSummaryPartAddedNotification",
                 "ThreadStartedNotification", "TurnModerationMetadataNotification",
+                # Charon names its threads (`set_name`): this is our own echo.
+                "ThreadNameUpdatedNotification",
             ):
                 # SDK upgrades must not silently black-hole newly introduced
                 # notification classes. Keep the wire quiet, but leave an
@@ -2861,6 +2887,27 @@ class CodexSession:
         except Exception as e:
             out.append({"event": "error", "msg": f"translate: {type(e).__name__}: {e}"})
         return out
+
+    def _provider_notice(self, pt: str, payload: Any) -> dict[str, Any] | None:
+        """A Codex warning addressed to the user ⇒ one `provider_notice`
+        per distinct (kind, summary) for this session object; the hub keeps
+        one row per summary across restarts."""
+        summary = getattr(payload, "summary", None) or getattr(payload, "message", None)
+        if not isinstance(summary, str) or not summary.strip():
+            return None
+        kind = _NOTICE_KINDS[pt]
+        summary = summary.strip()[:500]
+        if (kind, summary) in self._notices_sent:
+            return None
+        self._notices_sent.add((kind, summary))
+        notice: dict[str, Any] = {
+            "event": "provider_notice", "provider": "codex", "kind": kind, "summary": summary,
+        }
+        parts = [getattr(payload, "details", None), getattr(payload, "path", None)]
+        details = "\n".join(p.strip() for p in parts if isinstance(p, str) and p.strip())
+        if details:
+            notice["details"] = details[:2000]
+        return notice
 
     @staticmethod
     def _split_turn_diff(diff: str) -> list[tuple[str, str]]:

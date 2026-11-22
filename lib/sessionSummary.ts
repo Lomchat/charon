@@ -2,7 +2,7 @@
 // Browser-safe. The builders live server-side (lib/server/sync/sessionSummaries.ts);
 // the bus publishes them as `{type:'session_summary', sessionId, summary}`.
 import type { SessionListItem, WorkerStatus } from '@/lib/types/api';
-import type { PermissionSuggestion } from '@/lib/permissionSuggestions';
+import type { PermissionPrompt, PermissionSuggestion } from '@/lib/permissionSuggestions';
 import type { Attention } from './sessionAttention';
 
 export type { Attention };
@@ -22,6 +22,8 @@ export type SummaryGate = {
   reason?: string;
   /** permission (Claude): the CLI's "don't ask again" options, by index */
   suggestions?: PermissionSuggestion[];
+  /** permission (Claude): the CLI's own card text */
+  prompt?: PermissionPrompt;
   /** async answers reserved, send in flight */
   delivering?: boolean;
 };

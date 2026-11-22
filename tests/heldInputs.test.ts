@@ -117,6 +117,21 @@ describe('inputs held by a compaction', () => {
     await vi.waitFor(() => expect(s.heldInputs()).toEqual([]));
     ev({ event: 'stop', subtype: 'success', peer_request_id: null, seq: 8 });
     expect(unread()).toBe(0);
+
+    // A stop that names the inputs it took outranks the output: text after the
+    // release was the compaction turn's own, the input was not in it.
+    ev({ event: 'status', status: 'thinking', seq: 9 });
+    ev({ event: 'compacting', active: true });
+    await s.sendUserMessage('queued three', undefined, { clientMessageId: 'n-3' });
+    ev({ event: 'compaction', trigger: 'auto', seq: 10 });
+    await vi.waitFor(() => expect(s.heldInputs()).toEqual([]));
+    ev({ event: 'assistant_text', delta: 'resuming my task', seq: 11 });
+    ev({ event: 'stop', subtype: 'success', peer_request_id: null, inputs: [], seq: 12 });
+    expect(unread()).toBe(0);
+    // Its own turn lists it: that stop is the finish.
+    ev({ event: 'status', status: 'thinking', seq: 13 });
+    ev({ event: 'stop', subtype: 'success', peer_request_id: null, inputs: ['n-3'], seq: 14 });
+    expect(unread()).toBe(1);
   });
 
   it('survive a hub restart and a failed delivery: released after the reconnect, retried, never dropped', async () => {

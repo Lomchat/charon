@@ -31,7 +31,7 @@ import { attachAsyncQuestionState } from '@/lib/server/agent/asyncQuestions';
 import { timeSection } from '@/lib/server/perf/loopLag';
 import type { AgentSessionMessageWindow } from '@/lib/types/api';
 import { HUB_TRANSCRIPT_FEATURES } from '@/lib/assistantBoundaries';
-import { parseSuggestions, type PermissionSuggestion } from '@/lib/permissionSuggestions';
+import { parsePermissionPrompt, parseSuggestions, type PermissionSuggestion } from '@/lib/permissionSuggestions';
 
 // Roles considered as "chat" for pagination. edit_snapshot and event do
 // NOT count in the window — they ride as attachments of the page owning
@@ -309,6 +309,7 @@ export async function GET(req: Request, { params }: { params: Promise<{ id: stri
     liveCompacting: stream?.compacting === true,
     // Inputs a compaction holds (§14.125): the stream's list, else the column.
     heldInputs: stream ? stream.heldInputs() : publicHeldInputs(parseHeldInputs(row.heldInputsJson)),
+    waitingInputs: stream ? stream.waitingInputs() : [],
     // Still on the agent code of before an update (§14.117): header warning.
     liveRuntimeOutdated: isRuntimeOutdated(id),
     liveRuntimeVersions: runtimeVersionsOf(id),
@@ -359,11 +360,13 @@ export async function GET(req: Request, { params }: { params: Promise<{ id: stri
       try { input = JSON.parse(p.toolInput); } catch {}
       // Suggestions keep the agent's order: the answer picks one by index.
       const suggestions = parseSuggestions(p.suggestions);
+      const prompt = parsePermissionPrompt(p.prompt);
       return {
         id: p.id, tool: p.toolName, input,
         createdAt: p.createdAt, expiresAt: p.expiresAt ?? undefined,
         ...(p.reason ? { reason: p.reason } : {}),
         ...(suggestions.length ? { suggestions: suggestions as PermissionSuggestion[] } : {}),
+        ...(prompt ? { prompt } : {}),
       };
     }),
     pendingQuestions: pendingQs.filter((q) => q.kind === 'question' || q.kind === 'async_question').map((q) => {

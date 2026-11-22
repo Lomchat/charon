@@ -497,6 +497,12 @@ class Server:
         if payload.get("session_id") != row.get("target_session_id"):
             return
         event = payload.get("event")
+        if event == "peer_untake":
+            # The turn it was marked read in did not take it (session.py §
+            # _peer_check_result): what was gathered is not its reply.
+            row["_reply_buffer"] = ""
+            row.pop("_turn_error", None)
+            return
         if event == "peer_dropped":
             if not row.get("_completing"):
                 row["_completing"] = True
@@ -696,8 +702,8 @@ class Server:
         peer_pending = payload.pop("_peer_request_pending", None)
         if isinstance(peer_request_id, str) and peer_request_id:
             self._observe_peer_event(peer_request_id, payload)
-        if payload.get("event") == "peer_dropped":
-            return  # ledger-only signal (session.py § _drop_pending_peer)
+        if payload.get("event") in ("peer_dropped", "peer_untake"):
+            return  # ledger-only signals (session.py § _drop_pending_peer / _peer_check_result)
         sid = payload.get("session_id")
         if not isinstance(sid, str):
             return
@@ -1828,7 +1834,7 @@ class Server:
         "respond_permission",
         "respond_question", "respond_exit_plan", "resume_session",
         "sleep_session", "force_stop", "kill_session", "stop_bg_task",
-        "migrate_session",
+        "send_now", "migrate_session",
     })
     _SHELL_METHODS = frozenset({
         "shell_list", "shell_start", "shell_input", "shell_resize",
@@ -2670,11 +2676,12 @@ class Server:
                     return {"ok": True, "duplicate": True}
                 fut: asyncio.Future = asyncio.get_running_loop().create_future()
                 self.inflight_inputs[key] = fut
+                kw = session_ops.input_kwargs(s, cmid, params.get("send_now"))
                 try:
                     if codex_inputs is not None:
-                        await s.send_input(content, codex_inputs)
+                        await s.send_input(content, codex_inputs, **kw)
                     else:
-                        await s.send_input(content)
+                        await s.send_input(content, **kw)
                 except Exception as e:
                     self.inflight_inputs.pop(key, None)
                     if not fut.done():

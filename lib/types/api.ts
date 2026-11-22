@@ -1408,6 +1408,8 @@ export type AgentSessionDetailResponse = {
   liveCompacting?: boolean;
   // Inputs a compaction holds, in send order (§14.125). Optional: older hubs omit it.
   heldInputs?: import('@/lib/heldInputs').HeldInputState[];
+  /** User rows the CLI has not read yet (sent mid-turn). */
+  waitingInputs?: import('@/lib/server/hub/types').WaitingInput[];
   // The session still runs the agent code of before an update (§14.117):
   // moved automatically once idle. Optional: older hubs omit it.
   liveRuntimeOutdated?: boolean;
@@ -1712,11 +1714,13 @@ export type SendAgentInputBody = {
   // id never writes a second row (sync refonte C08).
   clientMessageId?: string;
   codexInputs?: Array<Record<string, unknown>>;
+  // Claude, mid-turn: have the CLI read it NOW (the running step stops).
+  sendNow?: boolean;
 };
 export type SendAgentInputResponse = { ok: true; rowId: number | null; clientMessageId: string } & ActionSyncStamp;
 // The /input endpoint also accepts `{ type: 'interrupt' }` — modelled as a
 // union to stay typed. `interruptSession` sends the 2nd branch.
-export type AgentInputBody = SendAgentInputBody | { type: 'interrupt' };
+export type AgentInputBody = SendAgentInputBody | { type: 'interrupt' } | { type: 'send_now'; clientMessageId: string };
 
 export type RespondPermissionBody = {
   id: string;

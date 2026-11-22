@@ -76,7 +76,10 @@ export type SessionCapability =
   // permission card (Claude's rule suggestions); the answer picks one. Without
   // it, "always" is the provider's native session grant (Codex). Broad
   // provider-authored labels ("Codex command") are never remembered (§14.8).
-  | 'permissionSuggestions';
+  | 'permissionSuggestions'
+  // An input sent mid-turn WAITS until the CLI reads it (its bubble says so,
+  // `inputs_taken`), and can be read NOW (the running step stops). Claude.
+  | 'sendNow';
 
 export type SessionCapabilityMap = Readonly<Record<SessionCapability, CapabilityLevel>>;
 
@@ -363,7 +366,7 @@ export const PROVIDERS: Readonly<Record<SessionProvider, ProviderDescriptor>> = 
       safeFileRevert: 'adapted', autoReviewer: 'none', permissionProfiles: 'none',
       apps: 'none', slashCommands: 'native', mcpToggle: 'native', mcpOauth: 'none',
       permissionSuggestions: 'native',
-      goal: 'native', sideQuestion: 'native',
+      goal: 'native', sideQuestion: 'native', sendNow: 'native',
     },
     // Claude's archive is Charon-side only (capability `adapted`) and its fork
     // anchors are the `cliUuid`s already in our rows — no RPC to name.
@@ -435,6 +438,8 @@ export const PROVIDERS: Readonly<Record<SessionProvider, ProviderDescriptor>> = 
       // (acceptForSession / scope:session) — never a hub-side tool-name set.
       permissionSuggestions: 'none',
       goal: 'native', sideQuestion: 'none',
+      // Mid-turn input is steered in at once (`turn/steer`): it never waits.
+      sendNow: 'none',
     },
     nativeRpc: {
       archive: 'codex_archive_thread',
@@ -523,7 +528,8 @@ export const PROVIDERS: Readonly<Record<SessionProvider, ProviderDescriptor>> = 
       mcp: 'adapted',
       // Cursor's own safety classifier, enabled per session (`auto_review`).
       autoReviewer: 'native',
-      fork: 'none', crossProviderFork: 'adapted', compact: 'none', rewind: 'none',
+      // `agent.summarize()` (cursor-sdk ≥ 1.4).
+      fork: 'none', crossProviderFork: 'adapted', compact: 'native', rewind: 'none',
       review: 'adapted', stableHandle: 'adapted', peerMessaging: 'adapted',
       // ⚠ The SDK has NO approval callback and its hooks are file-based with a
       // fail-OPEN parse bug, so Charon cannot raise a per-request card for
@@ -540,6 +546,8 @@ export const PROVIDERS: Readonly<Record<SessionProvider, ProviderDescriptor>> = 
       slashCommands: 'none', mcpToggle: 'none', mcpOauth: 'none',
       permissionSuggestions: 'none',
       goal: 'none', sideQuestion: 'none',
+      // Mid-run input is steered in (`run.steer`) or queued as the next turn.
+      sendNow: 'none',
     },
     nativeRpc: {
       archive: 'cursor_archive_agent',

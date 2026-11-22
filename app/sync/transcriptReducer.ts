@@ -21,6 +21,7 @@
 // hub without the feature.
 
 import type { HeldInputState } from '@/lib/heldInputs';
+import type { WaitingInput } from '@/lib/server/hub/types';
 import type { RuntimeVersions } from '@/lib/runtimeUpdate';
 import type { LiveActivity } from '@/lib/liveActivity';
 import type {
@@ -37,6 +38,7 @@ import type { FastModeVerdict, SessionWindowResponse } from '@/lib/types/api';
 import { mergeSessionTokenUsage, type SessionTokenUsage } from '@/lib/sessionTokenUsage';
 import { resolveAsyncQuestionMessages } from '@/lib/asyncQuestions';
 import { scheduledFireContent } from '@/lib/scheduledTasks';
+import { providerNoticeContent } from '@/lib/providerNotice';
 import {
   appendThinkingMessage, applyThinkingFlushed, applyThinkingReopened, closeThinkingMessage,
   openThinkingCreatedAt, prependMessagePage, thinkingLaneSnapshot, thinkingRowIds, createThinkingLane,
@@ -464,6 +466,9 @@ export type TranscriptState = {
   /** The user rows a compaction holds, in send order (`held_inputs` frame /
    *  `heldInputs`, §14.125): their bubbles say they wait. */
   held: HeldInputState[];
+  /** The user rows the CLI has not read yet (`waiting_inputs` frame /
+   *  `waitingInputs`): their bubbles say they wait and offer "send now". */
+  waiting: WaitingInput[];
   /** Still on the agent code of before an update (`runtime_outdated` frame /
    *  `liveRuntimeOutdated`, §14.117): the header says so. */
   runtimeOutdated: boolean;
@@ -524,7 +529,7 @@ export function createTranscriptState(sessionId: string, provider?: SessionProvi
     sessionId, rows: [], messages: [], toolCalls: [], files: new Set(), edits: new Map(),
     bgTasks: new Map(), bgOlderEnded: 0, bgLaunches: new Map(),
     queues: { permissions: [], questions: [], exitPlans: [] },
-    status: null, compacting: false, held: [], runtimeOutdated: false, runtimeVersions: null, activity: null, buf: { assistant: '', streamingInto: null, thinkingOpen: '' }, thinkingKnown: 0,
+    status: null, compacting: false, held: [], waiting: [], runtimeOutdated: false, runtimeVersions: null, activity: null, buf: { assistant: '', streamingInto: null, thinkingOpen: '' }, thinkingKnown: 0,
     sends: new Map(), knownRowIds: new Set(), livePlans: new Map(), durablePlans: new Set(), localResolved: new Map(),
     snapshotRev: null, toolCallBase: null, toolCallIdsSince: new Set(), afterId: 0, hubBoundaries: false, hasMore: false, oldestChatId: null,
     provider: p, session: null,
@@ -762,6 +767,9 @@ export function applyFrame(s: TranscriptState, ev: SessionFrame, ctx: Transcript
     case 'held_inputs':
       st = { ...st, held: Array.isArray(ev.inputs) ? ev.inputs : [] };
       break;
+    case 'waiting_inputs':
+      st = { ...st, waiting: Array.isArray(ev.inputs) ? ev.inputs : [] };
+      break;
     case 'runtime_outdated':
       st = { ...st, runtimeOutdated: ev.outdated === true, runtimeVersions: ev.outdated === true ? ev.versions ?? null : null };
       break;
@@ -815,6 +823,7 @@ export function applyFrame(s: TranscriptState, ev: SessionFrame, ctx: Transcript
           id: ev.id, sessionId: st.sessionId, tool: ev.tool, input: ev.input, createdAt: nowS, expiresAt: ev.expiresAt,
           ...(ev.reason ? { reason: ev.reason } : {}),
           ...(ev.suggestions?.length ? { suggestions: ev.suggestions } : {}),
+          ...(ev.prompt ? { prompt: ev.prompt } : {}),
         }] } };
       }
       break;
@@ -935,6 +944,14 @@ export function applyFrame(s: TranscriptState, ev: SessionFrame, ctx: Transcript
         st = { ...st, messages: upsertRow(st.messages, { id, role: 'compaction', content: typeof ev.trigger === 'string' ? ev.trigger : '', createdAt: nowS }) };
       }
       break;
+    case 'provider_notice': {
+      st = legacyBoundary(st, nowMs);
+      let id: string;
+      if (ev.rowId != null) id = rowKey(ev.rowId);
+      else [id, st] = nextId(st, 'pn', nowMs);
+      st = { ...st, messages: upsertRow(st.messages, { id, role: 'provider_notice', content: providerNoticeContent(ev), createdAt: nowS }) };
+      break;
+    }
     case 'scheduled_fire': {
       st = legacyBoundary(st, nowMs);
       let id: string;
@@ -1222,6 +1239,7 @@ export function applySnapshot(s: TranscriptState, r: SessionWindowResponse,
     compacting: r.liveCompacting === true,
     // An older hub omits it: it holds nothing.
     held: Array.isArray(r.heldInputs) ? r.heldInputs : [],
+    waiting: Array.isArray(r.waitingInputs) ? r.waitingInputs : [],
     runtimeOutdated: r.liveRuntimeOutdated === true,
     runtimeVersions: r.liveRuntimeOutdated === true ? r.liveRuntimeVersions ?? null : null,
     activity: liveStatus !== 'thinking' ? null : r.liveActivity !== undefined ? r.liveActivity : s.activity,

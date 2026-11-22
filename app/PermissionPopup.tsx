@@ -36,8 +36,12 @@ export default function PermissionPopup({ queue: fullQueue, currentSessionId, on
             ↗ session {top.sessionId.slice(0, 6)}
           </button>
         </header>
-        <div className="tool-name">{top.tool}</div>
+        <div className="tool-name">
+          {top.tool}{top.prompt?.agentId && <span className="pp-chip" title={top.prompt.agentId}>sub-agent</span>}
+        </div>
         <ApprovalDeadline expiresAt={top.expiresAt} />
+        {top.prompt?.title && <p className="reason">{top.prompt.title}</p>}
+        {top.prompt?.blockedPath && <p className="reason"><span aria-hidden>📁</span> <code>{top.prompt.blockedPath}</code></p>}
         {top.reason && <p className="reason">{top.reason}</p>}
         <pre className="input-preview">{top.preview ?? (top.input === undefined ? '' : JSON.stringify(top.input, null, 2) ?? '').slice(0, 600)}</pre>
         <div className="actions">

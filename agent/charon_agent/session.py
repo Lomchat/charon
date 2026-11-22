@@ -26,6 +26,8 @@ import re
 import sys
 import time
 import traceback
+import uuid as _uuid
+from collections import OrderedDict
 from pathlib import Path
 from typing import Any, Awaitable, Callable
 
@@ -334,27 +336,49 @@ def _usage_drivers(r: dict[str, Any]) -> dict[str, Any]:
     return out
 
 
-async def _send_prompt(client: Any, content: str, *, composed: bool) -> None:
+async def _send_prompt(client: Any, content: str, *, composed: bool, uuid: str) -> None:
     """Write one user message. `composed` = text no human typed here (another
     session's message, a sub-session's mission): the CLI must take it as
     written — no `/command` dispatch, no `@path` file expansion — or another
     agent could make this one run a slash command or read a file into its
     context. The flag rides on the message itself (`client_composed`, CLI
     2.1.248+; an older CLI ignores the key), so the human's own `/commands`
-    in the same session keep working."""
-    if not composed:
-        await client.query(content)
-        return
+    in the same session keep working.
+
+    `uuid` names the message: the CLI says which turn took it
+    (`user_message_uuids`, see `_taken_uuids`). ⚠ ALWAYS a fresh one: the CLI
+    silently drops a message whose uuid it has already seen — no turn, no
+    result — so a reused uuid leaves the session `thinking` forever."""
+    msg: dict[str, Any] = {
+        "type": "user",
+        "message": {"role": "user", "content": content},
+        "parent_tool_use_id": None,
+        "uuid": uuid,
+    }
+    if composed:
+        msg["client_composed"] = True
 
     async def _one() -> Any:
-        yield {
-            "type": "user",
-            "message": {"role": "user", "content": content},
-            "parent_tool_use_id": None,
-            "client_composed": True,
-        }
+        yield msg
 
     await client.query(_one())
+
+
+def _taken_uuids(ev: Any) -> set[str]:
+    """The uuids of our prompts the CLI says this turn has taken in so far
+    (`user_message_uuid`/`user_message_uuids` on an Assistant/Stream/Result
+    message). Empty = not stated: an older CLI, a message that does not carry
+    it, or a turn that took none. A prompt that joins a RUNNING turn is named
+    on the ResultMessage only; the one that opens a turn, on its first
+    message too."""
+    out: set[str] = set()
+    one = getattr(ev, "user_message_uuid", None)
+    if isinstance(one, str) and one:
+        out.add(one)
+    many = getattr(ev, "user_message_uuids", None)
+    if isinstance(many, list):
+        out.update(u for u in many if isinstance(u, str) and u)
+    return out
 
 
 def _is_request_start(ev: Any) -> bool:
@@ -657,6 +681,9 @@ class AgentSession:
             # The CLI's fast mode, opted in through the same inline settings;
             # the CLI says at each init whether it can serve it.
             "fastMode": raw_cfg.get("fastMode") is True,
+            # Nobody watches it (routine, sub-session, §14.119): the hub says
+            # so at each start/resume.
+            "unattended": raw_cfg.get("unattended") is True,
         }
 
     def __init__(
@@ -786,6 +813,21 @@ class AgentSession:
         # (_peer_note_request_start), and whether it then shares a turn.
         self._peer_pending_id: str | None = None
         self._peer_shared_turn = False
+        # Our prompts' uuids (`_send_prompt`) ⇒ {"cmid": the hub's
+        # client_message_id, "peer": peer request id}, until a result names
+        # them. Bounded; reset per client.
+        self._prompt_uuids: OrderedDict[str, dict[str, Any]] = OrderedDict()
+        # This CLI names the prompts a turn took (`_taken_uuids`): learned
+        # from the first message that does. Until then, the heuristics alone.
+        self._uuid_echo = False
+        # `provider_notice`s already sent: every init repeats them.
+        self._notices_sent: set[str] = set()
+        # Hub inputs written while a turn ran, not yet read by the CLI:
+        # uuid ⇒ client_message_id. `inputs_taken` tells the hub when they
+        # are (their bubbles stop saying "waiting").
+        self._waiting: OrderedDict[str, str] = OrderedDict()
+        # Asked to be read at once before their write (`send_now` raced it).
+        self._send_now_wanted: set[str] = set()
         self._peer_defer_task: asyncio.Task | None = None
         # A fresh Event per turn lets interrupt wait for exactly the turn it
         # interrupted, even if a new prompt starts immediately after its result.
@@ -859,13 +901,69 @@ class AgentSession:
             old_task.cancel()  # fire-and-forget: we don't wait
         await self._save_state()
 
-    async def send_input(self, content: str, *, peer_request_id: str | None = None) -> None:
+    async def send_input(self, content: str, *, peer_request_id: str | None = None,
+                         client_message_id: str | None = None, send_now: bool = False) -> None:
         if self.status not in ("active", "thinking", "starting"):
             raise RuntimeError(f"session {self.session_id} not running (status={self.status})")
+        if send_now and client_message_id:
+            self._send_now_wanted.add(client_message_id)
         await self._stdin_queue.put({
             "type": "user_message", "content": content,
             "peer_request_id": peer_request_id,
+            "client_message_id": client_message_id,
         })
+
+    async def send_now(self, client_message_id: str) -> dict[str, Any]:
+        """Have the CLI read a waiting input NOW: the `interrupt` control
+        request with `send_now` + its uuid stops the running step (command
+        included) and opens a turn for it. Not written yet ⇒ pressed right
+        after its write."""
+        uuid_ = next((u for u, c in self._waiting.items() if c == client_message_id), None)
+        if uuid_ is None:
+            self._send_now_wanted.add(client_message_id)
+            return {"ok": True, "pending": True}
+        return await self._press(uuid_)
+
+    async def _press(self, uuid_: str) -> dict[str, Any]:
+        send = getattr(getattr(self._client, "_query", None), "_send_control_request", None)
+        if send is None:
+            return {"ok": False, "error": "session not running"}
+        try:
+            res = await asyncio.wait_for(
+                send({"subtype": "interrupt", "send_now": True, "message_uuid": uuid_}), timeout=15.0)
+        except Exception as e:
+            return {"ok": False, "error": f"{type(e).__name__}: {e}"}
+        outcome = res.get("send_now") if isinstance(res, dict) else None
+        return {"ok": True, **({"outcome": outcome} if isinstance(outcome, str) else {})}
+
+    def _inputs_taken(self, uuids: Any) -> None:
+        """The CLI read these inputs: tell the hub, once each, by its ids
+        (it marked them waiting if they reached a busy session)."""
+        taken: list[str] = []
+        for u in list(uuids):
+            self._waiting.pop(u, None)
+            who = self._prompt_uuids.get(u)
+            if who and who.get("cmid") and not who.get("taken"):
+                who["taken"] = True
+                taken.append(who["cmid"])
+        if taken:
+            self._emit("inputs_taken", client_message_ids=taken)
+
+    def _prompt_uuid(self, *, cmid: str | None, peer: str | None) -> str:
+        """A FRESH uuid for one prompt write (see `_send_prompt`)."""
+        u = str(_uuid.uuid4())
+        self._prompt_uuids[u] = {"cmid": cmid, "peer": peer}
+        while len(self._prompt_uuids) > 64:
+            self._prompt_uuids.popitem(last=False)
+        return u
+
+    def _peer_uuid(self, peer_id: str | None) -> str | None:
+        if not peer_id:
+            return None
+        for u, who in self._prompt_uuids.items():
+            if who.get("peer") == peer_id:
+                return u
+        return None
 
     async def interrupt(self) -> None:
         client = self._client
@@ -1671,6 +1769,7 @@ class AgentSession:
         perm_id: str,
         reason: str | None = None,
         suggestions: list[dict[str, Any]] | None = None,
+        context: Any = None,
     ) -> dict[str, Any] | None:
         """Emits permission_request to the dashboard and awaits the response.
 
@@ -1687,6 +1786,13 @@ class AgentSession:
             extra["reason"] = reason.strip()[:2000]
         if suggestions:
             extra["suggestions"] = suggestions
+        # The CLI's own card text (`ToolPermissionContext`): its sentence, a
+        # subtitle, the path that triggered it, the sub-agent asking.
+        for attr, wire, cap in (("title", "title", 300), ("description", "description", 600),
+                                ("blocked_path", "blocked_path", 1024), ("agent_id", "agent_id", 120)):
+            v = getattr(context, attr, None)
+            if isinstance(v, str) and v.strip():
+                extra[wire] = v.strip()[:cap]
         self._emit(
             "permission_request", id=perm_id, tool=tool_name, input=tool_input,
             expires_at=int(time.time()) + timeout_seconds + 1, **extra,
@@ -1773,6 +1879,7 @@ class AgentSession:
             perm_id=perm_id,
             reason=reason,
             suggestions=[wire for _, wire in offered],
+            context=context,
         )
         if answer is None:
             return PermissionResultDeny(message="timeout (10min without response from the dashboard)")
@@ -2409,6 +2516,13 @@ class AgentSession:
                         stop_ev[wire] = v
                 if getattr(ev, "is_error", None) is True:
                     stop_ev["is_error"] = True
+                if self._uuid_echo:
+                    # The hub's inputs this turn took (§14.125): one the
+                    # list lacks gets a turn of its own next.
+                    stop_ev["inputs"] = [
+                        who["cmid"] for u in _taken_uuids(ev)
+                        if (who := self._prompt_uuids.get(u)) and who.get("cmid")
+                    ]
                 if blocking_turn_error:
                     stop_ev["is_error"] = True
                     stop_ev["terminal_reason"] = "hook_blocked"
@@ -2532,8 +2646,37 @@ class AgentSession:
                         self._init_skills = [x for x in skills if isinstance(x, str)][:500]
                     if info:
                         out.append({"event": "session_info", **info})
+                    # What did NOT load says nothing else: the tools are just
+                    # missing (`charon_peer` included).
+                    out.extend(self._init_notices(sdata))
         except Exception as e:
             out.append({"event": "error", "msg": f"translate: {e}"})
+        return out
+
+    def _init_notices(self, sdata: dict[str, Any]) -> list[dict[str, Any]]:
+        """The init's skipped MCP entries and failed plugins (`{name|plugin,
+        type, message}`) ⇒ one `provider_notice` each, once per session object
+        (the hub keeps one row per summary)."""
+        out: list[dict[str, Any]] = []
+        for key, label, kind in (("mcp_server_errors", "MCP server", "mcp"),
+                                 ("plugin_errors", "Plugin", "plugin")):
+            items = sdata.get(key)
+            for item in items[:20] if isinstance(items, list) else []:
+                if not isinstance(item, dict):
+                    continue
+                name = str(item.get("name") or item.get("plugin") or "?")[:120]
+                why = str(item.get("type") or "error")[:80]
+                summary = f"{label} {name} not loaded ({why})"
+                if summary in self._notices_sent:
+                    continue
+                self._notices_sent.add(summary)
+                notice: dict[str, Any] = {
+                    "event": "provider_notice", "provider": "claude", "kind": kind, "summary": summary,
+                }
+                message = item.get("message")
+                if isinstance(message, str) and message.strip():
+                    notice["details"] = message.strip()[:2000]
+                out.append(notice)
         return out
 
     def _begin_turn(self) -> None:
@@ -2596,6 +2739,44 @@ class AgentSession:
         self._active_peer_request_id = pending
         self._peer_pending_id = None
         self._cancel_peer_defer_watch()
+
+    def _peer_note_taken(self, taken: set[str]) -> None:
+        """A turn's first message names the pending request's prompt: the
+        turn the CLI opened for it — read now, exactly."""
+        if self._peer_pending_id and self._peer_uuid(self._peer_pending_id) in taken:
+            self._peer_note_request_start()
+
+    def _peer_check_result(self, taken: set[str]) -> None:
+        """Before the result's stop goes out: does the turn the request was
+        marked read in really list its prompt? `requesting` says the CLI
+        drained its input, not that ours was in it — a message written just
+        after the drain is taken by the NEXT turn. Then this turn is not its
+        reply: untag it, and the request waits for its own turn."""
+        if not self._uuid_echo:
+            return
+        active = self._active_peer_request_id
+        if active:
+            u = self._peer_uuid(active)
+            if u is None or u in taken:
+                return
+            try:
+                # Ledger-only (server.py): the text gathered so far is not its reply.
+                self._emit("peer_untake")
+            except Exception:
+                pass
+            self._active_peer_request_id = None
+            self._peer_shared_turn = False
+            self._peer_pending_id = active
+            self._peer_turn_done.clear()
+            return
+        pending = self._peer_pending_id
+        if pending and self._peer_uuid(pending) in taken:
+            # Taken without a read we saw: this turn answered it.
+            self._peer_note_request_start()
+
+    def _forget_prompts(self, taken: set[str]) -> None:
+        for u in taken:
+            self._prompt_uuids.pop(u, None)
 
     def _peer_note_result(self) -> None:
         """A turn ended (its stop already emitted with the current tags)."""
@@ -2672,6 +2853,10 @@ class AgentSession:
         if isinstance(env, dict) and env:
             out["env"] = env
         out["env"] = {**out.get("env", {}), **profile_env("claude", self.session_config.get("accountProfile"))}
+        if self.session_config.get("unattended"):
+            # Nobody can press Continue: the CLI waits out 429/529 and usage
+            # limits itself instead of failing the turn (no cap on the wait).
+            out["env"]["CLAUDE_CODE_RETRY_WATCHDOG"] = "1"
         return out
 
     # ── Main loop ────────────────────────────────────────────────────────────
@@ -2803,6 +2988,10 @@ class AgentSession:
                 self._client = client
                 self._peer_pending_id = None
                 self._peer_shared_turn = False
+                self._prompt_uuids.clear()
+                self._uuid_echo = False
+                # A new CLI process: what waited in the old one is gone.
+                self._waiting.clear()
                 self._cancel_peer_defer_watch()
                 self._peer_turn_done.set()
                 self.status = "active"
@@ -2837,14 +3026,32 @@ class AgentSession:
                     try:
                         async for ev in client.receive_messages():
                             ev_type = type(ev).__name__
+                            taken = _taken_uuids(ev)
+                            if taken:
+                                self._uuid_echo = True
                             if ev_type == "TaskNotificationMessage":
                                 self._bg_notified = True
+                            # Idle with a CLI that names prompts: the next
+                            # turn's first message says whose turn it is
+                            # (`_peer_note_taken`), `requesting` cannot.
                             if _is_request_start(ev):
-                                self._peer_note_request_start()
+                                if not (self._uuid_echo and self.status != "thinking"):
+                                    self._peer_note_request_start()
+                                # It drained what was written before this request.
+                                if self.status == "thinking" and self._waiting:
+                                    self._inputs_taken(list(self._waiting))
+                            if taken:
+                                self._peer_note_taken(taken)
+                                self._inputs_taken(taken)
+                            if ev_type == "ResultMessage":
+                                self._peer_check_result(taken)
                             if _starts_turn(ev):
                                 # Idle ⇒ the CLI opened this turn itself —
-                                # unless it is the one a peer request awaited.
-                                if self.status == "active" and not self._active_peer_request_id:
+                                # unless it is the one a peer request awaited,
+                                # or it names one of our prompts (one queued
+                                # behind a turn the CLI opened by itself).
+                                if self.status == "active" and not self._active_peer_request_id \
+                                        and not any(u in self._prompt_uuids for u in taken):
                                     self._note_unprompted_turn(ev)
                                 # The first actual turn message flips to
                                 # thinking; task bookkeeping alone cannot.
@@ -2854,6 +3061,7 @@ class AgentSession:
                             if ev_type == "ResultMessage":
                                 self._end_turn()
                                 self._peer_note_result()
+                                self._forget_prompts(taken)
                                 asyncio.create_task(self._refresh_goal())
                     except asyncio.CancelledError:
                         raise
@@ -2892,6 +3100,9 @@ class AgentSession:
                         content = msg.get("content") or ""
                         peer_id = msg.get("peer_request_id")
                         peer_id = peer_id if isinstance(peer_id, str) and peer_id else None
+                        cmid = msg.get("client_message_id")
+                        prompt_uuid = self._prompt_uuid(
+                            cmid=cmid if isinstance(cmid, str) and cmid else None, peer=peer_id)
                         if peer_id and use_reader and self.status == "thinking":
                             # Mid-turn: pending until the CLI reads it (see
                             # _peer_note_request_start). Set BEFORE the write
@@ -2899,7 +3110,7 @@ class AgentSession:
                             self._peer_turn_done.clear()
                             self._peer_pending_id = peer_id
                             try:
-                                await _send_prompt(client, content, composed=True)
+                                await _send_prompt(client, content, composed=True, uuid=prompt_uuid)
                             except Exception as e:
                                 self._emit("error", msg=self._format_err("query", e))
                                 self._drop_pending_peer(self._format_err("query", e))
@@ -2910,9 +3121,25 @@ class AgentSession:
                         self._active_peer_request_id = peer_id
                         if self._active_peer_request_id:
                             self._peer_turn_done.clear()
+                        # A turn already running takes it later: it waits
+                        # (recorded BEFORE the write, so its read cannot slip by).
+                        cmid_ = msg.get("client_message_id")
+                        waits = self.status == "thinking" and isinstance(cmid_, str) and bool(cmid_) and not peer_id
+                        if waits:
+                            self._waiting[prompt_uuid] = cmid_
+                            while len(self._waiting) > 64:
+                                self._waiting.popitem(last=False)
                         self._begin_turn()
                         try:
-                            await _send_prompt(client, content, composed=bool(peer_id))
+                            try:
+                                await _send_prompt(client, content, composed=bool(peer_id), uuid=prompt_uuid)
+                            except Exception:
+                                self._waiting.pop(prompt_uuid, None)
+                                raise
+                            if isinstance(cmid_, str) and cmid_ in self._send_now_wanted:
+                                self._send_now_wanted.discard(cmid_)
+                                if waits:
+                                    asyncio.create_task(self._press(prompt_uuid))
                             if use_reader and self._active_peer_request_id:
                                 # query() only sends. Hold the input loop until
                                 # the sole reader sees this correlated turn's

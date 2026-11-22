@@ -72,6 +72,7 @@ const FRAME_ROW: Record<string, (role: string, type: string | null) => boolean> 
   structured_output: (r, t) => r === 'event' && t === 'structured_output',
   compaction: (r, t) => r === 'event' && t === 'compaction',
   scheduled_fire: (r, t) => r === 'event' && t === 'scheduled_fire',
+  provider_notice: (r, t) => r === 'event' && t === 'provider_notice',
   external_message: (r, t) => r === 'event' && t === 'external_message',
   peer_message_status: (r, t) => r === 'event' && t === 'peer_message_status',
   plan_update: (r, t) => r === 'event' && t === 'plan_update',
@@ -138,6 +139,8 @@ const FIXTURES: { [K in AgentEvent['event']]: Scenario } = {
   interrupted: { events: [{ event: 'interrupted' }] },
   stop: { events: [{ event: 'stop', subtype: 'error', is_error: true, api_error_status: 500 }] },
   compaction: { events: [{ event: 'compaction', trigger: 'auto', pre_tokens: 10, post_tokens: 1 }] },
+  provider_notice: { events: [{ event: 'provider_notice', provider: 'codex', kind: 'deprecation', summary: 'x is deprecated', details: 'use y' }] },
+  inputs_taken: { events: [{ event: 'inputs_taken', client_message_ids: ['c-1'] }] },
   unprompted_turn: {
     events: [{ event: 'unprompted_turn' }],
     setup: (s) => {
@@ -189,6 +192,7 @@ const WRITES: Partial<Record<string, string[]>> = {
   endpoint_usage: ['event:endpoint_usage'],
   stop: ['assistant', 'error'],
   compaction: ['assistant', 'event:compaction'],
+  provider_notice: ['assistant', 'event:provider_notice'],
   unprompted_turn: ['assistant', 'event:scheduled_fire'],
   turn_end: ['event:bg_task', 'event:bg_task'],
   external_message: ['assistant', 'event:external_message'],

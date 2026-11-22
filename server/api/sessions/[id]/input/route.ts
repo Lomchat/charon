@@ -6,7 +6,8 @@ import { cancelPendingScheduledResumes } from '@/lib/server/agent/scheduledResum
 import { syncAfter } from '@/lib/server/sync/sessionSummaries';
 
 // POST /api/sessions/[id]/input
-// Body: { content, clientMessageId? } -> user_message; or { type: 'interrupt' }
+// Body: { content, clientMessageId?, sendNow? } -> user_message; { type: 'interrupt' };
+// or { type: 'send_now', clientMessageId } (a waiting input, read now).
 // `clientMessageId` (the browser's UUID for its optimistic bubble, ≤64 chars
 // of [A-Za-z0-9-]) is the agent's input idempotency key and rides the
 // `user_echo`: a POST retried with the same id after an ambiguous failure
@@ -26,6 +27,14 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
     if (body.type === 'interrupt') {
       await stream.sendInterrupt(true);
       return Response.json({ ok: true });
+    }
+    if (body.type === 'send_now') {
+      // A waiting input (sent mid-turn): the CLI reads it NOW.
+      if (typeof body.clientMessageId !== 'string' || !CLIENT_MESSAGE_ID_RE.test(body.clientMessageId)) {
+        return Response.json({ error: 'invalid clientMessageId' }, { status: 400 });
+      }
+      const res = await stream.sendNow(body.clientMessageId);
+      return Response.json(res, { status: res.ok ? 200 : 409 });
     }
     const content = String(body.content ?? '').trim();
     if (!content) return Response.json({ error: 'content required' }, { status: 400 });
@@ -57,7 +66,8 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
     // session; leaving it armed would unexpectedly send a second continuation.
     cancelPendingScheduledResumes(id);
     const { rowId } = await stream.sendUserMessage(
-      content, normalized as Array<Record<string, unknown>> | undefined, { clientMessageId },
+      content, normalized as Array<Record<string, unknown>> | undefined,
+      { clientMessageId, sendNow: body.sendNow === true },
     );
     // Talking to a session is the clearest possible signal that its tab has
     // stopped being a preview. Pin it so the next thing opened in this folder

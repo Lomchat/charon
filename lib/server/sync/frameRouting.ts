@@ -48,6 +48,7 @@ export const FRAME_CLASS: Record<KnownFrameType, FrameClass> = {
   // Rare and lifecycle-like (it holds sends, §14.125): every open view.
   compacting: LOW,
   held_inputs: LOW,
+  waiting_inputs: FOCUSED,
   runtime_outdated: LOW,
   mode_changed: LOW_SUMMARY,
   // No browser reads it (status/summary carry the lifecycle): bus only.
@@ -145,6 +146,7 @@ export const FRAME_CLASS: Record<KnownFrameType, FrameClass> = {
   stop: FOCUSED_SUMMARY,
   compaction: FOCUSED,
   scheduled_fire: FOCUSED,
+  provider_notice: FOCUSED,
   side_question: FOCUSED,
   side_answer: FOCUSED,
   external_message: FOCUSED,

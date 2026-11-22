@@ -108,6 +108,8 @@ export type SessionStreamState = {
   compacting: boolean;
   /** User rows a compaction holds, in send order (§14.125). */
   held: import('@/lib/heldInputs').HeldInputState[];
+  /** User rows the CLI has not read yet (sent mid-turn). */
+  waiting: import('@/lib/server/hub/types').WaitingInput[];
   /** Runs the agent code of before an update (§14.117); moved when idle. */
   runtimeOutdated: boolean;
   /** What that older runtime runs (null = unknown), for the header. */
@@ -168,7 +170,9 @@ export type SessionStreamState = {
 
 export type SessionStreamActions = {
   /** `codexInputs`: a Codex message's text + `skill` items (slashCommands.ts). */
-  send(content: string, codexInputs?: Array<Record<string, unknown>>): Promise<void>;
+  send(content: string, codexInputs?: Array<Record<string, unknown>>, now?: boolean): Promise<void>;
+  /** A waiting input (its clientMessageId): the CLI reads it now. */
+  sendNow(clientMessageId: string): Promise<void>;
   interrupt(): Promise<void>;
   forceStop(): Promise<void>;
   setMode(mode: SessionMode): Promise<void>;
@@ -690,7 +694,7 @@ export function useSessionStream(
     }
   }, [sessionId, publish]);
 
-  const send = useCallback(async (content: string, codexInputs?: Array<Record<string, unknown>>) => {
+  const send = useCallback(async (content: string, codexInputs?: Array<Record<string, unknown>>, now = false) => {
     const trimmed = content.trim();
     if (!trimmed) return;
     // Optimistic bubble `u-<clientMessageId>` + a `thinking` overlay: the id
@@ -708,7 +712,7 @@ export function useSessionStream(
     watchOverlays();
     resetResponseSpeed();
     try {
-      const res = await settle(h, sessionApi.sendInput(sessionId, trimmed, clientMessageId, codexInputs));
+      const res = await settle(h, sessionApi.sendInput(sessionId, trimmed, clientMessageId, codexInputs, now));
       const rowId = typeof res?.rowId === 'number' ? res.rowId : null;
       if (rowId != null) {
         stateRef.current = applyLocalSendAck(stateRef.current, clientMessageId, rowId);
@@ -725,6 +729,14 @@ export function useSessionStream(
   const interrupt = useCallback(async () => {
     try { await sessionApi.interrupt(sessionId); }
     catch (e) { setError({ msg: errorText(e) }); }
+  }, [sessionId]);
+
+  // A waiting input (sent mid-turn): the CLI reads it NOW.
+  const sendNow = useCallback(async (clientMessageId: string) => {
+    try {
+      const res = await sessionApi.sendInputNow(sessionId, clientMessageId);
+      if (!res.ok && res.error) setError({ msg: res.error });
+    } catch (e) { setError({ msg: errorText(e) }); }
   }, [sessionId]);
 
   const forceStop = useCallback(async () => {
@@ -850,7 +862,7 @@ export function useSessionStream(
     messages: state.messages,
     currentAssistant: state.buf.assistant,
     streamingInto: state.buf.streamingInto,
-    status, compacting: state.compacting && status === 'thinking', held: state.held, runtimeOutdated: state.runtimeOutdated, runtimeVersions: state.runtimeVersions, permissionMode,
+    status, compacting: state.compacting && status === 'thinking', held: state.held, waiting: state.waiting, runtimeOutdated: state.runtimeOutdated, runtimeVersions: state.runtimeVersions, permissionMode,
     liveActivity: status === 'thinking' ? state.activity : null,
     model: modelPair.model, fallbackModel: modelPair.fallbackModel, effort, ultracode: state.meta.ultracode, fastMode: state.meta.fastMode, fastModeVerdict: state.meta.fastModeVerdict, serviceTier: state.meta.serviceTier,
     modelPendingApply: state.meta.modelPendingApply, effortPendingApply: state.meta.effortPendingApply,
@@ -862,7 +874,7 @@ export function useSessionStream(
     isLoadingHistory: !state.loaded && !loadFailed,
     isSyncing, historyReady,
     hasMore: state.hasMore, isLoadingMore, view, windowInFlight,
-    send, interrupt, forceStop, setMode, setModel, setEffort, setUltracode, setFastMode, setServiceTier,
+    send, sendNow, interrupt, forceStop, setMode, setModel, setEffort, setUltracode, setFastMode, setServiceTier,
     doSleep, doResume, doRestart, doDelete,
     respondPermission, respondQuestion, respondExitPlan,
     clearPrefillInput, refetchHistory, requestWindow, loadMoreHistory, setHistoryHold, clearError,
@@ -870,7 +882,7 @@ export function useSessionStream(
     state, status, permissionMode, modelPair.model, modelPair.fallbackModel, effort, responseSpeed,
     toolCallCount, bgTasks, editsMissing, loadEditContents, prefillInput, error, loadFailed, isSyncing, historyReady, isLoadingMore, view,
     windowInFlight,
-    send, interrupt, forceStop, setMode, setModel, setEffort, setUltracode, setFastMode, setServiceTier,
+    send, sendNow, interrupt, forceStop, setMode, setModel, setEffort, setUltracode, setFastMode, setServiceTier,
     doSleep, doResume, doRestart, doDelete,
     respondPermission, respondQuestion, respondExitPlan,
     clearPrefillInput, refetchHistory, requestWindow, loadMoreHistory, setHistoryHold, clearError,

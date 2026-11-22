@@ -89,3 +89,33 @@ export function offeredSuggestions(raw: unknown): OfferedSuggestion[] {
   });
   return out;
 }
+
+/** The CLI's own words for a permission card (Claude `ToolPermissionContext`):
+ *  its prompt sentence, a subtitle, the path that triggered it, and the
+ *  sub-agent asking. */
+export interface PermissionPrompt {
+  title?: string;
+  description?: string;
+  blockedPath?: string;
+  agentId?: string;
+}
+
+const PROMPT_FIELDS: Array<[keyof PermissionPrompt, number]> = [
+  ['title', 300], ['description', 600], ['blockedPath', 1024], ['agentId', 120],
+];
+
+/** Untrusted object or JSON (agent event, DB column) ⇒ a prompt, or
+ *  undefined when it says nothing. */
+export function parsePermissionPrompt(raw: unknown): PermissionPrompt | undefined {
+  let v = raw;
+  if (typeof v === 'string') {
+    try { v = JSON.parse(v); } catch { return undefined; }
+  }
+  if (!v || typeof v !== 'object') return undefined;
+  const out: PermissionPrompt = {};
+  for (const [key, max] of PROMPT_FIELDS) {
+    const s = (v as Record<string, unknown>)[key];
+    if (typeof s === 'string' && s.trim()) out[key] = s.trim().slice(0, max);
+  }
+  return Object.keys(out).length ? out : undefined;
+}
