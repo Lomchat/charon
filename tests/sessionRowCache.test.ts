@@ -600,23 +600,27 @@ describe('cold folds are sliced', () => {
 });
 
 describe('eviction and module copies', () => {
-  it('drops entries untouched for ROW_CACHE_IDLE_EVICT_MS (one unref sweeper, stopped when empty)', () => {
+  it('drops ARCHIVED sessions\' entries untouched for ROW_CACHE_IDLE_EVICT_MS, never a live one (one unref sweeper, stopped when empty)', () => {
     const IDLE = rowCache.ROW_CACHE_IDLE_EVICT_MS;
     const MIN = 60_000;
+    const archive = (id: string) => db.update(schema.agentSessions).set({ archived: 1 })
+      .where(eq(schema.agentSessions.id, id)).run();
     vi.useFakeTimers();
     rowCache.invalidateSessionRowCaches();   // the sweeper restarts under fake timers
     const a = newSession();
     const b = newSession();
     insert(a, 'event', { type: 'endpoint_usage', requestId: 'x', inputTokens: 1, outputTokens: 1, totalTokens: 2 });
     insert(b, 'event', { type: 'bg_task', kind: 'started', taskId: 't' });
+    archive(a);                              // read in the archive viewer
     sessionTokenUsage(a);
     bg.runningBgTasksFromDb(b);
     expect(rowCache.sessionRowCacheStats()).toMatchObject({ entries: 2, sweeping: true });
-    vi.advanceTimersByTime(IDLE - 10 * MIN);
-    bg.runningBgTasksFromDb(b);              // touched 10 min before a's limit
-    vi.advanceTimersByTime(11 * MIN);        // a: past the limit, b: 11 min idle
+    vi.advanceTimersByTime(IDLE + MIN);      // a: archived, past the limit; b: live
     expect(rowCache.sessionRowCacheStats()).toMatchObject({ entries: 1, sweeping: true });
-    vi.advanceTimersByTime(IDLE);            // b: past the limit
+    vi.advanceTimersByTime(3 * IDLE);        // a live entry is never evicted
+    expect(rowCache.sessionRowCacheStats()).toMatchObject({ entries: 1, sweeping: true });
+    archive(b);
+    vi.advanceTimersByTime(MIN);             // b: archived and long idle
     expect(rowCache.sessionRowCacheStats()).toMatchObject({ entries: 0, sweeping: false });
     // An evicted entry simply re-folds.
     expect(sessionTokenUsage(a)).toEqual(refTokens(a));

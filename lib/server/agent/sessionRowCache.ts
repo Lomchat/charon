@@ -85,6 +85,7 @@ type Statements = {
   maxId: Database.Statement;
   hit: Database.Statement;
   chunkEnd: Database.Statement;
+  live: Database.Statement;
   scans: Map<number, Database.Statement>;
 };
 
@@ -111,9 +112,10 @@ export type RowCacheStats = {
   evicted: number;
 };
 
-/** Idle time before an entry is dropped. Every resync and summary publish
- *  reads each non-archived session's registry, so this only frees sessions
- *  nobody looked at for hours (archive/delete free theirs at once). */
+/** Idle time before an ARCHIVED (or gone) session's entry is dropped: one read
+ *  in the archive viewer. A live session's entries stay (a few per session):
+ *  re-folding a long history from a cold disk on its next open stalled the hub
+ *  for a second. Archive/delete free theirs at once. */
 export const ROW_CACHE_IDLE_EVICT_MS = 6 * 3_600_000;
 const SWEEP_EVERY_MS = 60_000;
 
@@ -155,6 +157,7 @@ function statements(c: RowCaches): Statements {
     chunkEnd: handle.prepare(
       `SELECT id FROM session_messages INDEXED BY ${EVENT_INDEX}
         WHERE ${EVENT_ROWS} AND id > ? ORDER BY id LIMIT 1 OFFSET ?`),
+    live: handle.prepare('SELECT id FROM agent_sessions WHERE archived = 0').pluck(),
     scans: new Map(),
   };
   return c.statements;
@@ -347,15 +350,20 @@ export function invalidateSessionRowCaches(sessionId?: string): void {
   }
 }
 
-/** Evict entries untouched for ROW_CACHE_IDLE_EVICT_MS (the sweeper's tick).
- *  Returns how many. */
+/** Evict archived/gone sessions' entries untouched for ROW_CACHE_IDLE_EVICT_MS
+ *  (the sweeper's tick). Returns how many. */
 export function sweepSessionRowCaches(now = Date.now()): number {
   const c = caches();
+  // Before the walk: a new handle (another DB) empties the maps.
+  const s = statements(c);
+  let live: Set<string> | null = null;
   let evicted = 0;
   let left = 0;
   for (const [key, m] of c.byKey) {
     for (const [sessionId, entry] of m) {
-      if (now - entry.touchedAt >= ROW_CACHE_IDLE_EVICT_MS) {
+      if (now - entry.touchedAt < ROW_CACHE_IDLE_EVICT_MS) { left++; continue; }
+      live ??= new Set(s.live.all() as string[]);
+      if (!live.has(sessionId)) {
         m.delete(sessionId);
         c.chains.delete(`${key}\u0000${sessionId}`);
         evicted++;
