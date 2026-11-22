@@ -432,10 +432,16 @@ export function useNavRows(
   return useMemo(() => navRows(sessions, shells), [sessions, shells]);
 }
 
+/** A sub-session (§14.93) is its parent's business: listed only while it
+ *  waits on you (a gate blocks the parent too), else the sidebar nests it. */
 export function navRows(
   sessions: readonly SessionListItem[], shells?: readonly ShellListItem[],
 ): NavRow[] {
-  const rows: NavRow[] = sessions.map((session) => rowOf(session));
+  const rows: NavRow[] = [];
+  for (const session of sessions) {
+    const row = rowOf(session);
+    if (!session.parentSessionId || row.waiting) rows.push(row);
+  }
   for (const shell of shells ?? []) if (!shell.exited) rows.push(shellRowOf(shell));
   return rows.sort((a, b) => b.when - a.when);
 }

@@ -5243,6 +5243,7 @@ export class SessionStream {
     // out BEFORE the push's synchronous VAPID work — the microtask flush would
     // otherwise run after it. Every Telegram send follows a _maybePush.
     flushSummaryNow(this.id);
+    if (this._silentFinish(payload.event)) return;
     // `url` is the openWindow fallback used by the service worker when no
     // Charon tab is already open. The hub is a single responsive app at `/`
     // — the HubPanel picks up `?session=…` via useSearchParams and
@@ -5376,10 +5377,23 @@ export class SessionStream {
     } catch { return false; }
   }
 
+  /** A sub-session's finish (§14.93) is never announced: its parent gets the
+   *  reply (or the failure) and its own finish notifies. Gates still do: they
+   *  block the parent too. Read per event: a re-rooted child speaks again. */
+  private _silentFinish(event: NotificationEvent): boolean {
+    if (!SILENT_SUB_SESSION_EVENTS.has(event)) return false;
+    try {
+      return !!db.select({ parent: agentSessions.parentSessionId }).from(agentSessions)
+        .where(eq(agentSessions.id, this.id)).get()?.parent;
+    } catch { return false; }
+  }
+
   private _telegramPlain(...args: Parameters<typeof sendPlainToTelegram>): Promise<unknown> {
-    return this._hidden() ? Promise.resolve() : sendPlainToTelegram(...args);
+    return this._hidden() || this._silentFinish(args[2]) ? Promise.resolve() : sendPlainToTelegram(...args);
   }
 }
+
+const SILENT_SUB_SESSION_EVENTS: ReadonlySet<NotificationEvent> = new Set(['session_finished', 'session_background', 'session_error']);
 
 // ── Helpers: stream open/close ──────────────────────────────────────────────
 function _vpsName(vpsId: string): string {
