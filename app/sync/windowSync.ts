@@ -10,6 +10,9 @@
 //   · `mount`/`view`/`reset`/`epoch` ABORT the request in flight (its answer
 //     has the wrong view, predates the reset or the epoch) and start a new
 //     one in `replace` mode (older pages dropped);
+//   · `trim` (a reader back at the live end of a grown transcript) is a
+//     `replace` too, but only from idle: it yields to any flight, never
+//     queues;
 //   · any other reason during a flight sets `rerun` (first reason kept) ⇒
 //     exactly ONE rerun after the current apply, in `tail` mode (the pages a
 //     reader scrolled up into are kept);
@@ -36,7 +39,7 @@ import type { TranscriptJournal } from './transcriptJournal';
 import type { SessionFrame } from './transcriptReducer';
 
 export type WindowReason = 'mount' | 'view' | 'reset' | 'epoch' | 'resync' | 'unfocused' | 'missed-frame'
-  | 'unknown-row' | 'gate' | 'gate-payload' | 'overflow' | 'probe-404';
+  | 'unknown-row' | 'gate' | 'gate-payload' | 'overflow' | 'probe-404' | 'trim';
 
 /** Reasons whose request supersedes the one in flight (replace mode). */
 const ABORTING: ReadonlySet<WindowReason> = new Set<WindowReason>(['mount', 'view', 'reset', 'epoch']);
@@ -211,6 +214,10 @@ export function createWindowSync(o: {
       abortFlight();
       rerun = null;                           // the new request answers it
       start('replace', reason);
+      return;
+    }
+    if (reason === 'trim') {
+      if (!flight && rerun == null && everApplied) start('replace', reason);
       return;
     }
     if (flight) {

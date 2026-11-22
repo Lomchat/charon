@@ -62,6 +62,11 @@ const PROBE_INTERVAL_MS = 15_000;
 const PROBE_WAIT_RECHECK_MS = 500;
 /** Assistant text / delta reasoning: at most one React commit per 80 ms (§14.17). */
 const DELTA_COMMIT_MS = 80;
+/** Rendered rows a transcript may gain (pages scrolled up into, a long live
+ *  run) past its last `replace` window before a reader at the live end gets
+ *  it re-windowed. Every mounted bubble is paid on each hover, scroll and
+ *  selection hit test: 5,600 of them made the whole page lag (§14.38). */
+const TRIM_GROWTH_MESSAGES = 400;
 
 // useSessionStream — a thin adapter over the pure transcript sync
 // (CLAUDE.md §14.107, app/sync/): a state ref + `applyFrame`/`applySnapshot`
@@ -197,6 +202,9 @@ export type SessionStreamActions = {
   /** A clean window GET for a precise reason (e.g. `gate-payload`). */
   requestWindow(reason: WindowReason): void;
   loadMoreHistory(): Promise<void>;
+  /** A reader is at the live end: if the transcript grew TRIM_GROWTH_MESSAGES
+   *  past its last replace window, re-window it (older pages leave). */
+  trimHistory(): void;
   /** Kept for callers: window answers apply in `tail` mode, which keeps the
    *  pages a reader scrolled up into — nothing needs holding any more. */
   setHistoryHold(hold: boolean): void;
@@ -244,6 +252,8 @@ export function useSessionStream(
   const [windowInFlight, setWindowInFlight] = useState(false);
   const loadMoreInflightRef = useRef(false);
   const freshAppliedRef = useRef(false);
+  // Rendered rows right after the last `replace` window (trimHistory's base).
+  const windowBaseRef = useRef(0);
 
   // ── Response speed (§14.50) ─────────────────────────────────────────────
   const responseSpeedRef = useRef(new ResponseSpeedTracker());
@@ -405,6 +415,7 @@ export function useSessionStream(
     stateRef.current = applySnapshot(stateRef.current, r,
       { ...ctxFor(null, true), view: r.view ?? viewRef.current ?? 'full', mode });
     for (const { ev, rev } of replay) dispatchFrame(ev, rev, true);
+    if (mode === 'replace') windowBaseRef.current = stateRef.current.messages.length;
     publish();
     freshAppliedRef.current = true;
     setLoadFailed(false);
@@ -852,6 +863,11 @@ export function useSessionStream(
   const requestWindow = useCallback((reason: WindowReason) => { wsRef.current?.request(reason); }, []);
   const refetchHistory = useCallback(async () => { wsRef.current?.request('missed-frame'); }, []);
   const setHistoryHold = useCallback((hold: boolean) => { void hold; }, []);
+  const trimHistory = useCallback(() => {
+    if (loadMoreInflightRef.current) return;
+    if (stateRef.current.messages.length <= windowBaseRef.current + TRIM_GROWTH_MESSAGES) return;
+    wsRef.current?.request('trim');
+  }, []);
 
   const bgTasks = useMemo(() => bgTasksToArray(state.bgTasks), [state.bgTasks]);
   // Snapshot count + live tool_use ids since (grows between window answers).
@@ -877,7 +893,7 @@ export function useSessionStream(
     send, sendNow, interrupt, forceStop, setMode, setModel, setEffort, setUltracode, setFastMode, setServiceTier,
     doSleep, doResume, doRestart, doDelete,
     respondPermission, respondQuestion, respondExitPlan,
-    clearPrefillInput, refetchHistory, requestWindow, loadMoreHistory, setHistoryHold, clearError,
+    clearPrefillInput, refetchHistory, requestWindow, loadMoreHistory, trimHistory, setHistoryHold, clearError,
   }), [
     state, status, permissionMode, modelPair.model, modelPair.fallbackModel, effort, responseSpeed,
     toolCallCount, bgTasks, editsMissing, loadEditContents, prefillInput, error, loadFailed, isSyncing, historyReady, isLoadingMore, view,
@@ -885,7 +901,7 @@ export function useSessionStream(
     send, sendNow, interrupt, forceStop, setMode, setModel, setEffort, setUltracode, setFastMode, setServiceTier,
     doSleep, doResume, doRestart, doDelete,
     respondPermission, respondQuestion, respondExitPlan,
-    clearPrefillInput, refetchHistory, requestWindow, loadMoreHistory, setHistoryHold, clearError,
+    clearPrefillInput, refetchHistory, requestWindow, loadMoreHistory, trimHistory, setHistoryHold, clearError,
   ]);
 }
 

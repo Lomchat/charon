@@ -199,6 +199,8 @@ const sharedCacheRef: StreamCache = {
 /** A blocking gate the summary lists but the transcript lacks for this long
  *  (no window in flight) ⇒ one `gate-payload` window per gate id (S3). */
 const GATE_PAYLOAD_GRACE_MS = 3_000;
+/** How often a reader at the live end checks for a transcript to trim. */
+const TRIM_CHECK_MS = 4_000;
 
 const CustomEndpointModal = dynamic(() => import('./CustomEndpointModal'), { ssr: false });
 
@@ -262,7 +264,7 @@ export default function SessionView({
     send: streamSend, sendNow, interrupt, forceStop, setMode, setModel, setEffort, setUltracode, setFastMode, setServiceTier,
     doSleep, doResume, doRestart,
     respondPermission, respondQuestion, respondExitPlan,
-    clearPrefillInput, loadMoreHistory, setHistoryHold, clearError,
+    clearPrefillInput, loadMoreHistory, trimHistory, setHistoryHold, clearError,
   } = stream;
 
   // ── Missing gate payload (S3 defense) ─────────────────────────────────────
@@ -672,6 +674,13 @@ export default function SessionView({
     .sort((a, b) => a.createdAt - b.createdAt), [questionQueue]);
   const isAtBottomRef = useRef(true);
   const [isAtBottom, setIsAtBottom] = useState(true);
+  // At the live end, a transcript grown by older pages or a long run is
+  // re-windowed (useSessionStream § trimHistory); scrolling up re-fetches.
+  useEffect(() => {
+    if (!isAtBottom) return;
+    const t = window.setInterval(trimHistory, TRIM_CHECK_MS);
+    return () => window.clearInterval(t);
+  }, [isAtBottom, trimHistory]);
   const [newCount, setNewCount] = useState(0);
   const lastMessageCountRef = useRef(0);
 

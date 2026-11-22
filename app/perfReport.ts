@@ -5,7 +5,7 @@
 // scripts that ran and the input just before (wheel over the sidebar…);
 // batched, one POST per FLUSH_MS at most. Unsupported browser: nothing.
 
-const REPORT_MS = 200;
+const REPORT_MS = 120;
 const FLUSH_MS = 30_000;
 const MAX_BATCH = 20;
 /** An input this close before a frame is its context. */

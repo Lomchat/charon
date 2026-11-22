@@ -479,4 +479,23 @@ describe('windowSync — replacing', () => {
     h.ws.setView('conversation');
     expect(h.ws.replacing).toBe(true);
   });
+
+  it('trim: a replace from idle only — never before a first answer, never over (or after) a flight', async () => {
+    const h = harness();
+    h.ws.setView('full');
+    h.ws.request('trim');                    // mount in flight, nothing applied yet
+    h.calls[0].resolve(win(10));
+    await settle();
+    expect(h.calls).toHaveLength(1);
+    h.ws.request('gate');
+    h.ws.request('trim');                    // yields to the flight, not queued
+    h.calls[1].resolve(win(11));
+    await settle();
+    expect(h.calls).toHaveLength(2);
+    h.ws.request('trim');
+    expect(h.ws.replacing).toBe(true);
+    h.calls[2].resolve(win(12));
+    await settle();
+    expect(h.applied.map((a) => a.mode)).toEqual(['replace', 'tail', 'replace']);
+  });
 });
