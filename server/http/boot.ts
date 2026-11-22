@@ -2,12 +2,20 @@ import 'server-only';
 import { seedInitialData } from '@/lib/server/seed';
 import { startLoopLagMonitor } from '@/lib/server/perf/loopLag';
 import { warmSessionFoldsAtBoot } from '@/lib/server/hub/sessionFoldWarmup';
+import { startWalCheckpointer } from '@/lib/db/walCheckpointer';
 
 // Process boot, BEFORE the first request (§14.45): the agents connect and
 // reconcile now, not when a browser first loads a page — a tab that survives
 // a restart only reconnects its SSE, and push/Telegram must work with no tab.
 // seedInitialData is idempotent; GET /api/events calls it too.
 export function bootHub(): void {
+  // WAL checkpoints (and their fsyncs) leave the event loop before the boot's
+  // own writes start.
+  try {
+    startWalCheckpointer();
+  } catch (e) {
+    console.error('[charon] boot: wal checkpointer failed', e);
+  }
   try {
     seedInitialData();
     console.log('[charon] agents armed at boot (seedInitialData)');
