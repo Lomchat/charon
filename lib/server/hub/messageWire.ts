@@ -23,15 +23,31 @@ function previewString(value: string): { value: string; truncated: boolean; byte
   };
 }
 
+// An inline image block's payload (`"data": "<base64>"`, e.g. an agent reading
+// a screenshot): hundreds of KB nobody reads as text. Wire/search copies say
+// what it was; the DB row keeps it.
+const INLINE_BASE64 = /("data":\s*")([A-Za-z0-9+/=\r\n]{1024,})(")/g;
+
+function withoutInlineBase64(value: string): string | null {
+  if (!value.includes('base64')) return null;
+  let hit = false;
+  const out = value.replace(INLINE_BASE64, (_m, open: string, data: string, close: string) => {
+    hit = true;
+    return `${open}‹${Math.round((data.length * 3) / 4 / 1024).toLocaleString('en-US')} KB of base64 omitted›${close}`;
+  });
+  return hit ? out : null;
+}
+
 /** Compact one tool result for SSE/history while preserving its full DB row. */
 export function compactToolResultForWire(content: string): {
   content: string;
   contentTruncated?: true;
   contentBytes?: number;
 } {
-  const preview = previewString(content);
-  return preview.truncated
-    ? { content: preview.value, contentTruncated: true, contentBytes: preview.bytes }
+  const stripped = withoutInlineBase64(content);
+  const preview = previewString(stripped ?? content);
+  return preview.truncated || stripped != null
+    ? { content: preview.value, contentTruncated: true, contentBytes: content.length }
     : { content };
 }
 
