@@ -129,6 +129,40 @@ describe('deleting a parent', () => {
     expect(parentOf('kid')).toBeNull();
     expect(parentOf('other')).toBeNull();
   });
+  it('the row and its children go at once, its messages in slices (search too); a restart finishes them', async () => {
+    const { rawSqlite } = await import('@/lib/db');
+    const purge = await import('@/lib/server/hub/messagePurge');
+    const sqlite = rawSqlite();
+    const count = (q: string, ...a: unknown[]) => (sqlite.prepare(q).pluck().get(...a) as number);
+    const fill = (sid: string, n: number) => {
+      const ins = sqlite.prepare("INSERT INTO session_messages (session_id, role, content) VALUES (?, 'user', ?)");
+      for (let i = 0; i < n; i++) ins.run(sid, `needle ${sid} ${i}`);
+    };
+    const drained = async () => { while (!purge.messagePurgeIdle()) await new Promise<void>((r) => setImmediate(r)); };
+    insert('big');
+    insert('keep');
+    fill('big', 300);
+    fill('keep', 3);
+    sqlite.prepare("INSERT INTO session_notification_settings (session_id, telegram) VALUES ('big', 'on')").run();
+    const ops = await import('@/lib/server/agent/sessionOps');
+    expect((await ops.deleteSession('big')).deleted).toBe(true);
+    expect(count("SELECT count(*) FROM agent_sessions WHERE id = 'big'")).toBe(0);
+    expect(count("SELECT count(*) FROM session_notification_settings WHERE session_id = 'big'")).toBe(0);
+    expect(sqlite.pragma('foreign_keys', { simple: true })).toBe(1);
+    expect(count("SELECT count(*) FROM session_messages WHERE session_id = 'big'")).toBe(300);   // not in this tick
+    await drained();
+    expect(count("SELECT count(*) FROM session_messages WHERE session_id = 'big'")).toBe(0);
+    expect(count("SELECT count(*) FROM session_messages_fts WHERE session_messages_fts MATCH 'needle AND big'")).toBe(0);
+    expect(count("SELECT count(*) FROM session_messages WHERE session_id = 'keep'")).toBe(3);
+    // Rows a restart left orphaned are found again and purged.
+    sqlite.pragma('foreign_keys = OFF');
+    fill('gone', 40);
+    sqlite.pragma('foreign_keys = ON');
+    expect(purge.resumeMessagePurges()).toBe(1);
+    await drained();
+    expect(count("SELECT count(*) FROM session_messages WHERE session_id = 'gone'")).toBe(0);
+    expect(count("SELECT count(*) FROM session_messages WHERE session_id = 'keep'")).toBe(3);
+  });
   it('reparentChildren returns the re-rooted ids', () => {
     insert('p2');
     insert('a', { parentSessionId: 'p2' });

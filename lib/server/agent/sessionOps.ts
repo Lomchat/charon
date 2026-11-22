@@ -47,6 +47,7 @@ import { classifySessionError, interruptedSessionError, type SessionErrorPayload
 import { pickVpsRuntimeFields } from '@/lib/vpsRuntimeFields';
 import { normalizeResetAtMs, resolveResetAtMs } from '@/lib/rateLimitReset';
 import { purgeSessionBlobs } from '@/lib/server/hub/attachments';
+import { deleteSessionDetached } from '@/lib/server/hub/messagePurge';
 import { noteSessionRuntime } from '@/lib/server/hub/sessionRuntimes';
 import { dropTabsForRef } from '@/lib/server/hub/tabs';
 import {
@@ -6193,10 +6194,8 @@ export async function stopBackgroundTask(sessionId: string, taskId: string): Pro
  *   1. Emit `status=killed` immediately (notify SSEs still attached
  *      before the stream is detached → don't miss the signal).
  *   2. Detach + remove the local SessionStream.
- *   3. DB cascade. The FK ON DELETE CASCADE covers messages/permissions/
- *      questions/logs from `agentSessions`, but we explicitly delete
- *      logs too as defense in depth (they existed outside the cascade
- *      historically in the code).
+ *   3. DB: the row and every child but messages in one transaction (logs
+ *      explicitly: no FK); the messages follow in slices (messagePurge.ts).
  *   4. Fire-and-forget `kill_session` on the agent so slow remote shutdown
  *      never holds the HTTP DELETE/modal open. If the agent is down, the next
  *      reconcile ignores the orphan (cf. `reconcileVpsAgentState`).
@@ -6225,7 +6224,9 @@ export async function deleteSession(
   let gates: GateRef[] = [];
   const repacked: string[] = [];
   let orphans: string[] = [];
-  db.transaction((tx) => {
+  // The row and its small children now; its messages in slices afterwards
+  // (messagePurge.ts): one cascade of thousands of rows froze the hub seconds.
+  deleteSessionDetached(sessionId, () => db.transaction((tx) => {
     gates = deleteSessionGates(sessionId);
     const siblings = tx.select({
       id: agentSessions.id, cwd: agentSessions.cwd,
@@ -6256,7 +6257,7 @@ export async function deleteSession(
         }
       });
     }
-  });
+  }));
   for (const gate of gates) publishInteractionResolved(sessionId, gate.kind, gate.id, 'cancelled');
   // Gone from every list (§14.108): the summary store drops it on this frame.
   emitGlobalSession({ type: 'session_summary', summary: null, sessionId });

@@ -3,6 +3,7 @@ import { seedInitialData } from '@/lib/server/seed';
 import { startLoopLagMonitor } from '@/lib/server/perf/loopLag';
 import { warmSessionFoldsAtBoot } from '@/lib/server/hub/sessionFoldWarmup';
 import { startWalCheckpointer } from '@/lib/db/walCheckpointer';
+import { resumeMessagePurges } from '@/lib/server/hub/messagePurge';
 
 // Process boot, BEFORE the first request (§14.45): the agents connect and
 // reconcile now, not when a browser first loads a page — a tab that survives
@@ -34,5 +35,12 @@ export function bootHub(): void {
     warmSessionFoldsAtBoot();
   } catch (e) {
     console.error('[charon] boot: fold warm-up failed', e);
+  }
+  // Deleted sessions' messages a restart left behind, in slices.
+  try {
+    const n = resumeMessagePurges();
+    if (n) console.log(`[charon] boot: purging the messages of ${n} deleted session(s)`);
+  } catch (e) {
+    console.error('[charon] boot: message purge failed', e);
   }
 }

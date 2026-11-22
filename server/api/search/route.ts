@@ -29,6 +29,8 @@ export async function GET(req: Request) {
            m.created_at AS createdAt
     FROM session_messages_fts f
     JOIN session_messages m ON m.id = f.rowid
+    -- A deleted session's rows wait for their purge (messagePurge.ts).
+    JOIN agent_sessions s ON s.id = m.session_id
     WHERE session_messages_fts MATCH ${ftsQuery}
     ORDER BY bm25(session_messages_fts), m.id DESC
     LIMIT 80
