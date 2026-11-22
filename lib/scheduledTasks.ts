@@ -24,6 +24,10 @@ export type ScheduledTask = {
   nextFireAt: number | null;
   /** Epoch ms of its CronCreate result, else when the hub first saw it. */
   createdAt: number;
+  /** Recurring only: epoch ms the CLI deletes it, from its CronCreate result
+   *  ("Auto-expires after N days"). null = no such result; absent = written
+   *  before the hub read it. */
+  expiresAt?: number | null;
 };
 
 export type ScheduledTasksState = {
@@ -40,8 +44,22 @@ export type WireScheduledTask = {
 };
 export type WireScheduleTz = { name?: unknown; offset_min?: unknown };
 
-/** The CLI deletes a recurring task this long after its creation. */
-export const RECURRING_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000;
+const DAY_MS = 24 * 60 * 60 * 1000;
+
+/** The CLI's lifetime for a recurring task when its CronCreate result is not
+ *  in the transcript. The CLI's own figure moves (it says it in the result). */
+export const RECURRING_MAX_AGE_MS = 30 * DAY_MS;
+
+/** "… Auto-expires after 30 days. …" (CronCreate's result) ⇒ its lifetime. */
+export function recurringMaxAgeMs(cronCreateResult: string): number | null {
+  const m = /Auto-expires after (\d{1,4}) days?\b/i.exec(cronCreateResult);
+  return m ? Number(m[1]) * DAY_MS : null;
+}
+
+/** When the CLI deletes a recurring task. */
+export function recurringExpiresAt(t: Pick<ScheduledTask, 'createdAt' | 'expiresAt'>): number {
+  return t.expiresAt ?? t.createdAt + RECURRING_MAX_AGE_MS;
+}
 
 export function parseScheduledTasks(json: string | null | undefined): ScheduledTasksState | null {
   if (!json) return null;

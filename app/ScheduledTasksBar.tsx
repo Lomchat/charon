@@ -4,7 +4,7 @@ import TaskModal, { TaskGroup } from './TaskModal';
 import { IconAlarm } from './icons';
 import { fmtCountdown, fmtMoment } from './taskTime';
 import {
-  RECURRING_MAX_AGE_MS, describeSchedule, scheduledTaskBody, scheduledTaskTitle,
+  describeSchedule, recurringExpiresAt, scheduledTaskBody, scheduledTaskTitle,
   type ScheduledTask, type ScheduledTasksState,
 } from '@/lib/scheduledTasks';
 
@@ -93,9 +93,7 @@ function ScheduledTasksBarImpl({ state, sessionStatus }: {
         <div className="tm-meta">
           <span className="tm-tag">{t.recurring ? 'recurring' : 'once'}</span>
           <span>created {fmtMoment(t.createdAt, now)}</span>
-          {t.recurring && <span title="The CLI deletes a recurring task 7 days after creating it">
-            expires ≈ {fmtMoment(t.createdAt + RECURRING_MAX_AGE_MS, now)}
-          </span>}
+          {t.recurring && <span>expires ≈ {fmtMoment(recurringExpiresAt(t), now)}</span>}
           <span className="tm-id">{t.id}</span>
         </div>
         {body && <PromptBlock text={body} />}

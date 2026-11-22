@@ -5,24 +5,30 @@ import 'server-only';
 import { eq, sql } from 'drizzle-orm';
 import { db, agentSessions } from '@/lib/db';
 import {
-  parseScheduledTasks, type ScheduledTask, type ScheduledTasksState, type WireScheduledTask, type WireScheduleTz,
+  parseScheduledTasks, recurringMaxAgeMs,
+  type ScheduledTask, type ScheduledTasksState, type WireScheduledTask, type WireScheduleTz,
 } from '@/lib/scheduledTasks';
 
 const SAFE_ID = /^[A-Za-z0-9-]{1,64}$/;
 
-/** When the CLI created the task: its CronCreate result ("Scheduled recurring
- *  job <id> (…" / "Scheduled one-shot task <id> (…"). Read once per new id,
- *  over the head of this session's tool results only. */
-function createdAtFromTranscript(sessionId: string, id: string): number | null {
+/** The task's CronCreate result ("Scheduled recurring job <id> (…" /
+ *  "Scheduled one-shot task <id> (…"): when the CLI created it, and the
+ *  lifetime it gave a recurring one. Read once per new id, over the head of
+ *  this session's tool results only. */
+function cronCreateResult(sessionId: string, id: string): { createdAt: number | null; maxAgeMs: number | null } | null {
   if (!SAFE_ID.test(id)) return null;
   const row = db.get(sql`
-    SELECT ts_ms AS ts FROM session_messages
+    SELECT ts_ms AS ts, substr(content, 1, 600) AS head FROM session_messages
     WHERE session_id = ${sessionId} AND role = 'tool_result'
       AND snapshot_file_path IS NULL AND snapshot_phase IS NULL
       AND substr(content, 1, 400) LIKE ${`%Scheduled % ${id} (%`}
     ORDER BY id DESC LIMIT 1
-  `) as { ts: number | null } | undefined;
-  return typeof row?.ts === 'number' ? row.ts : null;
+  `) as { ts: number | null; head: string | null } | undefined;
+  if (!row) return null;
+  return {
+    createdAt: typeof row.ts === 'number' ? row.ts : null,
+    maxAgeMs: typeof row.head === 'string' ? recurringMaxAgeMs(row.head) : null,
+  };
 }
 
 export function readScheduledTasks(sessionId: string): ScheduledTasksState | null {
@@ -43,13 +49,23 @@ export function recordScheduledTasks(
   for (const t of raw) {
     if (!t || typeof t.id !== 'string' || !t.id || typeof t.schedule !== 'string') continue;
     const known = prevById.get(t.id);
+    const recurring = t.recurring === true;
+    // A known task keeps its creation time; one listed before the hub read
+    // lifetimes (`expiresAt` absent) is looked up once more.
+    const result = !known || (recurring && known.expiresAt === undefined)
+      ? cronCreateResult(sessionId, t.id) : null;
+    const createdAt = known?.createdAt ?? result?.createdAt ?? atMs;
     tasks.push({
       id: t.id,
       schedule: t.schedule,
-      recurring: t.recurring === true,
+      recurring,
       prompt: typeof t.prompt === 'string' ? t.prompt : '',
       nextFireAt: typeof t.next_fire_at === 'number' && Number.isFinite(t.next_fire_at) ? t.next_fire_at : null,
-      createdAt: known?.createdAt ?? createdAtFromTranscript(sessionId, t.id) ?? atMs,
+      createdAt,
+      ...(recurring ? {
+        expiresAt: known?.expiresAt !== undefined ? known.expiresAt
+          : result?.maxAgeMs != null ? createdAt + result.maxAgeMs : null,
+      } : {}),
     });
   }
   const next: ScheduledTasksState = {
