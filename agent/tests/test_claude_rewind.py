@@ -134,12 +134,26 @@ class RewindPolicyTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.session.starts, 0)
 
     async def test_compact_is_refused_instead_of_prompting_the_model(self):
-        with self.assertRaises(RpcError) as ctx:
+        from charon_agent.providers import PROVIDERS, ProviderSpec
+        self.session.kind = "nocompact"
+        spec = ProviderSpec("nocompact", "session_config", lambda: None, lambda: (True, ""),
+                            rewind=None, compact=None)
+        with patch.dict(PROVIDERS, {"nocompact": spec}), self.assertRaises(RpcError) as ctx:
             await self.server._handle_session_rpc(
                 "compact_session", {"session_id": "sid"}, None)
         self.assertEqual(ctx.exception.code, ERR_INVALID_PARAMS)
         # `/compact` would have reached the model as a literal prompt.
         self.assertEqual(self.session.send_inputs, [])
+
+    async def test_native_compact_never_sends_the_command(self):
+        calls = []
+
+        async def compact():
+            calls.append("compact")
+            return {"ok": True}
+        self.session.compact = compact
+        await self.server._handle_session_rpc("compact_session", {"session_id": "sid"}, None)
+        self.assertEqual((calls, self.session.send_inputs), (["compact"], []))
 
 
 class ResumeQueueResetTest(unittest.IsolatedAsyncioTestCase):

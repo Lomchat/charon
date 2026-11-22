@@ -9,6 +9,7 @@ when either changes. `claude_session_id` stores that Cursor agent id.
 from __future__ import annotations
 
 import asyncio
+import re
 import enum
 import json
 import traceback
@@ -144,6 +145,14 @@ class CursorSession:
         # `RunResult.result`; the reason rides only this stream message.
         self._run_status_error: Optional[str] = None
         self._active_peer_request_id: Optional[str] = None
+        # A peer request steered into a run another input opened: that run's
+        # stop stays its opener's (§14.93).
+        self._peer_shared_turn = False
+        # The account has no steering (cursor-sdk FeatureUnavailableError):
+        # mid-run messages queue for the rest of this session object.
+        self._steer_unavailable = False
+        # The live run is a compaction (`agent.summarize()`): never steered.
+        self._run_is_summary = False
         # Construction inputs the LIVE agent object was built with, so the turn
         # loop can tell a per-send change (model, mode) from one that needs the
         # agent rebuilt (the sandbox). See _construction_signature.
@@ -156,6 +165,8 @@ class CursorSession:
         msg.update(fields)
         if self._active_peer_request_id:
             msg["_peer_request_id"] = self._active_peer_request_id
+            if self._peer_shared_turn and event == "stop":
+                msg["_peer_shared"] = True
         try:
             self._emit_to_server(msg)
         except Exception:
@@ -469,10 +480,94 @@ class CursorSession:
 
     # ── turns ───────────────────────────────────────────────────────────────
 
-    async def send_input(self, content: str, *, peer_request_id: str | None = None) -> None:
+    async def send_input(self, content: str, *, peer_request_id: str | None = None,
+                         client_message_id: str | None = None) -> None:
         if self.status not in ("active", "thinking", "starting"):
             raise RuntimeError(f"session {self.session_id} not running (status={self.status})")
+        if await self._try_steer(content, peer_request_id):
+            return
         await self._stdin_queue.put({"content": content, "peer_request_id": peer_request_id})
+
+    async def _try_steer(self, content: str, peer_request_id: str | None) -> bool:
+        """A message sent while a run works joins THAT run (`run.steer`,
+        cursor-sdk ≥ 1.4), like a Claude or Codex message mid-turn. False ⇒
+        the caller queues it as the next turn, as before steering existed.
+
+        Never steered: a compaction run, a message with others already queued
+        (order), anything into a run a peer request owns (its reply must not
+        answer someone else). A steer is
+        never retried: an error of unknown outcome is raised, not queued, so
+        the text cannot reach the agent twice."""
+        run = self._run
+        steer = getattr(run, "steer", None) if run is not None else None
+        if (not callable(steer) or self._run_is_summary or self._steer_unavailable
+                or not self._stdin_queue.empty() or self._active_peer_request_id):
+            return False
+        try:
+            outcome = await steer(content)
+        except Exception as e:
+            name = type(e).__name__
+            if name == "FeatureUnavailableError":
+                # The account has no steering: nothing was delivered.
+                self._steer_unavailable = True
+                return False
+            if name == "RateLimitError":
+                return False  # documented as not delivered
+            raise RuntimeError(f"steer failed ({name}: {e}); delivery unknown, not resent")
+        if outcome == "revert_to_followup":
+            return False
+        if outcome == "complete_delivered" and peer_request_id and run is self._run:
+            # The reply is this run's text from here on (§14.93).
+            self._active_peer_request_id = peer_request_id
+            self._peer_shared_turn = True
+        # `complete_delivered`, or a cloud `SteerQueued` (already queued by the
+        # provider: never send it again).
+        return True
+
+    async def compact(self) -> dict[str, Any]:
+        """Summarize the conversation (`agent.summarize()`, cursor-sdk ≥ 1.4),
+        queued like a turn so it never meets a running one."""
+        if self._agent is None:
+            raise RuntimeError("Cursor agent is not running")
+        if not callable(getattr(self._agent, "summarize", None)):
+            raise RuntimeError("this cursor-sdk cannot summarize; update it")
+        await self._stdin_queue.put({"compact": True})
+        return {"ok": True}
+
+    async def _do_compact(self) -> None:
+        self._active_peer_request_id = None
+        self._run_status_error = None
+        self._set_status("thinking")
+        self._emit("compacting", active=True)
+        result: Any = None
+        try:
+            run = await self._agent.summarize()
+            self._run, self._run_is_summary = run, True
+            async for msg in run.stream():
+                mtype = getattr(msg, "type", None)
+                if mtype == "status" and str(getattr(msg, "status", "") or "").upper() == "ERROR":
+                    text = getattr(msg, "message", None)
+                    if isinstance(text, str) and text.strip():
+                        self._run_status_error = text.strip()
+            result = await run.wait()
+            status = str(getattr(result, "status", "") or "")
+            if status == "error":
+                detail = _error_text(
+                    self._json_safe(getattr(result, "result", None)) or self._run_status_error)
+                self._emit("error", msg=f"compaction failed: {detail}", fatal=False)
+                self._emit("stop", subtype="error")
+            elif status == "cancelled":
+                self._emit("stop", subtype="cancelled")
+            else:
+                self._emit("compaction", trigger="manual")
+                self._emit("stop")
+        finally:
+            self._run, self._run_is_summary = None, False
+            self._emit("compacting", active=False)
+            if self.status == "thinking":
+                self._set_status("active")
+        if result is not None:
+            await self._emit_final_usage(result)
 
     async def _rebuild_agent_if_stale(self) -> None:
         """Resume the same agent id when a construction option changes.
@@ -509,7 +604,11 @@ class CursorSession:
         sdk = require_sdk()
         if self._agent is None:
             raise RuntimeError("session not running")
+        if item.get("compact"):
+            await self._do_compact()
+            return
         self._active_peer_request_id = item.get("peer_request_id")
+        self._peer_shared_turn = False
         self._saw_text_delta = False
         self._run_status_error = None
         self._set_status("thinking")
@@ -526,6 +625,7 @@ class CursorSession:
         finally:
             self._run = None
             self._active_peer_request_id = None
+            self._peer_shared_turn = False
             if self.status == "thinking":
                 self._set_status("active")
         # Billing lookup follows stop so it cannot delay turn completion.
@@ -686,7 +786,8 @@ class CursorSession:
             # has no `error` field on that type. A refused run leaves it empty
             # and says why in its ERROR status message instead.
             detail = _error_text(
-                self._json_safe(getattr(result, "result", None)) or self._run_status_error)
+                self._json_safe(getattr(result, "result", None)) or self._run_status_error
+                or getattr(result, "error_message", None))
             if "invalid parameters" in detail.lower():
                 sent = _sent_parameters(self.model, self.effort)
                 if sent:
@@ -699,7 +800,7 @@ class CursorSession:
             # (`types.ts § turn_error`), and it tests it with /auth/i to flag a
             # lapsed credential. Emitted under any other name, an expired Cursor
             # key never flipped `cursorLoggedIn=0` and no Sign-in card appeared.
-            self._emit("turn_error", kind=_turn_error_kind(detail))
+            self._emit("turn_error", kind=_turn_error_kind(detail, getattr(result, "error_code", None)))
             self._emit("stop", subtype="error")
         elif status == "cancelled":
             self._emit("stop", subtype="cancelled")
@@ -874,13 +975,25 @@ def _sent_parameters(spec: str | None, effort: str | None) -> str:
     return "&".join(f"{k}={v}" for k, v in sorted(params.items()))
 
 
-def _turn_error_kind(text: str) -> str:
+_AUTH_CODES = {"unauthorized", "unauthenticated", "api_key_not_found"}
+_LIMIT_CODES = {"rate_limit_exceeded", "usage_limit_exceeded", "resource_exhausted", "rate_limited"}
+
+
+def _turn_error_kind(text: str, code: Any = None) -> str:
     """The typed `kind` the hub classifies a failed turn on (§14.68).
 
-    Only one value has to be exact: anything matching /auth/i makes the hub
-    clear `cursorLoggedIn` and offer Sign in, which is the difference between
-    "renew your key" and a session that keeps failing for no stated reason.
+    The run's own `error_code` (cursor-sdk RunResult) outranks the prose.
+    Anything matching /auth/i makes the hub clear `cursorLoggedIn` and offer
+    Sign in; `rate_limit` makes it a limit card instead of "Continue".
     """
+    if isinstance(code, str) and code:
+        normalized = code.removeprefix("SDK_ERROR_CODE_").lower()
+        if normalized in _AUTH_CODES:
+            return "authentication_failed"
+        if normalized in _LIMIT_CODES:
+            return "rate_limit"
+        if re.fullmatch(r"[a-z0-9_]{1,64}", normalized):
+            return normalized
     return "authentication_failed" if _is_auth_text(text) else "turn_failed"
 
 

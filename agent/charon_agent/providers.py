@@ -113,12 +113,12 @@ PROVIDERS: "dict[str, ProviderSpec]" = {
         "codex", "codex_config", _codex_class, _codex_availability,
         rewind="native", compact="native",
     ),
-    # The Cursor SDK exposes neither: no rollback primitive, no transcript fork
-    # to branch at, and no compaction command. Declared honestly — the hub also
-    # hides both buttons from the registry's `rewind`/`compact` capabilities.
+    # No rollback primitive and no transcript fork to branch at; compaction is
+    # `agent.summarize()` (cursor-sdk ≥ 1.4). The hub hides the rewind button
+    # from the registry's `rewind` capability.
     "cursor": ProviderSpec(
         "cursor", "session_config", _cursor_class, _cursor_availability,
-        rewind=None, compact=None,
+        rewind=None, compact="native",
     ),
 }
 
