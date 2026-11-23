@@ -10,7 +10,7 @@ import { TurnLedgerLine } from './PromptCacheMarks';
 import { providerName, providerText } from '@/lib/providerText';
 import { apiErrorText, providerAccountLabel, type ProviderAccount } from '@/lib/providerAccounts';
 import { useAccounts } from './accountsStore';
-import { IconAlarm, IconBullseye, IconChatSide, IconClipboard, IconImage } from './icons';
+import { IconAlarm, IconBullseye, IconChatSide, IconClipboard, IconGitBranch, IconImage } from './icons';
 import { hastText, hastCodeLanguage } from './hastText';
 import { isClaudeAuthExpired } from '@/lib/authExpired';
 import { isTurnInterrupted } from '@/lib/turnInterrupted';
@@ -134,6 +134,9 @@ type Props = {
   // it pulses like the sidebar card — green, red for a failed turn — until
   // the user acts on the session (SessionView reads it), leaves it or sends.
   finishCue?: 'unread' | 'error' | null;
+  // A persisted user row: fork the conversation just BEFORE it (ForkModal).
+  // MUST be a stable reference (memo, §14.38).
+  onForkFrom?: (m: Msg) => void;
 };
 
 /** The bubble class of an unread finish (`.finish-cue`, app.css). */
@@ -144,7 +147,7 @@ function finishCueClass(cue: Props['finishCue']): string {
 // The roles drawn by Message's own bubble below (the others have their own component).
 const TEXT_BUBBLE_ROLES = new Set(['user', 'assistant', 'external', 'peer_status']);
 
-function Message({ m, vpsId, cwd, streaming = false, attachedResult, kind = 'claude', onReauth, onContinue, substitutedFor, onScheduleResume, onCancelScheduledResume, onContinueWithAccount, currentAccount, orphaned = false, peerSessionId, onOpenPeerSession, onPeerRequestHover, onPeerRequestJump, peerReplyTo, finishCue }: Props) {
+function Message({ m, vpsId, cwd, streaming = false, attachedResult, kind = 'claude', onReauth, onContinue, substitutedFor, onScheduleResume, onCancelScheduledResume, onContinueWithAccount, currentAccount, orphaned = false, peerSessionId, onOpenPeerSession, onPeerRequestHover, onPeerRequestJump, peerReplyTo, finishCue, onForkFrom }: Props) {
   const foldKey = TEXT_BUBBLE_ROLES.has(m.role) && !streaming ? m.id : null;
   const isFolded = useBubbleFold(foldKey);
   if (m.role === 'tool_use') return <ToolUseCard m={m} attachedResult={attachedResult} orphaned={orphaned} />;
@@ -280,6 +283,10 @@ function Message({ m, vpsId, cwd, streaming = false, attachedResult, kind = 'cla
           up to see when it was sent or to copy it. */}
       {m.createdAt > 0 && (
         <footer className="bubble-f">
+          {onForkFrom && (
+            <button type="button" className="bubble-copy-btn bubble-fork-btn" onClick={() => onForkFrom(m)}
+              title="Fork before this message" aria-label="Fork before this message"><IconGitBranch /></button>
+          )}
           <MessageTime ts={m.createdAt} />
           <CopyMessageButton content={m.content} />
         </footer>

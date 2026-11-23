@@ -1,6 +1,7 @@
 import { accountProfileId, accountProfileNumber } from '@/lib/accountProfiles';
 import { requireAccountProfile, readProfileStatus } from '@/lib/server/agent/accountProfiles';
-import { asc, eq, and, inArray, lte } from 'drizzle-orm';
+import { isGlobalAccountId } from '@/lib/server/accounts/store';
+import { asc, desc, eq, and, inArray, isNotNull, lt, lte } from 'drizzle-orm';
 import { sql } from 'drizzle-orm';
 import { db, agentSessions, sessionMessages, vps as vpsTable } from '@/lib/db';
 import { requireApiSession } from '@/lib/server/session';
@@ -12,10 +13,11 @@ import {
   getOrCreateStream,
   nextSessionPosition,
   parseProviderConfig,
+  peekStream,
   resumeSession,
+  sleepSession,
   startNewSession,
 } from '@/lib/server/agent/sessionOps';
-import { callSessionRpc } from '@/lib/server/hub/sessionRpc';
 import type { AgentMethodName } from '@/lib/server/agent/types';
 import { copySessionNotificationSettings } from '@/lib/server/hub/sessionNotifications';
 import {
@@ -55,13 +57,77 @@ function forkCutoff(sourceId: string, upToMessageId?: string): number | null {
   return anchor?.rid ?? null;
 }
 
-function numericCutoff(sourceId: string, value: unknown): number | null {
+/** A legacy `cutoffMessageId` (tabs from before `beforeMessageId`). Row ids are
+ *  global, so a cut BETWEEN this session's rows names another session's row:
+ *  any integer is a valid `id <= cutoff` bound. */
+function numericCutoff(value: unknown): number | null {
   const id = Number(value);
-  if (!Number.isInteger(id) || id < 0) return null;
-  if (id === 0) return 0;
-  const row = db.select({ id: sessionMessages.id }).from(sessionMessages)
-    .where(and(eq(sessionMessages.sessionId, sourceId), eq(sessionMessages.id, id))).get();
-  return row?.id ?? null;
+  return Number.isInteger(id) && id >= 0 ? id : null;
+}
+
+/** A fork point = BEFORE one of the source's own user rows (§14.94). */
+function userRowBefore(sourceId: string, value: unknown): { id: number; createdAt: number } | null {
+  const id = Number(value);
+  if (!Number.isInteger(id) || id <= 0) return null;
+  return db.select({ id: sessionMessages.id, createdAt: sessionMessages.createdAt }).from(sessionMessages)
+    .where(and(eq(sessionMessages.sessionId, sourceId), eq(sessionMessages.id, id),
+      eq(sessionMessages.role, 'user'))).get() ?? null;
+}
+
+function hasHistoryBefore(sourceId: string, rowId: number): boolean {
+  return !!db.select({ id: sessionMessages.id }).from(sessionMessages)
+    .where(and(eq(sessionMessages.sessionId, sourceId), lt(sessionMessages.id, rowId),
+      inArray(sessionMessages.role, [...FORK_MODEL_ROLES]))).limit(1).get();
+}
+
+/** Claude's native cut before a row: the last answer entry the CLI wrote before
+ *  it (copied fork rows carry none: their anchors are nulled). */
+function claudeAnchorBefore(sourceId: string, rowId: number): string | null {
+  return db.select({ uuid: sessionMessages.cliUuid }).from(sessionMessages)
+    .where(and(eq(sessionMessages.sessionId, sourceId), lt(sessionMessages.id, rowId),
+      eq(sessionMessages.role, 'assistant'), isNotNull(sessionMessages.cliUuid)))
+    .orderBy(desc(sessionMessages.id)).limit(1).get()?.uuid ?? null;
+}
+
+const LIVE_STATUSES = new Set(['active', 'thinking', 'starting', 'failed', 'background']);
+const sourceIsLive = (source: SourceSession): boolean =>
+  LIVE_STATUSES.has(peekStream(source.id)?.status ?? source.status ?? '');
+
+async function waitAwake(sessionId: string, ms = 45_000): Promise<void> {
+  const until = Date.now() + ms;
+  while (Date.now() < until) {
+    const status = peekStream(sessionId)?.status;
+    if (status && status !== 'starting') {
+      if (LIVE_STATUSES.has(status)) return;
+      throw new Error(`the source session could not be woken (${status})`);
+    }
+    await new Promise((r) => setTimeout(r, 250));
+  }
+  throw new Error('the source session took too long to wake');
+}
+
+/** Native transports work THROUGH the source's agent-side session: an asleep
+ *  Codex source has no app-server, an imported one no agent session at all.
+ *  Wake it for the fork, then put it back to sleep if it is still idle. */
+async function withAwakeSource<T>(source: SourceSession, run: () => Promise<T>): Promise<T> {
+  if (sourceIsLive(source)) return run();
+  await resumeSession(source.id);
+  await waitAwake(source.id);
+  try {
+    return await run();
+  } finally {
+    if (peekStream(source.id)?.status === 'active') await sleepSession(source.id).catch(() => {});
+  }
+}
+
+/** The branch as the browser may see it (no raw provider config). */
+function forkResponse(newId: string, sourceId: string, extra: Record<string, unknown>): Response {
+  const [row] = db.select().from(agentSessions).where(eq(agentSessions.id, newId)).all();
+  return Response.json({
+    ok: true, forkedFrom: sourceId, ...extra,
+    session: { ...row, providerConfig: undefined, accountProfile: accountProfileId(row?.providerConfig),
+      accountProfileNumber: accountProfileNumber(row?.providerConfig) },
+  });
 }
 
 async function sendReplacement(sessionId: string, prompt?: string): Promise<void> {
@@ -176,15 +242,25 @@ async function forkToClaude(
   cutoffId: number | null,
   replacementPrompt?: string,
 ) {
+  // A partial cut with no native anchor (no answer before it carries one):
+  // hand the visible history over rather than copy ALL of it natively.
+  if (cutoffId != null && !upToMessageId) {
+    return forkViaHandoff(source, name, 'claude', cutoffId, replacementPrompt);
+  }
   let forked: { claude_session_id?: string } | null = null;
+  const fork = () => getAgentClientForVpsId(source.vpsId).call('fork_session', {
+    session_id: source.id,
+    ...(upToMessageId ? { up_to_message_id: upToMessageId } : {}),
+    title: name,
+    account_profile: accountProfileId(source.providerConfig),
+  }) as Promise<{ claude_session_id?: string }>;
   try {
-    const client = getAgentClientForVpsId(source.vpsId);
-    forked = await client.call('fork_session', {
-      session_id: source.id,
-      ...(upToMessageId ? { up_to_message_id: upToMessageId } : {}),
-      title: name,
-      account_profile: accountProfileId(source.providerConfig),
-    }) as { claude_session_id?: string };
+    // The fork itself is file work, asleep or not; only a source the agent
+    // does not know (imported, never resumed) needs waking first.
+    forked = await fork().catch((e) => {
+      if (sourceIsLive(source) || !/-32000|session not found/i.test(String(e?.message || e))) throw e;
+      return withAwakeSource(source, fork);
+    });
   } catch (e: any) {
     const msg = String(e?.message || e);
     const status = /-32601|no such method|cannot fork/i.test(msg) ? 501 : 400;
@@ -242,8 +318,7 @@ async function forkToClaude(
   }
 
   emitGlobalSessionListChanged(newId);
-  const [row] = db.select().from(agentSessions).where(eq(agentSessions.id, newId)).all();
-  return Response.json({ ok: true, session: row, forkedFrom: source.id, copied, started });
+  return forkResponse(newId, source.id, { copied, started });
 }
 
 async function forkToCodex(source: SourceSession, name: string, cutoffId: number | null, replacementPrompt?: string) {
@@ -310,15 +385,8 @@ async function forkToCodex(source: SourceSession, name: string, cutoffId: number
     inheritNotifications(source.id, newId);
     await sendReplacement(newId, replacementPrompt);
     emitGlobalSessionListChanged(newId);
-    const [row] = db.select().from(agentSessions).where(eq(agentSessions.id, newId)).all();
-    return Response.json({
-      ok: true,
-      session: row,
-      forkedFrom: source.id,
-      copied,
-      importedItems: items.length,
-      importedBatches: batches.length,
-      started: true,
+    return forkResponse(newId, source.id, {
+      copied, importedItems: items.length, importedBatches: batches.length, started: true,
     });
   } catch (e: any) {
     try { await deleteSession(newId); } catch {}
@@ -332,14 +400,44 @@ async function forkToCodex(source: SourceSession, name: string, cutoffId: number
   }
 }
 
+/** The native Codex turn a "before this row" cut keeps last: the latest turn
+ *  over by the row's time. Never by index — a message sent mid-turn steers
+ *  that turn instead of opening its own. null = none in the agent's window. */
+async function codexTurnBefore(source: SourceSession, beforeTs: number): Promise<string | null> {
+  const rpc = PROVIDERS[asSessionProvider(source.kind)].nativeRpc.forkPoints;
+  if (!rpc) return null;
+  const native = await getAgentClientForVpsId(source.vpsId)
+    .call(rpc as AgentMethodName, { session_id: source.id }) as { ok?: boolean; error?: string; points?: Array<{
+      turn_id?: string; started_at?: number | null; completed_at?: number | null }> };
+  if (!native?.ok) throw new Error(native?.error || 'Codex fork points unavailable');
+  const turns = Array.isArray(native.points) ? native.points : [];
+  const over = turns.filter((t) => {
+    const end = t.completed_at ?? t.started_at;
+    return typeof t.turn_id === 'string' && typeof end === 'number' && end <= beforeTs;
+  });
+  // `points` is the agent's LAST 100 turns (a suffix): a cut older than all of
+  // them cannot be anchored natively.
+  return over.at(-1)?.turn_id ?? null;
+}
+
 async function forkCodexNative(source: SourceSession, name: string, lastTurnId?: string,
-  cutoffId: number | null = null, replacementPrompt?: string) {
+  cutoffId: number | null = null, replacementPrompt?: string, beforeTs?: number) {
+  if (cutoffId != null && !lastTurnId && beforeTs == null) return forkToCodex(source, name, cutoffId, replacementPrompt);
   try {
     const client = getAgentClientForVpsId(source.vpsId);
-    const forked = await client.call('fork_session', {
-      session_id: source.id, title: name,
-      ...(lastTurnId ? { last_turn_id: lastTurnId } : {}),
-    }) as { claude_session_id?: string };
+    const forked = await withAwakeSource(source, async () => {
+      let anchor = lastTurnId;
+      if (!anchor && beforeTs != null) {
+        anchor = await codexTurnBefore(source, beforeTs) ?? undefined;
+        if (!anchor) return null;
+      }
+      return await client.call('fork_session', {
+        session_id: source.id, title: name,
+        ...(anchor ? { last_turn_id: anchor } : {}),
+      }) as { claude_session_id?: string };
+    });
+    // No native turn to cut at: hand the visible history over instead.
+    if (forked === null) return forkToCodex(source, name, cutoffId, replacementPrompt);
     if (!forked?.claude_session_id) throw new Error('Codex fork returned no thread id');
     const newId = randomBytes(8).toString('hex');
     const handle = allocateSessionHandle(source.vpsId, { id: newId, name, cwd: source.cwd });
@@ -368,10 +466,29 @@ async function forkCodexNative(source: SourceSession, name: string, lastTurnId?:
       }
     }
     emitGlobalSessionListChanged(newId);
-    const [row] = db.select().from(agentSessions).where(eq(agentSessions.id, newId)).all();
-    return Response.json({ ok: true, session: { ...row, providerConfig: undefined, accountProfile: accountProfileId(row?.providerConfig), accountProfileNumber: accountProfileNumber(row?.providerConfig) },
-      forkedFrom: source.id, copied, started });
+    return forkResponse(newId, source.id, { copied, started });
   } catch (e: any) {
+    return Response.json({ error: String(e?.message || e) }, { status: 400 });
+  }
+}
+
+/** Fork BEFORE the first message: nothing to inherit, so a fresh session with
+ *  the branch's settings (and its prompt, if any). */
+async function forkFresh(source: SourceSession, name: string, targetKind: SessionProvider,
+  prompt?: string) {
+  const newId = randomBytes(8).toString('hex');
+  try {
+    const stream = await startNewSession({
+      sessionId: newId, vpsId: source.vpsId, cwd: source.cwd, name, kind: targetKind,
+      ...forkInheritance(source, targetKind),
+    });
+    insertForkMarker(source, newId, targetKind, 0);
+    inheritNotifications(source.id, newId);
+    if (prompt?.trim()) await stream.sendUserMessage(prompt.trim());
+    emitGlobalSessionListChanged(newId);
+    return forkResponse(newId, source.id, { copied: 0, started: true });
+  } catch (e: any) {
+    try { await deleteSession(newId); } catch {}
     return Response.json({ error: String(e?.message || e) }, { status: 400 });
   }
 }
@@ -473,38 +590,16 @@ export async function GET(_req: Request, { params }: { params: Promise<{ id: str
   const auth = await requireApiSession();
   if (auth instanceof Response) return auth;
   const { id } = await params;
-  const [source] = db.select().from(agentSessions).where(eq(agentSessions.id, id)).all();
+  const [source] = db.select({ id: agentSessions.id }).from(agentSessions).where(eq(agentSessions.id, id)).all();
   if (!source) return Response.json({ error: 'session not found' }, { status: 404 });
-  const users = db.select({ id: sessionMessages.id, content: sessionMessages.content,
+  // Every point is "before this user message", read from the hub alone: a
+  // sleeping source has nothing native to ask, and POST resolves each
+  // provider's own anchor from the row (§14.94).
+  const points = db.select({ messageId: sessionMessages.id, prompt: sessionMessages.content,
     createdAt: sessionMessages.createdAt })
     .from(sessionMessages).where(and(eq(sessionMessages.sessionId, id),
-      eq(sessionMessages.role, 'user'))).orderBy(asc(sessionMessages.id)).all();
-  const assistantRows = db.select({ id: sessionMessages.id, cliUuid: sessionMessages.cliUuid })
-    .from(sessionMessages).where(and(eq(sessionMessages.sessionId, id),
-      eq(sessionMessages.role, 'assistant'))).orderBy(asc(sessionMessages.id)).all();
-  const forkPointsRpc = PROVIDERS[asSessionProvider(source.kind)].nativeRpc.forkPoints;
-  if (forkPointsRpc) {
-    const native = await callSessionRpc(id, forkPointsRpc as AgentMethodName);
-    if (!native?.ok) return Response.json(native, { status: native?.reason === 'unsupported' ? 501 : 400 });
-    const points = (Array.isArray(native.points) ? native.points : []).map((point: any, index: number) => {
-      const nextUser = users[index + 1]?.id ?? Number.MAX_SAFE_INTEGER;
-      const answer = assistantRows.filter((row) => row.id > (users[index]?.id ?? 0) && row.id < nextUser).at(-1);
-      return {
-      turnId: point.turn_id, previousTurnId: index > 0 ? native.points[index - 1]?.turn_id : null,
-      prompt: point.prompt || users[index]?.content || '', messageId: users[index]?.id ?? null,
-      cutoffId: answer?.id ?? users[index]?.id ?? null,
-      createdAt: users[index]?.createdAt ?? point.started_at ?? 0,
-      };
-    });
-    return Response.json({ ok: true, points });
-  }
-  const points = users.map((user, index) => {
-    const nextUser = users[index + 1]?.id ?? Number.MAX_SAFE_INTEGER;
-    const answer = assistantRows.filter((row) => row.id > user.id && row.id < nextUser && row.cliUuid).at(-1);
-    const previous = index > 0 ? assistantRows.filter((row) => row.id < user.id && row.cliUuid).at(-1) : null;
-    return { turnId: answer?.cliUuid ?? null, previousTurnId: previous?.cliUuid ?? null,
-      prompt: user.content, messageId: user.id, cutoffId: answer?.id ?? user.id, createdAt: user.createdAt };
-  }).filter((point) => point.turnId);
+      eq(sessionMessages.role, 'user'))).orderBy(asc(sessionMessages.id)).all()
+    .map((p) => ({ ...p, prompt: p.prompt.slice(0, 100_000) }));
   return Response.json({ ok: true, points });
 }
 
@@ -517,6 +612,8 @@ type ForkArgs = {
   lastTurnId?: string;
   upToMessageId?: string;
   cutoffId: number | null;
+  /** Codex: the cut row's time, resolved to a native turn on the agent. */
+  beforeTs?: number;
   replacementPrompt?: string;
 };
 
@@ -545,7 +642,7 @@ const FORK_TRANSPORTS: Record<
   },
   codex: {
     codex: (a) => forkCodexNative(a.source, a.name, a.lastTurnId, a.cutoffId,
-      a.replacementPrompt),
+      a.replacementPrompt, a.beforeTs),
     claude: (a) => forkViaHandoff(a.source, a.name, 'claude', a.cutoffId, a.replacementPrompt),
     cursor: (a) => forkViaHandoff(a.source, a.name, 'cursor', a.cutoffId, a.replacementPrompt),
   },
@@ -566,14 +663,18 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
   const { id } = await params;
   const [source] = db.select().from(agentSessions).where(eq(agentSessions.id, id)).all();
   if (!source) return Response.json({ error: 'session not found' }, { status: 404 });
-  if (!source.nativeSessionId) {
-    return Response.json(
-      { error: 'this session has no transcript yet — send a message first' },
-      { status: 400 },
-    );
+  const res = await runFork(source, await req.json().catch(() => ({})));
+  // A refused fork leaves no row behind: its reason lives only in the
+  // browser's modal unless it is written here.
+  if (!res.ok) {
+    const error = await res.clone().json().then((j) => j?.error).catch(() => null);
+    console.warn(`[fork] ${id} (${source.kind}) → ${res.status}: ${String(error ?? '').slice(0, 300)}`);
   }
+  return res;
+}
 
-  const body = await req.json().catch(() => ({}));
+async function runFork(source: SourceSession, body: any): Promise<Response> {
+  const id = source.id;
   if (body?.targetKind != null && !isSessionProvider(body.targetKind)) {
     return Response.json(
       { error: `targetKind must be one of: ${SESSION_PROVIDERS.join(', ')}` },
@@ -582,38 +683,59 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
   }
   // Omitting the target keeps the fork on Claude — the historical contract.
   const targetKind = asSessionProvider(body?.targetKind);
+  const sourceKind = asSessionProvider(source.kind);
+  // `beforeMessageId` (a user row of this session) = the branch ends just
+  // before that message. Native anchors are resolved HERE, per provider.
+  const before = body?.beforeMessageId == null ? null : userRowBefore(id, body.beforeMessageId);
+  if (body?.beforeMessageId != null && !before) {
+    return Response.json({ error: 'that message is not in this transcript' }, { status: 400 });
+  }
+  const fresh = !!before && !hasHistoryBefore(id, before.id);
+  if (!source.nativeSessionId && !fresh) {
+    return Response.json(
+      { error: 'this session has no transcript yet — send a message first' },
+      { status: 400 },
+    );
+  }
   const upToMessageId = typeof body?.upToMessageId === 'string' ? body.upToMessageId : undefined;
-  const requestedCutoff = body?.cutoffMessageId == null ? null : numericCutoff(id, body.cutoffMessageId);
+  const requestedCutoff = body?.cutoffMessageId == null ? null : numericCutoff(body.cutoffMessageId);
   if (body?.cutoffMessageId != null && requestedCutoff == null) {
     return Response.json({ error: 'invalid transcript cutoff' }, { status: 400 });
   }
-  const cutoffId = requestedCutoff ?? forkCutoff(id, upToMessageId);
+  const cutoffId = before ? before.id - 1 : requestedCutoff ?? forkCutoff(id, upToMessageId);
   if (upToMessageId && cutoffId == null) {
     return Response.json({ error: 'that message is not in this transcript' }, { status: 400 });
   }
   const name = typeof body?.name === 'string' && body.name.trim()
     ? body.name.trim()
-    : `${source.name || 'session'} (${targetKind === asSessionProvider(source.kind) ? 'fork' : `${PROVIDERS[targetKind].label} fork`})`;
-  const lastTurnId = typeof body?.lastTurnId === 'string' && body.lastTurnId ? body.lastTurnId : undefined;
-  const replacementPrompt = typeof body?.replacementPrompt === 'string'
-    ? body.replacementPrompt.trim().slice(0, 100_000) : undefined;
+    : `${source.name || 'session'} (${targetKind === sourceKind ? 'fork' : `${PROVIDERS[targetKind].label} fork`})`;
+  const lastTurnId = before
+    ? (sourceKind === 'claude' ? claudeAnchorBefore(id, before.id) ?? undefined : undefined)
+    : typeof body?.lastTurnId === 'string' && body.lastTurnId ? body.lastTurnId : undefined;
+  const rawPrompt = typeof body?.prompt === 'string' ? body.prompt : body?.replacementPrompt;
+  const replacementPrompt = typeof rawPrompt === 'string' ? rawPrompt.trim().slice(0, 100_000) : undefined;
 
   try {
     const sourceProfile = accountProfileId(source.providerConfig);
     const targetProfile = requireAccountProfile(source.vpsId, targetKind,
-      body?.targetProfile ?? (targetKind === asSessionProvider(source.kind) ? sourceProfile : 'default'));
-    if (targetProfile.number > 1) {
+      body?.targetProfile ?? (targetKind === sourceKind ? sourceProfile : 'default'));
+    // The hub owns its accounts' state (§14.115); asking the VPS is for the
+    // legacy per-VPS profiles only (same rule as startNewSession).
+    if (targetProfile.loggedIn === false) throw new Error('Sign in to the destination account first');
+    if (targetProfile.number > 1 && !isGlobalAccountId(targetProfile.id)) {
       const auth = await readProfileStatus(source.vpsId, targetKind, targetProfile.id);
       if (!auth.logged_in) throw new Error('Sign in to the destination account first');
     }
     const config = { ...(parseProviderConfig(source.providerConfig) ?? {}),
       accountProfile: targetProfile.id, accountProfileNumber: targetProfile.number };
     const projected = { ...source, providerConfig: JSON.stringify(config) };
-    if (targetKind === 'codex' && source.kind === 'codex' && sourceProfile !== targetProfile.id) {
+    if (fresh) return forkFresh(projected, name, targetKind, replacementPrompt);
+    if (targetKind === 'codex' && sourceKind === 'codex' && sourceProfile !== targetProfile.id) {
       return forkToCodex(projected, name, cutoffId, replacementPrompt);
     }
-    return FORK_TRANSPORTS[asSessionProvider(source.kind)][targetKind]({
+    return FORK_TRANSPORTS[sourceKind][targetKind]({
       source: projected, name, lastTurnId, upToMessageId, cutoffId, replacementPrompt,
+      ...(before ? { beforeTs: before.createdAt } : {}),
     });
   } catch (e) { return Response.json({ error: (e as Error).message }, { status: 400 }); }
 }

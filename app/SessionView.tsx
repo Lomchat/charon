@@ -71,7 +71,7 @@ import { PROVIDER_CATALOGS } from './modelPickers';
 import AgentLogo from './AgentLogo';
 import { MODE_SWITCH_META, providerName, providerText } from '@/lib/providerText';
 import { describeGate, describeLive, toolDetail, type LiveLine } from '@/lib/liveActivity';
-import ForkModal from './ForkModal';
+import ForkModal, { type ForkChoice, type ForkPoint } from './ForkModal';
 import { accountProfileId } from '@/lib/accountProfiles';
 import { copySessionNotifications } from './browserNotifications';
 import RewindModal from './RewindModal';
@@ -80,7 +80,7 @@ import {
   getCached, fetchAndCache, invalidate as invalidateCache,
   extendWithOlder as extendCacheWithOlder,
 } from './sessionCache';
-import { useInputDraft } from './inputDraftStore';
+import { setDraft, useInputDraft } from './inputDraftStore';
 import { useLatest, useStableCallback, useStableOptionalCallback, useStableValue, shallowEqualRows } from './useStable';
 import { useUsage } from './usageStore';
 import { COMPOSER_MAX_VIEWPORT_SHARE, DEFAULT_COMPOSER_SIZE, revealComposer, useComposerSize, type ComposerSize } from './composerSize';
@@ -303,9 +303,8 @@ async function postRollback(sessionId: string, messageId: string): Promise<void>
   const j = await r.json().catch(() => null);
   if (!r.ok) throw new Error(j?.error || 'rewind failed');
 }
-async function postFork(sessionId: string, targetKind: AgentKind, options?: {
-  lastTurnId?: string; cutoffMessageId?: number; replacementPrompt?: string; targetProfile?: string;
-}): Promise<{ id: string; vpsId: string; cwd?: string | null }> {
+async function postFork(sessionId: string, targetKind: AgentKind, choice: ForkChoice): Promise<{ id: string; vpsId: string; cwd?: string | null }> {
+  const { draft: _draft, ...options } = choice;
   const r = await fetch(`/api/sessions/${sessionId}/fork`, {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
@@ -481,6 +480,8 @@ export default function SessionView({
   // Fork = branch into native Claude OR import this history into a fresh Codex
   // thread. The source stays live in both cases (§14.94).
   const [forkModalOpen, setForkModalOpen] = useState(false);
+  // Set when the modal was opened from a message's fork button (its point).
+  const [forkFrom, setForkFrom] = useState<ForkPoint | null>(null);
   const [forking, setForking] = useState<AgentKind | null>(null);
   const [forkError, setForkError] = useState<string | null>(null);
   const [compacting, setCompacting] = useState(false);
@@ -634,6 +635,7 @@ export default function SessionView({
         case 'fork':
           if (!selected.nativeSessionId) return refuse('/fork: send a message before forking.');
           setForkError(null);
+          setForkFrom(null);
           setForkModalOpen(true);
           return true;
         case 'export': {
@@ -697,15 +699,16 @@ export default function SessionView({
     const r = await outcome(run());
     return r.ok ? r.value : refuse(`/${action === 'aside' ? 'btw' : action}: ${r.message}`);
   });
-  const doFork = useCallback(async (targetKind: AgentKind, options?: {
-    lastTurnId?: string; cutoffMessageId?: number; replacementPrompt?: string; targetProfile?: string;
-  }) => {
+  const doFork = useCallback(async (targetKind: AgentKind, choice: ForkChoice) => {
     if (forking) return;
     setForking(targetKind);
     setForkError(null);
-    const r = await outcome(postFork(sessionId, targetKind, options));
+    const r = await outcome(postFork(sessionId, targetKind, choice));
     if (r.ok) {
       const branch = r.value;
+      // Forked BEFORE a message that is not sent again: it waits in the
+      // branch's composer, to send as is or rewrite.
+      if (choice.draft) setDraft(branch.id, choice.draft);
       // The branch inherits the source's notification rules. The Telegram half
       // came across with the fork itself; this one is localStorage, so only
       // this device can carry it — fire-and-forget, since a push-sync hiccup
@@ -723,6 +726,14 @@ export default function SessionView({
     }
     setForking(null);
   }, [forking, sessionId, onOpenSession]);
+  // A user bubble's fork button: the branch ends just before that message.
+  const openForkFrom = useCallback((m: Msg) => {
+    const messageId = Number(m.id.slice(1));
+    if (!/^m\d+$/.test(m.id) || !Number.isSafeInteger(messageId)) return;
+    setForkError(null);
+    setForkFrom({ messageId, prompt: m.content, createdAt: m.createdAt });
+    setForkModalOpen(true);
+  }, []);
 
   const [errorOpen, setErrorOpen] = useState(false);
   const [errorCopied, setErrorCopied] = useState(false);
@@ -1497,7 +1508,7 @@ export default function SessionView({
                 disabled={!['thinking', 'active', 'starting', 'failed', 'background'].includes(status ?? '')}
                 aria-label="Stop session" title="Force stop — the session can be resumed"><IconStop /></button>
               <button type="button" className="session-action"
-                onClick={() => { setForkError(null); setForkModalOpen(true); }}
+                onClick={() => { setForkError(null); setForkFrom(null); setForkModalOpen(true); }}
                 disabled={!!forking || !selected.nativeSessionId}
                 aria-label="Fork session" aria-busy={!!forking}
                 title={selected.nativeSessionId ? 'Fork conversation' : 'Send a message before forking'}>
@@ -1594,6 +1605,7 @@ export default function SessionView({
                   siblings={siblings} onOpenPeerSession={onOpenSession}
                   onPeerRequestHover={hoverRequest} onPeerRequestJump={jumpToRequest}
                   peerReplyToById={NO_REPLIES}
+                  onForkFrom={openForkFrom}
                   renderable={detachedRenderable}
                   liveRow={null}
                   kind={sessionKind}
@@ -1637,6 +1649,7 @@ export default function SessionView({
                   siblings={siblings} onOpenPeerSession={onOpenSession}
                   onPeerRequestHover={hoverRequest} onPeerRequestJump={jumpToRequest}
                   peerReplyToById={peerReplies.replyToById}
+                  onForkFrom={openForkFrom}
                   renderable={visibleRenderable}
                   liveRow={liveMessage?.id === '__streaming' ? null : liveMessage}
                   kind={sessionKind}
@@ -1934,9 +1947,10 @@ export default function SessionView({
           sourceName={selected.name || '(unnamed)'}
           vpsName={selectedVps?.name}
           vps={selectedVps ?? null}
+          initialPoint={forkFrom}
           busy={forking}
           error={forkError}
-          onChoose={(kind, options) => { void doFork(kind, options); }}
+          onChoose={(kind, choice) => { void doFork(kind, choice); }}
           onClose={() => { if (!forking) setForkModalOpen(false); }}
         />
       )}
@@ -1956,7 +1970,7 @@ export default function SessionView({
 const MessageHistory = memo(function MessageHistory({
   renderable, kind, vpsId, cwd, onReauth, authMsgId, continuableMsgId, schedulableMsgId, onContinue, onScheduleResume, onCancelScheduledResume, turnInFlight,
   limitMsgId, currentAccount, onContinueWithAccount, finishMsgId, finishCue,
-  siblings, onOpenPeerSession, onPeerRequestHover, onPeerRequestJump, peerReplyToById,
+  siblings, onOpenPeerSession, onPeerRequestHover, onPeerRequestJump, peerReplyToById, onForkFrom,
   liveRow, substitute, selectedModel, scrollerRef, windowRef, followNewest = true,
 }: {
   /** False for a window around a search hit: pages loaded toward the live
@@ -2004,6 +2018,8 @@ const MessageHistory = memo(function MessageHistory({
   onPeerRequestHover: (messageId: string | null) => void;
   onPeerRequestJump: (messageId: string) => void;
   peerReplyToById: ReadonlyMap<string, string>;
+  /** A persisted user row's fork button (stable). */
+  onForkFrom?: (m: Msg) => void;
 }) {
   // Newest first: the column is reversed (DOM start = visual bottom).
   const order = useMemo(() => [...renderable].reverse(), [renderable]);
@@ -2032,6 +2048,7 @@ const MessageHistory = memo(function MessageHistory({
       onPeerRequestHover={onPeerRequestHover} onPeerRequestJump={onPeerRequestJump}
       peerReplyTo={peerReplyToById.get(msg.id)}
       finishCue={msg.id === finishMsgId ? finishCue : null}
+      onForkFrom={msg.role === 'user' && /^m\d+$/.test(msg.id) ? onForkFrom : undefined}
     /></div>;
   });
   return (

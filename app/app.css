@@ -2479,6 +2479,9 @@ html[data-density='small'] .cs-sub-fold { font-size: 8.5px; }
   display: flex; align-items: center; justify-content: flex-end; gap: 6px;
   margin-top: 6px;
 }
+/* A user bubble's fork button: right before the time, not at the far left. */
+.bubble .bubble-f .bubble-fork-btn { margin-left: auto; }
+.bubble .bubble-f .bubble-fork-btn + time { margin-left: 0; }
 .bubble-copy-btn {
   display: inline-flex; align-items: center; justify-content: center;
   background: transparent; border: none; padding: 1px;
@@ -9512,9 +9515,12 @@ html:not([data-file-icons='mono']) .tt-row:not(.ignored) > .tt-ico.fi { opacity:
   font-size: 11px; line-height: 1.45; opacity: 0.85; }
 
 .si-diverged { color: var(--accent-strong); opacity: 0.85; margin-top: 4px; }
-.fork-edit-toggle { display: flex; align-items: center; gap: 7px; font-size: 11px;
-  color: var(--text-muted); }
-.fork-edit-prompt { width: 100%; box-sizing: border-box; resize: vertical;
+/* Beats `.app-modal label` (a block, its input a full-width field). */
+.app-modal label.fork-edit-toggle { display: flex; align-items: center; gap: 7px; margin: 0 0 10px;
+  font-family: var(--body); font-size: 11.5px; letter-spacing: 0; text-transform: none;
+  color: var(--text-muted); cursor: pointer; }
+.app-modal label.fork-edit-toggle input { display: inline-block; width: auto; margin: 0; padding: 0; }
+.fork-edit-prompt { width: 100%; box-sizing: border-box; resize: vertical; margin-bottom: 12px;
   background: var(--bg-elevated); color: var(--text); border: 1px solid var(--border);
   border-radius: var(--radius-md); padding: 7px; font: 12px/1.45 var(--mono); }
 .review-delivery { display: grid; grid-template-columns: 1fr 1fr; gap: 7px; }

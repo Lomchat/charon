@@ -1,7 +1,7 @@
 'use client';
 import PickerControl from './PickerControl';
 
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { providerName, providerText } from '@/lib/providerText';
 import { SESSION_PROVIDERS } from '@/lib/sessionCapabilities';
@@ -12,6 +12,18 @@ import { useAccountProfiles } from './accountProfileStore';
 import { profileLabel } from '@/lib/accountProfiles';
 import { providerLoginPatch } from '@/lib/sessionCapabilities';
 
+/** A branch point: the branch ends just BEFORE this user message (§14.94). */
+export type ForkPoint = { messageId: number; prompt: string; createdAt: number };
+
+export type ForkChoice = {
+  targetProfile: string;
+  beforeMessageId?: number;
+  /** Sent in the branch as its first message. */
+  prompt?: string;
+  /** Left in the branch's composer (client-side only, never posted). */
+  draft?: string;
+};
+
 type Props = {
   sourceKind: AgentKind;
   sessionId: string;
@@ -20,14 +32,16 @@ type Props = {
   /** The VPS row, so availability is read per provider from the registry
    *  (§14.102) instead of one boolean per backend added by hand. */
   vps?: { id?: string; agentStatus?: string | null } | null;
+  /** Opened from a message's fork button: that message is the branch point. */
+  initialPoint?: ForkPoint | null;
   busy: AgentKind | null;
   error: string | null;
-  onChoose: (kind: AgentKind, options?: { lastTurnId?: string; cutoffMessageId?: number; replacementPrompt?: string; targetProfile?: string }) => void;
+  onChoose: (kind: AgentKind, choice: ForkChoice) => void;
   onClose: () => void;
 };
 
 export default function ForkModal({
-  sourceKind, sessionId, sourceName, vpsName, vps, busy, error, onChoose, onClose,
+  sourceKind, sessionId, sourceName, vpsName, vps, initialPoint, busy, error, onChoose, onClose,
 }: Props) {
   const profiles = useAccountProfiles(vps?.id);
   const destinations = SESSION_PROVIDERS.flatMap((target) => {
@@ -35,28 +49,28 @@ export default function ForkModal({
     const choices = found.length ? found : [{ id: 'default', vpsId: vps?.id ?? '', provider: target, number: 1, name: '', loggedIn: null }];
     return choices.map((profile) => ({ target, profile }));
   });
-  type Point = { turnId: string; previousTurnId?: string | null; prompt: string; messageId?: number | null; cutoffId?: number | null; createdAt?: number };
-  const [points, setPoints] = useState<Point[] | null>(null);
-  const [pointIndex, setPointIndex] = useState(-1);
-  const [editPrompt, setEditPrompt] = useState(false);
-  const [replacement, setReplacement] = useState('');
+  const [loaded, setLoaded] = useState<ForkPoint[] | null>(null);
+  const [pointId, setPointId] = useState<number | null>(initialPoint?.messageId ?? null);
+  const [send, setSend] = useState(false);
+  const [text, setText] = useState(initialPoint?.prompt ?? '');
   useEffect(() => {
     let live = true;
     fetch(`/api/sessions/${sessionId}/fork`).then((r) => r.json()).then((data) => {
-      if (live) setPoints(Array.isArray(data?.points) ? data.points : []);
-    }).catch(() => { if (live) setPoints([]); });
+      if (live) setLoaded(Array.isArray(data?.points) ? data.points : []);
+    }).catch(() => { if (live) setLoaded([]); });
     return () => { live = false; };
   }, [sessionId]);
-  const selected = useMemo(() => pointIndex >= 0 ? points?.[pointIndex] ?? null : null, [pointIndex, points]);
+  // The clicked message is a point before the list arrives: the choice never
+  // waits on the GET (a click on a destination meanwhile keeps the cut).
+  const points = loaded ?? (initialPoint ? [initialPoint] : []);
+  const selected = pointId == null ? null : points.find((p) => p.messageId === pointId) ?? null;
   const choose = (kind: AgentKind, targetProfile: string) => {
-    if (!selected) return onChoose(kind, { targetProfile });
-    if (editPrompt) {
-      if (!selected.previousTurnId || selected.messageId == null) return;
-      return onChoose(kind, { targetProfile, lastTurnId: selected.previousTurnId,
-        cutoffMessageId: Math.max(0, selected.messageId - 1), replacementPrompt: replacement.trim() });
-    }
-    onChoose(kind, { targetProfile, lastTurnId: selected.turnId,
-      ...(selected.cutoffId != null ? { cutoffMessageId: selected.cutoffId } : {}) });
+    if (pointId == null) return onChoose(kind, { targetProfile });
+    const message = selected?.prompt ?? text;
+    onChoose(kind, {
+      targetProfile, beforeMessageId: pointId,
+      ...(send ? (text.trim() ? { prompt: text.trim() } : {}) : (message.trim() ? { draft: message } : {})),
+    });
   };
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -80,23 +94,23 @@ export default function ForkModal({
         </div>
         <p className="fork-intro">Choose the exact context, then the agent that should continue it.</p>
         <label className="nw-field"><span>Branch point</span>
-          <PickerControl value={pointIndex} disabled={!!busy || points == null} onValueChange={(nextValue) => {
-            const index = Number(nextValue); setPointIndex(index); setEditPrompt(false);
-            setReplacement(index >= 0 ? points?.[index]?.prompt ?? '' : '');
+          <PickerControl value={pointId ?? -1} disabled={!!busy} onValueChange={(nextValue) => {
+            const id = Number(nextValue);
+            const point = id >= 0 ? points.find((p) => p.messageId === id) : null;
+            setPointId(point ? point.messageId : null); setSend(false);
+            setText(point?.prompt ?? '');
           }}>
             <option value={-1}>End of conversation</option>
-            {(points ?? []).map((point, index) => <option value={index} key={point.turnId}>
-              {new Date((point.createdAt ?? 0) * 1000).toLocaleString()} · {point.prompt.slice(0, 90)}
+            {points.map((point) => <option value={point.messageId} key={point.messageId}>
+              Before · {new Date(point.createdAt * 1000).toLocaleString()} · {point.prompt.slice(0, 90)}
             </option>)}
           </PickerControl>
         </label>
         {selected && <>
-          <label className="fork-edit-toggle"><input type="checkbox" checked={editPrompt}
-            disabled={!!busy || !selected.previousTurnId}
-            onChange={(e) => setEditPrompt(e.target.checked)} /> Edit this prompt in the new branch</label>
-          {editPrompt && <textarea className="fork-edit-prompt" rows={5} value={replacement}
-            onChange={(e) => setReplacement(e.target.value)} />}
-          {!selected.previousTurnId && <p className="fork-note">The first prompt can be forked after its answer, but cannot be edited in place.</p>}
+          <label className="fork-edit-toggle"><input type="checkbox" checked={send} disabled={!!busy}
+            onChange={(e) => setSend(e.target.checked)} /> Send this message in the branch</label>
+          {send && <textarea className="fork-edit-prompt" rows={5} value={text} disabled={!!busy}
+            onChange={(e) => setText(e.target.value)} />}
         </>}
         {/* One choice per declared backend (§14.102): the transports table
             already covers every pair, so the modal must offer every target or
@@ -112,7 +126,7 @@ export default function ForkModal({
                 type="button"
                 className="fork-choice"
                 autoFocus={i === 0}
-                disabled={!!busy || unavailable || (editPrompt && !replacement.trim())}
+                disabled={!!busy || unavailable}
                 onClick={() => choose(target, profile.id)}
               >
                 <AgentLogo kind={target} profileNumber={profile.number} size={28} />
