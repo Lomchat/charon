@@ -115,7 +115,8 @@ export function startPerfReport(): void {
           style: Math.round(e.styleAndLayoutStart ? end - e.styleAndLayoutStart : 0),
           ctx: input.at > e.startTime - INPUT_WINDOW_MS && input.at < end ? `${input.kind}@${input.where}` : '',
           nodes: document.getElementsByTagName('*').length,
-          scripts: (e.scripts ?? []).sort((a, b) => b.duration - a.duration).slice(0, 3).map((s) => ({
+          // A copy: `scripts` is a FrozenArray in recent Chrome (sort() throws).
+          scripts: [...(e.scripts ?? [])].sort((a, b) => b.duration - a.duration).slice(0, 3).map((s) => ({
             inv: s.invoker ?? s.invokerType ?? '',
             src: `${(s.sourceURL ?? '').split('/').pop()}:${s.sourceCharPosition ?? -1}`,
             fn: s.sourceFunctionName ?? '',
