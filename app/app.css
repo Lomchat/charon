@@ -3434,10 +3434,11 @@ html[data-density='small'] .cs-sub-fold { font-size: 8.5px; }
 .hljs-strong { font-weight: bold; }
 
 /* ── Messages not read yet (lib/waitingInputs.ts, §14.125) ──
-   Docked above the thinking bar, out of the conversation: a soft ghost of the
-   user's bubble that breathes while it waits, then rises away as the
-   provider reads it — and the bubble eases into the chat where it landed.
-   Held by a compaction: the compaction's colour; a failed delivery: red. */
+   Docked above the thinking bar, out of the conversation: the user's bubble,
+   lighter and dashed while it waits (still: nothing pulses), then rises away
+   as the provider reads it — and the bubble eases into the chat where it
+   landed. Held by a compaction: the compaction's colour; a failed delivery:
+   red. */
 .pending-inputs {
   display: flex; flex-direction: column; gap: 6px;
   padding: 8px 26px 6px;
@@ -3449,29 +3450,19 @@ html[data-density='small'] .cs-sub-fold { font-size: 8.5px; }
   display: flex; align-items: center; gap: 10px;
   min-width: 0;
   padding: 7px 8px 7px 12px;
-  border: var(--bubble-edge) solid color-mix(in srgb, var(--pi-tone) 38%, transparent);
+  border: var(--bubble-edge) dashed color-mix(in srgb, var(--pi-tone) 60%, transparent);
   border-radius: var(--bubble-radius);
-  background: linear-gradient(100deg,
-    color-mix(in srgb, var(--pi-tone) 9%, transparent),
-    color-mix(in srgb, var(--pi-tone) 3%, transparent) 70%);
+  /* Lighter than the user bubble's fill, and unscaled by --bubble-tint: a
+     frameless theme still shows the tray. */
+  background: color-mix(in srgb, var(--pi-tone) 13%, transparent);
   animation: piIn 0.32s cubic-bezier(0.2, 0.8, 0.3, 1);
-}
-/* The breath: a halo on its own layer, opacity alone animates (§14.38). */
-.pending-item::before {
-  content: ''; position: absolute; inset: calc(-1 * var(--bubble-edge)); pointer-events: none;
-  border: var(--bubble-edge) solid color-mix(in srgb, var(--pi-tone) 70%, transparent);
-  border-radius: inherit;
-  box-shadow: 0 0 14px 1px color-mix(in srgb, var(--pi-tone) 28%, transparent);
-  opacity: 0; animation: piBreath 2.6s infinite ease-in-out;
 }
 .pending-item.is-held { --pi-tone: var(--warning); }
 .pending-item.is-error { --pi-tone: var(--danger); }
-.pending-item.is-error::before { animation: none; }
 .pending-item.is-leaving {
   pointer-events: none;
   animation: piOut 0.26s cubic-bezier(0.4, 0, 0.6, 1) forwards;
 }
-.pending-item.is-leaving::before { animation: none; }
 @keyframes piIn {
   from { opacity: 0; transform: translateY(6px) scale(0.985); }
   to   { opacity: 1; transform: none; }
@@ -3479,13 +3470,10 @@ html[data-density='small'] .cs-sub-fold { font-size: 8.5px; }
 @keyframes piOut {
   to { opacity: 0; transform: translateY(-14px) scale(0.98); }
 }
-@keyframes piBreath { 50% { opacity: 1; } }
 .pending-item .pi-dot {
   flex: none; width: 7px; height: 7px; border-radius: 50%;
   background: var(--pi-tone);
-  animation: cpulse 1.6s infinite ease-in-out;
 }
-.pending-item.is-error .pi-dot { animation: none; }
 .pending-item .pi-text {
   flex: 1; min-width: 0;
   color: var(--text); font-size: 13px; line-height: 1.4;
@@ -3553,7 +3541,7 @@ html[data-density='small'] .cs-sub-fold { font-size: 8.5px; }
 }
 @media (prefers-reduced-motion: reduce) {
   .pending-item, .pending-item.is-leaving, .bubble.just-read { animation: none; }
-  .pending-item::before, .pending-item .pi-dot, .pending-item.is-pressed .pi-now svg { animation: none; }
+  .pending-item.is-pressed .pi-now svg { animation: none; }
   .pending-item.is-leaving { opacity: 0; }
 }
 
