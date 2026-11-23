@@ -33,11 +33,14 @@ export function uploadZoneOf(target: EventTarget | null): Element | null {
 /** Left edge of the ON-SCREEN right panel, where the chat's drop overlay must
  *  stop — or null when there is none (closed drawer, no panel at all). */
 export function toolPanelLeft(): number | null {
-  const panel = document.querySelector('.tool-panel');
-  if (!panel) return null;
-  const r = panel.getBoundingClientRect();
-  if (r.width < 1 || r.left >= window.innerWidth - 1) return null;
-  return r.left;
+  // Several may be mounted: the sessions kept alive behind the open one
+  // (HubPanel's <Activity>) are display:none, hence zero-sized.
+  for (const panel of document.querySelectorAll('.tool-panel')) {
+    const r = panel.getBoundingClientRect();
+    if (r.width < 1 || r.left >= window.innerWidth - 1) continue;
+    return r.left;
+  }
+  return null;
 }
 
 type OsDrag = { active: boolean; zone: Element | null };

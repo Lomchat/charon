@@ -1073,8 +1073,11 @@ export default function SessionView({
       measureChatScroll();
     });
   }, [measureChatScroll]);
+  // Cleared, not only cancelled: a session kept alive (HubPanel <Activity>)
+  // unmounts its effects when hidden and mounts them again when shown.
   useEffect(() => () => {
     if (scrollRafRef.current != null) cancelAnimationFrame(scrollRafRef.current);
+    scrollRafRef.current = null;
   }, []);
   // Recompute isAtTop when the content changes (new messages → max moves).
   useEffect(() => { handleChatScroll(); }, [visibleRenderable.length, handleChatScroll]);

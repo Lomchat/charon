@@ -52,7 +52,8 @@ export default function BranchModal({ vpsId, cwd, repo, label, onClose }: Props)
   const searchRef = useRef<HTMLInputElement | null>(null);
   const newRef = useRef<HTMLInputElement | null>(null);
   const alive = useRef(true);
-  useEffect(() => () => { alive.current = false; }, []);
+  // Set again on mount: a kept-alive session pane (<Activity>) re-mounts effects.
+  useEffect(() => { alive.current = true; return () => { alive.current = false; }; }, []);
 
   const load = useCallback(async () => {
     try {

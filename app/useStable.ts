@@ -52,6 +52,15 @@ export function useMountOrder(keys: readonly string[]): readonly string[] {
   return sorted;
 }
 
+/** The last `n` distinct non-null values `id` took (the current one
+ *  included), in MOUNT order (useMountOrder): the set a keep-alive layer
+ *  renders, never reshuffled by recency. */
+export function useKeptAlive(id: string | null, n: number): readonly string[] {
+  const lruRef = useRef<string[]>([]);
+  if (id && lruRef.current[0] !== id) lruRef.current = [id, ...lruRef.current.filter((x) => x !== id)].slice(0, n);
+  return useMountOrder(lruRef.current);
+}
+
 /** The previous value while `equal(previous, next)`: a rebuilt-but-identical
  *  array or object keeps its identity. */
 export function useStableValue<T>(value: T, equal: (a: T, b: T) => boolean): T {

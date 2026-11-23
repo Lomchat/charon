@@ -591,6 +591,39 @@ function legacyBoundary(s: TranscriptState, nowMs: number, ev?: { snapshot?: boo
   };
 }
 
+function sameMsg(a: Msg, b: Msg): boolean {
+  if (a === b) return true;
+  const ka = Object.keys(a);
+  if (ka.length !== Object.keys(b).length) return false;
+  for (const k of ka) {
+    const x = (a as Record<string, unknown>)[k];
+    const y = (b as Record<string, unknown>)[k];
+    if (x === y) continue;
+    // Nested values (a turn's cache ledger…) are small JSON.
+    if (x && y && typeof x === 'object' && typeof y === 'object' && JSON.stringify(x) === JSON.stringify(y)) continue;
+    return false;
+  }
+  return true;
+}
+
+/** `next`, with each row equal to its `prev` namesake replaced by that very
+ *  object; `prev` itself when nothing changed at all. */
+export function keepUnchangedMessages(prev: readonly Msg[], next: Msg[]): Msg[] {
+  if (!prev.length) return next;
+  const byId = new Map(prev.map((m) => [m.id, m] as const));
+  let same = prev.length === next.length;
+  const out = next.map((m, i) => {
+    const old = byId.get(m.id);
+    if (old && sameMsg(old, m)) {
+      if (prev[i] !== old) same = false;
+      return old;
+    }
+    same = false;
+    return m;
+  });
+  return same ? (prev as Msg[]) : out;
+}
+
 function upsertRow(messages: Msg[], row: Msg): Msg[] {
   return upsertById(messages, row);
 }
@@ -1232,7 +1265,10 @@ export function applySnapshot(s: TranscriptState, r: SessionWindowResponse,
   const tailKeepsPaging = kept.length > 0;
   return {
     ...s,
-    rows, messages,
+    // Rows that did not change keep their object: memo(Message) skips them,
+    // so a window answer (a resync, a kept-alive pane shown again) redraws
+    // only what moved.
+    rows, messages: keepUnchangedMessages(s.messages, messages),
     toolCalls: view === 'full' ? rebuilt.toolCalls : s.toolCalls,
     files: view === 'full' ? rebuilt.files : new Set([...s.files, ...rebuilt.files]),
     edits: mergeEdits(s.edits, rebuilt.edits),

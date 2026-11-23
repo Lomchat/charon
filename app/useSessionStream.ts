@@ -305,8 +305,11 @@ export function useSessionStream(
       }
     }, 250);
   }, [shownSignature]);
+  // Cleared, not only stopped: a kept-alive view (HubPanel <Activity>)
+  // mounts its effects again when shown.
   useEffect(() => () => {
     if (overlayWatchRef.current != null) clearInterval(overlayWatchRef.current);
+    overlayWatchRef.current = null;
   }, []);
   const settle = useCallback(<T,>(h: OverlayHandle, p: Promise<T>): Promise<T> => p.then(
     (res) => { h.ack(syncOf(res)); bumpOverlays(); return res; },
@@ -676,6 +679,7 @@ export function useSessionStream(
   }, [scheduleEditsFlush]);
   useEffect(() => () => {
     if (editsTimerRef.current != null) clearTimeout(editsTimerRef.current);
+    editsTimerRef.current = null;
   }, []);
 
   // ── Actions ─────────────────────────────────────────────────────────────

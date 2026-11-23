@@ -1,6 +1,6 @@
 'use client';
 import { effectiveBrowserNotifications } from '@/lib/notificationPreferences';
-import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from 'react';
+import { Activity, useCallback, useEffect, useMemo, useReducer, useRef, useState } from 'react';
 import { useSearchParams } from '@/app/navigation';
 import dynamic from '@/app/dynamic';
 import { api } from '@/lib/api';
@@ -68,7 +68,7 @@ import ResetsModalHost from './ResetsModalHost';
 import { accountGroupRepresentative, buildAccountGroups, type AccountGroup } from '@/lib/accountGroups';
 import { useShowHidden } from './showPaused';
 import { dropOtherLoginUsage, putUsage, useUsageFeed } from './usageStore';
-import { useLatest, useMountOrder, useStableCallback } from './useStable';
+import { useKeptAlive, useLatest, useMountOrder, useStableCallback } from './useStable';
 import { backendAvailability, type VpsFixAction } from './vpsHealth';
 import { useHasSavedEndpoints } from './savedEndpointsStore';
 import {
@@ -209,6 +209,10 @@ function loadLastTabByGroup(): Map<string, string> | null {
 function saveLastTabByGroup(map: Map<string, string>): void {
   storageSet(LAST_TAB_BY_GROUP_KEY, JSON.stringify([...map.entries()].slice(-200)));
 }
+
+/** Session panes kept mounted behind the open one (each costs its DOM and
+ *  memory; coming back to one is then free). */
+const KEEP_ALIVE_SESSIONS = 3;
 
 export default function HubPanel({ vpsList: initialVpsList, vpsFolders: initialFolders, vpsPaths: initialPaths, initialSessions, builtPyzSha, builtAgentVersion, staleness, initialTabs, initialSummaries, initialSync, initialPanels = DEFAULT_PANEL_LAYOUT }: Props) {
   // The workspace is part of the page seed. Hydrating it synchronously
@@ -1186,6 +1190,12 @@ export default function HubPanel({ vpsList: initialVpsList, vpsFolders: initialF
       accountProfileNumber(selected), sameLoginProfiles(profiles, selectedAccount));
   }, [selected, accountGroups, selectedAccount, profiles]);
   const selectedShell = selectedShellId ? shells.find((s) => s.id === selectedShellId) ?? null : null;
+  // The session panes kept MOUNTED (see the layer in the JSX): the open one
+  // and the last ones opened, in mount order. A deleted session leaves.
+  const keptSessionIds = useKeptAlive(selectedId, KEEP_ALIVE_SESSIONS);
+  const keptSessionRows = useMemo(() => keptSessionIds
+    .map((id) => sessions.find((s) => s.id === id))
+    .filter((row): row is SessionListItem => !!row), [keptSessionIds, sessions]);
   const selectedShellWorkspaceRoot = selectedShell
     ? (selectedShell.cwd?.trim() || shellHomeByVps[selectedShell.vpsId] || null)
     : null;
@@ -1969,6 +1979,8 @@ export default function HubPanel({ vpsList: initialVpsList, vpsFolders: initialF
     return m;
   }, [resolvedTabs]);
   const selectedFileKey = selectedFile ? fileTabKey(selectedFile) : null;
+  // The pane routing below reaches the session only when nothing else is open.
+  const sessionPaneShown = !selectedFile && !selectedInstallId && !selectedShellId;
   const dirtyFileKeys = useMemo(() => new Set(
     [...fileTabsByKey].filter(([, t]) => dirtyIds.has(t.id)).map(([k]) => k),
   ), [fileTabsByKey, dirtyIds]);
@@ -2418,70 +2430,8 @@ export default function HubPanel({ vpsList: initialVpsList, vpsFolders: initialF
           )}
         </>
       ) : selected ? (
-        // Error boundary: a render error in the chat subtree (hydration
-        // mismatch, transient undefined, bad markdown) must NOT permanently
-        // freeze the chat. The boundary catches it, shows "reconnecting…",
-        // and remounts after ~1.5s → all effects (polling/SSE/refetch)
-        // restart → self-heal. resetKey=selectedId clears errors on switch.
-        // cf. CLAUDE.md §14 gotcha 24.
-        <SessionErrorBoundary resetKey={selectedId ?? ''}>
-        <SessionView
-          key={selectedId}
-          sessionId={selected.id}
-          selected={selected}
-          showTools={showTools}
-          showToolsReady={showToolsReady}
-          handle={sessionHandles.get(selected.id)?.handle ?? null}
-          handleConfirmed={sessionHandles.get(selected.id)?.confirmed ?? false}
-          // Other sessions on the SAME machine — the ones this session can
-          // actually address (cross-session messaging is filesystem-scoped).
-          siblings={sessions
-            .filter((s) => s.vpsId === selected.vpsId
-              && s.id !== selected.id && s.addressable && sessionHandles.has(s.id))
-            .map((s) => ({
-              id: s.id, name: s.name,
-              handle: sessionHandles.get(s.id)?.handle ?? s.id.slice(0, 6),
-              confirmed: sessionHandles.get(s.id)?.confirmed ?? false,
-              status: (s.liveStatus ?? s.status) as string,
-            }))}
-          selectedVps={selectedVps}
-          profileNumber={accountProfileNumber(selected)}
-          usageAccountLabel={selectedUsageLabel}
-          onUsageRefresh={() => refreshUsage(selectedVps?.id, asSessionProvider(selected.kind), accountProfileId(selected), true)}
-          onReauth={reauthSelectedVps}
-          // The git chip lives in the chat header but points at the ToolPanel,
-          // which is a drawer <=1100px — it has to be able to reveal it.
-          onOpenTools={revealTools}
-          onOpenSession={(id, hint, pin) => openSessionById(id, pin ?? false, hint)}
-          // No agentKind: the wizard asks which backend — or a shell — then
-          // the name; the VPS and path are this session's (NewSessionWizard §
-          // 'backend'). The phone has no tab bar, so this is its ＋ shell too.
-          onNewAgentHere={selected.cwd
-            ? () => setWizard({ kind: 'agent', vpsId: selected.vpsId, cwd: selected.cwd, offerShell: true })
-            : undefined}
-          onOpenFolder={openFolderPicker}
-          onNewSessionIn={newSessionIn}
-          onNewShellIn={newShellIn}
-          onNewRoutine={newRoutineFrom}
-          onImportError={(vps) => {
-            // The VPS agent crashed an "import claude_agent_sdk" → we trigger
-            // the install in a new install session (instead of the
-            // BootstrapBanner overlay that existed before). The user returns
-            // to their Claude session once the install is OK (via notif + click).
-            const existing = installs.find((i) => i.vpsId === vps.id && i.status === 'running');
-            if (existing) {
-              selectInstall(existing.id);
-            } else {
-              openInstallSession(vps);
-            }
-          }}
-          onKilled={() => {
-            setSelectedId(null);
-            refreshIfDegraded();
-          }}
-          onAfterRevert={() => refreshSessions()}
-        />
-        </SessionErrorBoundary>
+        // The session's pane is in the kept-alive layer below.
+        null
       ) : (
       // No session selected: placeholder. ToolPanel is not rendered in this
       // case (before the refactor it was, with sessionId=null, but displayed
@@ -2492,6 +2442,81 @@ export default function HubPanel({ vpsList: initialVpsList, vpsFolders: initialF
         </div>
       </main>
       )}
+
+      {/* Sessions kept alive (KEEP_ALIVE_SESSIONS): the open one and the last
+          ones opened stay MOUNTED, hidden by <Activity> (display:none, effects
+          unmounted: no frames, no polls), so coming back to one shows its
+          transcript at once instead of rebuilding it. Mount order, never
+          recency order: React moving a pane's node re-inserts it. */}
+      {keptSessionRows.map((row) => {
+        const shown = sessionPaneShown && row.id === selectedId;
+        return (
+          <Activity key={row.id} mode={shown ? 'visible' : 'hidden'}>
+            {/* Error boundary: a render error in the chat subtree (hydration
+                mismatch, transient undefined, bad markdown) must NOT
+                permanently freeze the chat. The boundary catches it, shows
+                "reconnecting…", and remounts after ~1.5s → all effects
+                (polling/SSE/refetch) restart → self-heal (§14.24). */}
+            <SessionErrorBoundary resetKey={row.id}>
+            <SessionView
+              sessionId={row.id}
+              selected={row}
+              showTools={showTools}
+              showToolsReady={showToolsReady}
+              handle={sessionHandles.get(row.id)?.handle ?? null}
+              handleConfirmed={sessionHandles.get(row.id)?.confirmed ?? false}
+              // Other sessions on the SAME machine — the ones this session can
+              // actually address (cross-session messaging is filesystem-scoped).
+              siblings={sessions
+                .filter((s) => s.vpsId === row.vpsId
+                  && s.id !== row.id && s.addressable && sessionHandles.has(s.id))
+                .map((s) => ({
+                  id: s.id, name: s.name,
+                  handle: sessionHandles.get(s.id)?.handle ?? s.id.slice(0, 6),
+                  confirmed: sessionHandles.get(s.id)?.confirmed ?? false,
+                  status: (s.liveStatus ?? s.status) as string,
+                }))}
+              selectedVps={shown ? selectedVps : vpsList.find((v) => v.id === row.vpsId) ?? null}
+              profileNumber={accountProfileNumber(row)}
+              usageAccountLabel={shown ? selectedUsageLabel : null}
+              onUsageRefresh={() => refreshUsage(row.vpsId, asSessionProvider(row.kind), accountProfileId(row), true)}
+              onReauth={shown ? reauthSelectedVps : undefined}
+              // The git chip lives in the chat header but points at the ToolPanel,
+              // which is a drawer <=1100px — it has to be able to reveal it.
+              onOpenTools={revealTools}
+              onOpenSession={(id, hint, pin) => openSessionById(id, pin ?? false, hint)}
+              // No agentKind: the wizard asks which backend — or a shell — then
+              // the name; the VPS and path are this session's (NewSessionWizard §
+              // 'backend'). The phone has no tab bar, so this is its ＋ shell too.
+              onNewAgentHere={row.cwd
+                ? () => setWizard({ kind: 'agent', vpsId: row.vpsId, cwd: row.cwd, offerShell: true })
+                : undefined}
+              onOpenFolder={openFolderPicker}
+              onNewSessionIn={newSessionIn}
+              onNewShellIn={newShellIn}
+              onNewRoutine={newRoutineFrom}
+              onImportError={(vps) => {
+                // The VPS agent crashed an "import claude_agent_sdk" → we trigger
+                // the install in a new install session (instead of the
+                // BootstrapBanner overlay that existed before). The user returns
+                // to their Claude session once the install is OK (via notif + click).
+                const existing = installs.find((i) => i.vpsId === vps.id && i.status === 'running');
+                if (existing) {
+                  selectInstall(existing.id);
+                } else {
+                  openInstallSession(vps);
+                }
+              }}
+              onKilled={() => {
+                setSelectedId(null);
+                refreshIfDegraded();
+              }}
+              onAfterRevert={() => refreshSessions()}
+            />
+            </SessionErrorBoundary>
+          </Activity>
+        );
+      })}
 
       {/* Persistent shell layer: every shell the user has opened this
           page-load stays mounted here (its WebSocket + xterm alive), so

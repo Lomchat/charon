@@ -47,7 +47,8 @@ export default function HistoryModal({ vpsId, cwd, repo, path, label, onClose }:
   const [busy, setBusy] = useState(false);
   const alive = useRef(true);
   const reqRef = useRef(0);
-  useEffect(() => () => { alive.current = false; }, []);
+  // Set again on mount: a kept-alive session pane (<Activity>) re-mounts effects.
+  useEffect(() => { alive.current = true; return () => { alive.current = false; }; }, []);
 
   useEffect(() => {
     (async () => {
