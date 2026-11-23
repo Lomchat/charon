@@ -28,6 +28,7 @@ import {
   sendPermissionToTelegram, sendQuestionToTelegram, markInteractionResolvedInTelegram,
   sendPlainToTelegram,
 } from '@/lib/server/hub/telegram';
+import { deleteSessionTelegramNotices } from '@/lib/server/hub/telegramMessages';
 import { getSetting, getSettingBool, type SettingKey } from '@/lib/server/hub/settings';
 import type { AgentEvent, EffortLevel, AgentKind, AnyEffort, SessionMode } from './types';
 import type {
@@ -498,6 +499,7 @@ setVpsStatusEmitter(emitGlobalVpsStatus);
  * (POST /api/focus, the window GET's focus move), on a user send and on a new
  * turn. Idempotent + cheap: only writes/emits when the row was actually
  * unread, so switching between already-read sessions never spams the bus.
+ * Its Telegram notices go too, even unlit (a "still running" notice).
  */
 export function markSessionRead(sessionId: string): void {
   try {
@@ -508,6 +510,7 @@ export function markSessionRead(sessionId: string): void {
       emitGlobalSession({ type: 'session_unread', unread: false, sessionId });
     }
   } catch {}
+  deleteSessionTelegramNotices(sessionId);
 }
 
 /**
@@ -2283,7 +2286,7 @@ export class SessionStream {
           });
           // Telegram's question callback answers a blocking gate. Async forms
           // instead link to their durable transcript bubble.
-          if (asynchronous) this._telegramPlain(`❓ ${this.vpsName} · ${this._label()}\n${ev.questions[0]?.question ?? 'Question'}`, `/?session=${this.id}`, 'question').catch(() => {});
+          if (asynchronous) this._telegramPlain(`❓ ${this.vpsName} · ${this._label()}\n${ev.questions[0]?.question ?? 'Question'}`, `/?session=${this.id}`, 'question', { gateId: ev.id }).catch(() => {});
           else if (!this._hidden()) sendQuestionToTelegram(this.id, ev.id, ev.questions ?? []).catch(() => {});
         }
         break;
@@ -2319,7 +2322,7 @@ export class SessionStream {
             body: providerText.finishedPlanning(this.kind),
             tag: `plan-${this.id}`,
           });
-          this._telegramPlain(`📋 ${this.vpsName} · ${this._label()}\nPlan ready — open Charon to approve`, `/?session=${this.id}`, 'plan').catch(() => {});
+          this._telegramPlain(`📋 ${this.vpsName} · ${this._label()}\nPlan ready — open Charon to approve`, `/?session=${this.id}`, 'plan', { gateId: ev.id }).catch(() => {});
         }
         break;
       }
@@ -3781,6 +3784,7 @@ export class SessionStream {
           content: JSON.stringify(event), tsMs: Date.now() }).run();
       }));
       this._broadcast(event);
+      try { markInteractionResolvedInTelegram('question', qid); } catch {}
     };
     // `delivering` (GET + summary) follows the in-flight send only: a failed
     // one leaves the form answerable (the reservation keeps retries identical).

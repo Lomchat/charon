@@ -5,6 +5,8 @@ import { getSetting } from './settings';
 import { getOrCreateStream } from '@/lib/server/agent/sessionOps';
 import { db, agentSessions, vps as vpsTable } from '@/lib/db';
 import { eq } from 'drizzle-orm';
+import { tgPost, TG_CALL_TIMEOUT_MS } from './telegramApi';
+import { recordTelegramMessage, deleteGateTelegramMessages } from './telegramMessages';
 
 // ── Telegram types (subset) ─────────────────────────────────────────────────
 type TgInlineKeyboard = { text: string; callback_data: string }[][];
@@ -73,56 +75,12 @@ function deepLink(path: string): string | null {
   return base ? `${base}${path}` : null;
 }
 
-// undici's `fetch` throws a terse TypeError('fetch failed') on ANY network-
-// level failure; the ACTIONABLE reason (DNS, timeout, ECONNRESET / stale
-// keep-alive socket "other side closed", IPv6 unreachable…) lives in `.cause`
-// (and `.cause.errors` for Happy-Eyeballs aggregates). Flatten it so the
-// Settings "test" surfaces something better than a bare "fetch failed".
-function describeFetchError(e: any): string {
-  const parts: string[] = [];
-  const top = e?.message ? String(e.message) : String(e);
-  if (top) parts.push(top);
-  const c = e?.cause;
-  if (c) {
-    if (c.code) parts.push(String(c.code));
-    if (c.message && c.message !== top) parts.push(String(c.message));
-    if (Array.isArray(c.errors)) {
-      for (const sub of c.errors) {
-        const m = `${sub?.code ?? ''} ${sub?.message ?? ''}`.trim();
-        if (m) parts.push(m);
-      }
-    }
-  }
-  return Array.from(new Set(parts.filter(Boolean))).join(' — ');
-}
-
-// Default per-call timeout so a hung connection can't freeze the request.
-// getUpdates long-polls (timeout:20) and passes a LARGER budget explicitly —
-// keep this above any long-poll value used below.
-const TG_CALL_TIMEOUT_MS = 15_000;
-
 async function tgCall<T = any>(
   method: string, body: any, tokenOverride?: string, timeoutMs: number = TG_CALL_TIMEOUT_MS,
 ): Promise<T> {
   const token = tokenOverride ?? (configured()?.token);
   if (!token) throw new Error('telegram not configured');
-  let res: Response;
-  try {
-    res = await fetch(`https://api.telegram.org/bot${token}/${method}`, {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify(body),
-      signal: AbortSignal.timeout(timeoutMs),
-    });
-  } catch (e: any) {
-    if (e?.name === 'TimeoutError') {
-      throw new Error(`tg ${method}: timed out after ${timeoutMs}ms reaching api.telegram.org`);
-    }
-    throw new Error(`tg ${method}: ${describeFetchError(e)}`);
-  }
-  const data = await res.json();
-  if (!data.ok) throw new Error(`tg ${method}: ${data.description ?? 'unknown'}`);
-  return data.result as T;
+  return tgPost<T>(token, method, body, timeoutMs);
 }
 
 function escapeMd(s: string): string {
@@ -188,6 +146,7 @@ export async function sendPermissionToTelegram(
     });
     const key = `${res.chat.id}:${res.message_id}`;
     state.sentByMessage.set(key, { kind: 'perm', sessionId, permId, toolName: tool });
+    recordTelegramMessage({ chatId: res.chat.id, messageId: res.message_id, sessionId, gateId: permId });
   } catch (e: any) {
     console.warn('[telegram] sendPermission:', e?.message ?? e);
   }
@@ -245,6 +204,7 @@ async function sendOneQuestionStep(
       kind: 'q', sessionId, qid, questions, answers: answersSoFar, qIdx,
     };
     state.sentByMessage.set(key, ctx);
+    recordTelegramMessage({ chatId: res.chat.id, messageId: res.message_id, sessionId, gateId: qid });
     // Mark this chat as possibly awaiting a free reply
     state.awaitingReplyByChat.set(String(res.chat.id), key);
   } catch (e: any) {
@@ -330,18 +290,18 @@ async function handleCallback(cb: NonNullable<TgUpdate['callback_query']>): Prom
       await tagMessageAsResolved(cb.message.chat.id, cb.message.message_id, '⚠ session inactive');
       return;
     }
-    let label = '';
+    if (action !== 'a' && action !== 's' && action !== 'd') return;
     try {
-      if (action === 'a') { await w.respondPermission(permId, true, false); label = '✓ allowed'; }
-      else if (action === 's') { await w.respondPermission(permId, true, true); label = '⏵ always allowed'; }
-      else if (action === 'd') { await w.respondPermission(permId, false, false); label = '✗ denied'; }
-      else return;
+      await w.respondPermission(permId, action !== 'd', action === 's');
     } catch (e: any) {
-      label = '⚠ ' + (e?.message ?? 'error');
+      // A failed answer stays on screen with its reason.
+      await tagMessageAsResolved(cb.message.chat.id, cb.message.message_id, '⚠ ' + (e?.message ?? 'error'));
+      state.sentByMessage.delete(ctxKey);
+      return;
     }
-    await tagMessageAsResolved(cb.message.chat.id, cb.message.message_id, label);
-    state.sentByMessage.delete(ctxKey);
-    state.awaitingReplyByChat.delete(String(cb.message.chat.id));
+    // Answered: the resolution deletes the message (idempotent if
+    // respondPermission already published it).
+    markInteractionResolvedInTelegram('permission', permId);
     return;
   }
   // question: "q|<qid>|<qIdx>|<optIdx>"
@@ -391,6 +351,8 @@ async function handleText(msg: NonNullable<TgUpdate['message']>): Promise<void> 
   const userText = msg.text!.trim();
   if (!userText) return;
   ctx.answers[q.question] = userText;
+  // The typed reply leaves with its question.
+  recordTelegramMessage({ chatId: msg.chat.id, messageId: msg.message_id, sessionId: ctx.sessionId, gateId: ctx.qid });
   // Mark the question as answered
   const [chat, mid] = awaitingMsgKey.split(':');
   await tagMessageAsResolved(Number(chat), Number(mid), `→ ${userText.slice(0, 40)}`);
@@ -416,23 +378,20 @@ export function startTelegramBot(): void {
   }, 0);
 }
 
-// ── Notify the workers that an interaction was resolved elsewhere ──────────
-// (to call from SessionWorker when interaction_resolved is broadcast, to
-// signal we must "consume" the corresponding Telegram message)
+// ── A gate resolved (anywhere): its Telegram messages go ───────────────────
+// Called on every `interaction_resolved`. Deletes what Telegram still
+// allows; a message it refuses (older than 48 h) loses its buttons instead.
 export function markInteractionResolvedInTelegram(_kind: 'permission' | 'question' | 'exit_plan', interactionId: string): void {
-  // Look for the related Telegram message and edit it
   for (const [key, ctx] of state.sentByMessage.entries()) {
-    if (ctx.kind === 'perm' && ctx.permId === interactionId) {
-      const [chat, mid] = key.split(':');
-      tagMessageAsResolved(Number(chat), Number(mid), 'resolved from dashboard').catch(() => {});
+    if ((ctx.kind === 'perm' && ctx.permId === interactionId) || (ctx.kind === 'q' && ctx.qid === interactionId)) {
       state.sentByMessage.delete(key);
-    } else if (ctx.kind === 'q' && ctx.qid === interactionId) {
-      const [chat, mid] = key.split(':');
-      tagMessageAsResolved(Number(chat), Number(mid), 'resolved from dashboard').catch(() => {});
-      state.sentByMessage.delete(key);
-      state.awaitingReplyByChat.delete(chat);
+      const chat = key.split(':')[0];
+      if (state.awaitingReplyByChat.get(chat) === key) state.awaitingReplyByChat.delete(chat);
     }
   }
+  void deleteGateTelegramMessages(interactionId).then((refused) => {
+    for (const r of refused) tagMessageAsResolved(Number(r.chatId), r.messageId, 'resolved').catch(() => {});
+  });
 }
 
 // ── Generic plain-text notification ─────────────────────────────────────────
@@ -443,7 +402,11 @@ export function markInteractionResolvedInTelegram(_kind: 'permission' | 'questio
 // into an absolute deep-link via `app.public_url` and appended on its own
 // line; Telegram auto-links the raw URL (plain text, no parse_mode). No link
 // when `app.public_url` is unset.
-export async function sendPlainToTelegram(text: string, linkPath: string | undefined, event: NotificationEvent): Promise<void> {
+// A session's message is deleted once the session is read, or with `gateId`
+// once that gate resolves (telegramMessages.ts).
+export async function sendPlainToTelegram(
+  text: string, linkPath: string | undefined, event: NotificationEvent, opts: { gateId?: string } = {},
+): Promise<void> {
   const sessionId = linkPath?.match(/^\/\?session=([a-zA-Z0-9_-]+)$/)?.[1];
   if (!telegramNotificationEnabled(event, sessionId)) return;
   const cfg = configured();
@@ -451,7 +414,12 @@ export async function sendPlainToTelegram(text: string, linkPath: string | undef
   const link = linkPath ? deepLink(linkPath) : null;
   const body = link ? `${text}\n${link}` : text;
   try {
-    await tgCall('sendMessage', { chat_id: cfg.chatId, text: body, disable_web_page_preview: true });
+    const res = await tgCall<{ message_id: number; chat: { id: number } }>('sendMessage', {
+      chat_id: cfg.chatId, text: body, disable_web_page_preview: true,
+    });
+    if (sessionId) {
+      recordTelegramMessage({ chatId: res.chat.id, messageId: res.message_id, sessionId, gateId: opts.gateId });
+    }
   } catch (e: any) {
     console.warn('[telegram] sendPlain:', e?.message ?? e);
   }

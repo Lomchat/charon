@@ -675,6 +675,22 @@ export const sessionNotificationSettings = sqliteTable('session_notification_set
   telegram: text('telegram').notNull(),
 });
 
+// Telegram messages the hub will delete (`telegramMessages.ts`): a gate's
+// (`gateId`) once it resolves, a session's other notices once it is read.
+// Telegram refuses deletes after 48 h: older rows are pruned. No FK: a
+// deleted session's rows age out.
+export const telegramMessages = sqliteTable('telegram_messages', {
+  chatId: text('chat_id').notNull(),
+  messageId: integer('message_id').notNull(),
+  sessionId: text('session_id'),
+  gateId: text('gate_id'),
+  sentAt: integer('sent_at').notNull(), // ms
+}, (t) => [
+  uniqueIndex('uq_telegram_messages_chat_message').on(t.chatId, t.messageId),
+  index('idx_telegram_messages_session').on(t.sessionId),
+  index('idx_telegram_messages_gate').on(t.gateId),
+]);
+
 export const pushSubs = sqliteTable('push_subscriptions', {
   preferences: text('preferences'), // Browser-local choices mirrored per endpoint for background delivery.
   id: text('id').primaryKey(),
