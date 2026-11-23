@@ -1336,16 +1336,24 @@ export function applyTakenInputs(s: TranscriptState, taken: ReadonlyArray<{ rowI
   return messages === s.messages && rows === s.rows ? s : { ...s, messages, rows };
 }
 
-/** The ids of the messages that wait beside the composer, oldest first: held
- *  by a compaction, not read yet by the provider, or sent mid-turn and not
- *  yet claimed by either list (lib/waitingInputs.ts). */
-export function pendingMessageIds(s: Pick<TranscriptState, 'held' | 'waiting' | 'sends'>): string[] {
-  const out: string[] = [];
+/** A message waiting beside the composer: its bubble id, and a `key` that
+ *  survives the `u-<clientMessageId>` → `m<rowId>` rename at the POST's
+ *  answer (its clientMessageId when known): the same message, not one read. */
+export type PendingMessage = { id: string; key: string };
+
+/** The messages that wait beside the composer, oldest first: held by a
+ *  compaction, not read yet by the provider, or sent mid-turn and not yet
+ *  claimed by either list (lib/waitingInputs.ts). */
+export function pendingMessages(s: Pick<TranscriptState, 'held' | 'waiting' | 'sends'>): PendingMessage[] {
+  const cmidOf = new Map<number, string>();
+  for (const [cmid, e] of s.sends) if (e.rowId != null) cmidOf.set(e.rowId, cmid);
+  for (const w of s.waiting) cmidOf.set(w.rowId, w.clientMessageId);
+  const out: PendingMessage[] = [];
   const seen = new Set<string>();
-  const add = (id: string) => { if (!seen.has(id)) { seen.add(id); out.push(id); } };
-  for (const h of s.held) add(rowKey(h.rowId));
-  for (const w of s.waiting) add(rowKey(w.rowId));
-  for (const [cmid, e] of s.sends) if (e.busy && !e.failed) add(e.rowId != null ? rowKey(e.rowId) : optimisticUserId(cmid));
+  const add = (id: string, key: string) => { if (!seen.has(id)) { seen.add(id); out.push({ id, key }); } };
+  for (const h of s.held) add(rowKey(h.rowId), cmidOf.get(h.rowId) ?? rowKey(h.rowId));
+  for (const w of s.waiting) add(rowKey(w.rowId), w.clientMessageId);
+  for (const [cmid, e] of s.sends) if (e.busy && !e.failed) add(e.rowId != null ? rowKey(e.rowId) : optimisticUserId(cmid), cmid);
   return out;
 }
 

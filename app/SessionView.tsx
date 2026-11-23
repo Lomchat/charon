@@ -253,7 +253,7 @@ export default function SessionView({
     provider: asSessionProvider(selected.kind),
   });
   const {
-    messages, currentAssistant, streamingInto, status, compacting: liveCompacting, held, waiting, pendingIds, runtimeOutdated, runtimeVersions, permissionMode,
+    messages, currentAssistant, streamingInto, status, compacting: liveCompacting, held, waiting, pending, runtimeOutdated, runtimeVersions, permissionMode,
     liveActivity,
     model, fallbackModel, effort, ultracode, fastMode, fastModeVerdict, serviceTier, modelPendingApply, effortPendingApply,
     effectiveModel, liveUsage, tokenUsage, responseSpeed,
@@ -744,25 +744,25 @@ export default function SessionView({
 
   // What the provider has not read yet waits beside the composer, not in the
   // conversation (lib/waitingInputs.ts): it enters where it is read.
-  const pendingSet = useMemo(() => new Set(pendingIds), [pendingIds]);
+  const pendingSet = useMemo(() => new Set(pending.map((p) => p.id)), [pending]);
   const visibleRenderable = useMemo(
     () => renderable.filter(({ msg }) => !pendingSet.has(msg.id)
       && (showTools || shouldShowChatRole(msg.role, false))),
     [renderable, showTools, pendingSet],
   );
   const pendingItems = useMemo<PendingItem[]>(() => {
-    if (!pendingIds.length) return [];
+    if (!pending.length) return [];
     const byId = new Map(messages.map((m, i) => [m.id, [m, i] as const]));
     const heldBy = new Map(held.map((h) => [rowKey(h.rowId), h] as const));
     const waitingBy = new Map(waiting.map((w) => [rowKey(w.rowId), w] as const));
     const out: Array<PendingItem & { at: number }> = [];
-    for (const id of pendingIds) {
+    for (const { id, key } of pending) {
       const hit = byId.get(id);
       if (!hit) continue;
       const h = heldBy.get(id);
       const w = waitingBy.get(id);
       out.push({
-        id, at: hit[1], content: hit[0].content,
+        id, key, at: hit[1], content: hit[0].content,
         state: h ? 'held' : w ? 'waiting' : 'sending',
         error: h?.error ?? null,
         since: w?.since,
@@ -771,7 +771,7 @@ export default function SessionView({
     }
     // Send order: their place in the transcript they were appended to.
     return out.sort((a, b) => a.at - b.at);
-  }, [pendingIds, messages, held, waiting]);
+  }, [pending, messages, held, waiting]);
   // The oldest one that can be read now (Ctrl/⌘+⇧+↵ on an empty composer).
   const nowFirst = pendingItems.find((p) => p.sendNowId)?.sendNowId ?? null;
   const sendFirstNow = useCallback((): boolean => {

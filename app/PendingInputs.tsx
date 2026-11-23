@@ -9,6 +9,8 @@ import { IconSend } from './icons';
 export type PendingItem = {
   /** The message id (`m<rowId>` / `u-<clientMessageId>`). */
   id: string;
+  /** Stable across the `u-` → `m` rename at the send's answer: identity here. */
+  key: string;
   content: string;
   /** held = a compaction holds it; waiting = at the provider, unread;
    *  sending = on its way. */
@@ -37,17 +39,24 @@ export const PendingInputs = memo(function PendingInputs({ items, turnRunning, c
   compacting: boolean;
   onSendNow: (clientMessageId: string) => Promise<void>;
 }) {
-  // Gone from the list = read: kept a moment to rise out.
+  // Gone from the list = read: kept a moment to rise out. Its removal timer
+  // outlives later list changes (cleared only on unmount): else the faded
+  // row stayed, an invisible gap under the next message.
   const [leaving, setLeaving] = useState<PendingItem[]>([]);
   const prev = useRef<PendingItem[]>(items);
+  const timers = useRef(new Set<ReturnType<typeof setTimeout>>());
+  useEffect(() => () => { for (const t of timers.current) clearTimeout(t); }, []);
   useEffect(() => {
-    const now = new Set(items.map((i) => i.id));
-    const gone = prev.current.filter((i) => !now.has(i.id));
+    const now = new Set(items.map((i) => i.key));
+    const gone = prev.current.filter((i) => !now.has(i.key));
     prev.current = items;
     if (!gone.length) return;
-    setLeaving((l) => [...l.filter((x) => !now.has(x.id)), ...gone]);
-    const t = setTimeout(() => setLeaving((l) => l.filter((x) => !gone.includes(x))), LEAVE_MS);
-    return () => clearTimeout(t);
+    setLeaving((l) => [...l.filter((x) => !now.has(x.key)), ...gone]);
+    const t = setTimeout(() => {
+      timers.current.delete(t);
+      setLeaving((l) => l.filter((x) => !gone.includes(x)));
+    }, LEAVE_MS);
+    timers.current.add(t);
   }, [items]);
 
   const [, tick] = useState(0);
@@ -79,7 +88,7 @@ export const PendingInputs = memo(function PendingInputs({ items, turnRunning, c
         const busy = pressed != null && pressed === item.sendNowId;
         const offersNow = !gone && item.sendNowId != null && item.sendNowId === nowId;
         return (
-          <div key={item.id}
+          <div key={`${gone ? 'out' : 'in'}:${item.key}`}
             className={`pending-item is-${item.state}${item.error ? ' is-error' : ''}${gone ? ' is-leaving' : ''}${busy ? ' is-pressed' : ''}`}
             title={item.error ?? undefined}>
             <span className="pi-dot" aria-hidden />
