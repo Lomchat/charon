@@ -87,6 +87,7 @@ import { RECAP_MAX_CHARS, RECAP_QUESTION, type SessionRecap } from '@/lib/sessio
 import { markAsyncQuestionDelivering } from '@/lib/server/agent/asyncQuestionDelivery';
 import { providerText, providerName } from '@/lib/providerText';
 import { parseHeldInputs, publicHeldInputs, type HeldInput, type HeldInputState } from '@/lib/heldInputs';
+import { parseWaitingInputs, publicWaitingInputs, type TakenInput, type WaitingEntry } from '@/lib/waitingInputs';
 import {
   allowRulesOf, offeredSuggestions, parsePermissionPrompt, parseSuggestions, type PermissionPrompt, type PermissionSuggestion,
 } from '@/lib/permissionSuggestions';
@@ -373,6 +374,11 @@ function withRowId<T extends object>(frame: T, rowId: number | false | null | un
   return typeof rowId === 'number' ? { ...frame, rowId } : frame;
 }
 
+/** The agent's `send_input` answer (session_ops.input_answer): `tracked` =
+ *  an `inputs_taken` will name the input; `send_now` = it can be pressed.
+ *  A duplicate's or an older agent's says neither. */
+type InputAnswer = { tracked?: boolean; send_now?: boolean; duplicate?: boolean } | null | undefined;
+
 /** Bound of `SessionStream.recentClientMessages`. */
 const RECENT_CLIENT_MESSAGES_MAX = 200;
 /** Bound of a compaction request's hold whose `compacting` frame never came
@@ -382,6 +388,9 @@ const COMPACT_REQUEST_HOLD_MS = 120_000;
  *  each of at most HELD_TIMED_RETRIES timed retries (§14.125). */
 const HELD_RETRY_MS = 15_000;
 const HELD_TIMED_RETRIES = 5;
+/** A `stop` left inputs waiting and no turn came for them (lib/waitingInputs.ts):
+ *  read there after this long. The provider normally opens their turn at once. */
+const WAITING_ORPHAN_MS = 120_000;
 // `SessionStream.liveToolOutput` bounds (the session GET's `streamingToolOutput`).
 const LIVE_TOOL_OUTPUT_MAX = 64 * 1024;
 const LIVE_TOOL_OUTPUT_TOOLS = 8;
@@ -973,11 +982,15 @@ export class SessionStream {
   // The same inputs by `clientMessageId`: a `stop` that names the inputs it
   // took (`inputs`) answers for them exactly, output or not.
   private heldAwaitingIds = new Set<string>();
-  // Inputs sent while a turn ran that the CLI has not read yet (`sendNow`
-  // capability): clientMessageId → user row. Their bubbles say they wait and
-  // offer "send now". Cleared by `inputs_taken`, `stop.inputs` (all, from an
-  // agent that does not name them) and any non-live status.
-  private waitingInputsById = new Map<string, number>();
+  // Inputs sent while a turn ran that the provider has not read yet
+  // (lib/waitingInputs.ts), oldest first: they wait beside the composer.
+  // Read = `inputs_taken`, a `stop.inputs` naming them, a non-live status, or
+  // the agent answering their `send_input` untracked; each read re-stamps its
+  // row. Mirrored in `agent_sessions.waiting_inputs`, loaded at hydration.
+  private waiting: WaitingEntry[] = [];
+  // A `stop` left inputs waiting (their own turn comes next): no turn by
+  // WAITING_ORPHAN_MS ⇒ they are read there (never stuck beside the composer).
+  private waitingOrphanTimer: ReturnType<typeof setTimeout> | null = null;
   // The running turn is being interrupted (§14.127): `Manual` = the stop
   // button (hub-sent), `Seen` = the agent's `interrupted`. Consumed by `stop`.
   private interruptManual = false;
@@ -1090,6 +1103,7 @@ export class SessionStream {
     effectiveModel?: string | null;
     customEndpoint?: boolean;
     heldInputs?: HeldInput[];
+    waitingInputs?: WaitingEntry[];
   }) {
     this.id = opts.id;
     this.vpsId = opts.vpsId;
@@ -1116,6 +1130,7 @@ export class SessionStream {
     this.serviceTier = opts.serviceTier ?? null;
     this.effectiveModel = opts.effectiveModel ?? null;
     this.held = opts.heldInputs ?? [];
+    this.waiting = opts.waitingInputs ?? [];
     // Delta providers' reasoning coalesces hub-side (one row per block).
     this.coalesceThinking = PROVIDERS[this.kind]?.thinkingDelivery === 'delta';
     // Preserve a durable failed-turn marker across a Charon reconnect. The
@@ -1238,6 +1253,7 @@ export class SessionStream {
     if (this.tokenUsageTimer) { clearTimeout(this.tokenUsageTimer); this.tokenUsageTimer = null; }
     if (this.compactRequestTimer) { clearTimeout(this.compactRequestTimer); this.compactRequestTimer = null; }
     if (this.heldRetryTimer) { clearTimeout(this.heldRetryTimer); this.heldRetryTimer = null; }
+    this._clearWaitingOrphan();
     if (this.liveTimer) { clearTimeout(this.liveTimer); this.liveTimer = null; }
     if (!this.attached) return;
     this.attached = false;
@@ -1766,8 +1782,11 @@ export class SessionStream {
           this._endCompactRequest();
           this.heldAwaitingTurn = false;
           this.heldAwaitingIds.clear();
-          if (!this.isReplaying) this._takeWaiting(null);
+          // The provider process is gone: nothing reads them now. They end
+          // the conversation, unanswered.
+          this._takeWaiting(null, this.currentEventTs);
         } else this._scheduleRelease();
+        if (ev.status === 'thinking') this._clearWaitingOrphan();
         // An interrupt mark with no `stop` behind it (an idle interrupt, a
         // forced stop) never reaches a later turn.
         if (ev.status !== 'active') {
@@ -2570,7 +2589,9 @@ export class SessionStream {
         break;
       }
       case 'inputs_taken':
-        if (!this.isReplaying && Array.isArray(ev.client_message_ids)) this._takeWaiting(ev.client_message_ids);
+        // Replayed too: the list is durable, and only a listed input moves
+        // (to when it was read, on the agent's clock like its turn's rows).
+        if (Array.isArray(ev.client_message_ids)) this._takeWaiting(ev.client_message_ids, this.currentEventTs);
         break;
       case 'provider_notice': {
         if (this._replayAlreadyPersisted(ev)) break;
@@ -2938,12 +2959,17 @@ export class SessionStream {
         const heldUnanswered = took && this.heldAwaitingIds.size
           ? [...this.heldAwaitingIds].some((id) => !took.has(id))
           : this.heldAwaitingTurn;
+        // What it names as read moves there; what still waits has its own
+        // turn next (lib/waitingInputs.ts): this one is no finish either. A
+        // stop naming nothing reads nothing (an untracked input was read at
+        // its `send_input` answer).
+        if (!alreadyFinished && took) this._takeWaiting([...took], this.currentEventTs);
+        const waitingLeft = this.waiting.length > 0;
         const notFinish = interruptedStop || (!this.isReplaying && !terminalError
-          && (this.held.length > 0 || heldUnanswered));
+          && (this.held.length > 0 || heldUnanswered || waitingLeft));
         if (!this.isReplaying) {
           this.heldAwaitingTurn = false; this.heldAwaitingIds.clear();
-          // An agent that does not name what the turn took: nothing waits on.
-          this._takeWaiting(took ? [...took] : null);
+          if (waitingLeft) this._armWaitingOrphan();
         }
         if (terminalError && !alreadyFinished) {
           this.terminalErrorLatched = true;
@@ -2985,7 +3011,8 @@ export class SessionStream {
         }
         // A recap under the answer (§14.122): live, new, successful finishes
         // only — never a replayed one, which would re-ask for every old turn.
-        if (!this.isReplaying && isNewFinish && !terminalError && !interrupted && typeof finalAssistantId === 'number') {
+        if (!this.isReplaying && isNewFinish && !terminalError && !interrupted && !waitingLeft
+            && typeof finalAssistantId === 'number') {
           this._scheduleRecap(finalAssistantId);
         }
         // Order (§14.47): stop → status → unread (DB + `session_unread`) →
@@ -3139,6 +3166,7 @@ export class SessionStream {
     if (heldEntry) return { rowId: heldEntry.rowId, held: true };
     const known = this.recentClientMessages.get(clientMessageId);
     let rowId: number | null = known ?? opts?.rowId ?? null;
+    let waits = false;
     if (known == null) {
       if (opts?.persist !== false) {
         const persisted = this._persist('user', content);
@@ -3151,56 +3179,136 @@ export class SessionStream {
         }
       }
       const now = Math.floor(Date.now() / 1000);
+      // Behind a compaction, or behind inputs still waiting for one: order
+      // is the send order (§14.125).
+      const holds = this.holdsInputs() || this.held.length > 0;
+      // A turn is running: the provider reads this at its next step. It
+      // waits beside the composer — listed BEFORE its echo, so no browser
+      // shows it in the conversation first.
+      waits = !holds && rowId != null && this.status === 'thinking';
+      if (waits) this._addWaiting(clientMessageId, rowId!);
       if (opts?.broadcastUser !== false) {
         this._broadcast(withRowId({ type: 'user_echo' as const, content, createdAt: now, clientMessageId }, rowId));
       }
       // The user is engaged with this session: whatever finish it showed is read.
       markSessionRead(this.id);
-      // Behind a compaction, or behind inputs still waiting for one: order
-      // is the send order (§14.125).
-      if (this.holdsInputs() || this.held.length > 0) {
+      if (holds) {
         this.held.push({ rowId, clientMessageId, content, ...(codexInputs?.length ? { codexInputs } : {}) });
         this._saveHeld();
         this._scheduleRelease();
         return { rowId, held: true };
       }
     }
-    // A turn is running: the CLI reads this at its next step (it waits).
-    const waits = known == null && rowId != null && this.status === 'thinking'
-      && supportsSessionCapability(this.kind, 'sendNow');
-    await this._deliverInput(content, codexInputs, clientMessageId, known == null, opts?.sendNow === true);
-    if (waits && rowId != null) {
-      this.waitingInputsById.set(clientMessageId, rowId);
-      this._publishWaiting();
+    let answer: InputAnswer;
+    try {
+      answer = await this._deliverInput(content, codexInputs, clientMessageId, known == null, opts?.sendNow === true);
+    } catch (e) {
+      // Never reached the provider: nothing waits (its row says it failed).
+      if (waits) this._dropWaiting(clientMessageId);
+      throw e;
     }
+    if (waits) this._answerWaiting(clientMessageId, answer);
     return { rowId };
   }
 
-  /** The user rows the CLI has not read yet (window GET `waitingInputs`). */
+  /** The user rows the provider has not read yet (window GET `waitingInputs`). */
   waitingInputs(): WaitingInput[] {
-    return [...this.waitingInputsById].map(([clientMessageId, rowId]) => ({ rowId, clientMessageId }));
+    return publicWaitingInputs(this.waiting);
   }
 
-  private _publishWaiting(): void {
-    this._broadcast({ type: 'waiting_inputs', inputs: this.waitingInputs() });
+  /** Persist (the list must survive a hub restart), then publish. */
+  private _publishWaiting(taken?: TakenInput[]): void {
+    try {
+      db.update(agentSessions)
+        .set({ waitingInputsJson: this.waiting.length ? JSON.stringify(this.waiting) : null })
+        .where(eq(agentSessions.id, this.id)).run();
+    } catch (e) {
+      console.error(`[session ${this.id}] waiting inputs not saved:`, e);
+    }
+    this._broadcast({ type: 'waiting_inputs', inputs: this.waitingInputs(), ...(taken?.length ? { taken } : {}) });
   }
 
-  /** These inputs were read (null: all of them). */
-  private _takeWaiting(ids: readonly unknown[] | null): void {
-    if (!this.waitingInputsById.size) return;
-    let changed = false;
-    if (ids == null) { this.waitingInputsById.clear(); changed = true; }
-    else for (const id of ids) if (typeof id === 'string' && this.waitingInputsById.delete(id)) changed = true;
-    if (changed) this._publishWaiting();
+  private _addWaiting(clientMessageId: string, rowId: number): void {
+    if (this.waiting.some((w) => w.clientMessageId === clientMessageId)) return;
+    this.waiting.push({ clientMessageId, rowId, since: Date.now() });
+    this._publishWaiting();
+  }
+
+  /** Its `send_input` never landed: not waiting, and not read either (its
+   *  row stays where it was written). */
+  private _dropWaiting(clientMessageId: string): void {
+    const at = this.waiting.findIndex((w) => w.clientMessageId === clientMessageId);
+    if (at < 0) return;
+    this.waiting.splice(at, 1);
+    this._publishWaiting();
+  }
+
+  /** The agent's answer to its `send_input`: tracked ⇒ an `inputs_taken`
+   *  will come (it may already have); untracked (an older agent) ⇒ read now. */
+  private _answerWaiting(clientMessageId: string, answer: InputAnswer): void {
+    const entry = this.waiting.find((w) => w.clientMessageId === clientMessageId);
+    if (!entry) return;
+    if (answer?.tracked !== true) { this._takeWaiting([clientMessageId], Date.now()); return; }
+    entry.tracked = true;
+    if (answer.send_now === true && supportsSessionCapability(this.kind, 'sendNow')) entry.sendNow = true;
+    this._publishWaiting();
+  }
+
+  /** The provider read these inputs (null: all) at `atMs`: each row moves
+   *  there (`ts_ms`), where the turn that answers it continues. */
+  private _takeWaiting(ids: readonly unknown[] | null, atMs: number | null): void {
+    if (!this.waiting.length) return;
+    const want = ids == null ? null : new Set(ids.filter((id): id is string => typeof id === 'string'));
+    const keep: WaitingEntry[] = [];
+    const taken: TakenInput[] = [];
+    const tsMs = atMs ?? Date.now();
+    for (const w of this.waiting) {
+      if (want && !want.has(w.clientMessageId)) { keep.push(w); continue; }
+      try {
+        db.update(sessionMessages).set({ tsMs })
+          .where(and(eq(sessionMessages.id, w.rowId), eq(sessionMessages.sessionId, this.id),
+            eq(sessionMessages.role, 'user'))).run();
+        taken.push({ rowId: w.rowId, tsMs });
+      } catch (e) {
+        console.error(`[session ${this.id}] waiting input ${w.rowId} not re-stamped:`, e);
+      }
+    }
+    if (keep.length === this.waiting.length) return;
+    this.waiting = keep;
+    if (!keep.length) this._clearWaitingOrphan();
+    this._publishWaiting(taken);
+  }
+
+  /** A `stop` left inputs waiting: their turn should open at once. */
+  private _armWaitingOrphan(): void {
+    this._clearWaitingOrphan();
+    if (!this.waiting.length) return;
+    this.waitingOrphanTimer = setTimeout(() => {
+      this.waitingOrphanTimer = null;
+      if (this.status === 'thinking') return;
+      this._takeWaiting(null, Date.now());
+      // The finish their wait deferred (`stop`).
+      try { db.update(agentSessions).set({ unreadStop: 1 }).where(eq(agentSessions.id, this.id)).run(); } catch {}
+      this._broadcast({ type: 'session_unread', unread: true });
+    }, WAITING_ORPHAN_MS);
+    this.waitingOrphanTimer.unref?.();
+  }
+
+  private _clearWaitingOrphan(): void {
+    if (this.waitingOrphanTimer) { clearTimeout(this.waitingOrphanTimer); this.waitingOrphanTimer = null; }
   }
 
   /** Have the CLI read a waiting input NOW: it stops the running step
-   *  (command included) and answers it (`send_now`, Claude). */
+   *  (command included) and answers it (`send_now`, Claude). The CLI says
+   *  how (`outcome`): `stopped` = the turn was aborted for it (its stop is an
+   *  interrupt by hand, §14.127); `nothing_waiting` = already read. */
   async sendNow(clientMessageId: string): Promise<{ ok: boolean; outcome?: string; error?: string }> {
     if (!supportsSessionCapability(this.kind, 'sendNow')) return { ok: false, error: 'not supported' };
     const client = getAgentClientForVpsId(this.vpsId);
     const res = await client.call('send_now', { session_id: this.id, client_message_id: clientMessageId }) as
       { ok?: boolean; outcome?: string; error?: string } | null;
+    if (res?.outcome === 'stopped') this.interruptManual = true;
+    if (res?.outcome === 'nothing_waiting') this._takeWaiting([clientMessageId], Date.now());
     return { ok: res?.ok === true, ...(res?.outcome ? { outcome: res.outcome } : {}), ...(res?.error ? { error: res.error } : {}) };
   }
 
@@ -3213,7 +3321,7 @@ export class SessionStream {
     clientMessageId: string,
     fresh: boolean,
     sendNow = false,
-  ): Promise<void> {
+  ): Promise<InputAnswer> {
     const client = getAgentClientForVpsId(this.vpsId);
     // A send that fails for good reverts the optimistic `thinking` (S4, C13):
     // left alone it stuck the session `thinking` everywhere until the agent spoke.
@@ -3241,19 +3349,18 @@ export class SessionStream {
       ...(sendNow ? { send_now: true } : {}),
     };
     try {
-      await client.call('send_input', params);
+      return await client.call('send_input', params) as InputAnswer;
     } catch (e) {
       const msg = String((e as { message?: unknown })?.message ?? e);
       // AMBIGUOUS timeout: the RPC may or may not have been delivered.
       // Retry once with the SAME id — the agent-side dedup makes this safe.
       if (/timeout on send_input/i.test(msg)) {
         try {
-          await client.call('send_input', params);
+          return await client.call('send_input', params) as InputAnswer;
         } catch (retryErr) {
           revertOptimistic();
           throw retryErr;
         }
-        return;
       }
       // Auto-recover from a status DESYNC: the agent refuses input on a
       // non-running session — session.py raises "not running (status=sleeping)"
@@ -3282,7 +3389,7 @@ export class SessionStream {
       // The resume SUCCEEDED: a failure of the retried send alone leaves the
       // status resumeSession established (the agent runs the session; a
       // timed-out input may even have landed) — never a durable 'sleeping'.
-      await client.call('send_input', params);
+      return await client.call('send_input', params) as InputAnswer;
     }
   }
 
@@ -3357,9 +3464,14 @@ export class SessionStream {
           this.heldAwaitingTurn = true;
           if (next.clientMessageId) this.heldAwaitingIds.add(next.clientMessageId);
         }
+        // From here it waits for the provider to read it (lib/waitingInputs.ts):
+        // listed before it leaves `held`, so it never flashes into the chat.
+        if (next.rowId != null) this._addWaiting(next.clientMessageId, next.rowId);
+        let answer: InputAnswer;
         try {
-          await this._deliverInput(next.content, next.codexInputs, next.clientMessageId, true);
+          answer = await this._deliverInput(next.content, next.codexInputs, next.clientMessageId, true);
         } catch (e) {
+          this._dropWaiting(next.clientMessageId);
           next.error = String((e as { message?: unknown })?.message ?? e).slice(0, 300);
           next.attempts = (next.attempts ?? 0) + 1;
           this._saveHeld();
@@ -3377,6 +3489,7 @@ export class SessionStream {
         const at = this.held.indexOf(next);
         if (at >= 0) this.held.splice(at, 1);
         this._saveHeld();
+        this._answerWaiting(next.clientMessageId, answer);
       }
     } finally {
       this.releasingHeld = false;
@@ -5485,6 +5598,9 @@ export function getOrCreateStream(sessionId: string): SessionStream | null {
     // Inputs a compaction held when the hub went down (§14.125): released
     // by the post-replay status of the next attach.
     heldInputs: parseHeldInputs(row.heldInputsJson),
+    // Inputs the provider had not read when the hub went down: the replayed
+    // `inputs_taken` settles them.
+    waitingInputs: parseWaitingInputs(row.waitingInputsJson),
   });
   streams.set(sessionId, s);
   return s;

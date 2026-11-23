@@ -2679,9 +2679,9 @@ class Server:
                 kw = session_ops.input_kwargs(s, cmid, params.get("send_now"))
                 try:
                     if codex_inputs is not None:
-                        await s.send_input(content, codex_inputs, **kw)
+                        res = await s.send_input(content, codex_inputs, **kw)
                     else:
-                        await s.send_input(content, **kw)
+                        res = await s.send_input(content, **kw)
                 except Exception as e:
                     self.inflight_inputs.pop(key, None)
                     if not fut.done():
@@ -2693,7 +2693,9 @@ class Server:
                 self.inflight_inputs.pop(key, None)
                 if not fut.done():
                     fut.set_result(True)
-                return {"ok": True}
+                # Whether its read will be named (`inputs_taken`): a runtime
+                # answers as a whole RPC result, an inline session directly.
+                return {"ok": True, **session_ops.input_answer(res)}
             if codex_inputs is not None:
                 await s.send_input(content, codex_inputs)
             else:

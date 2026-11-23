@@ -153,6 +153,16 @@ class CursorSession:
         self._steer_unavailable = False
         # The live run is a compaction (`agent.summarize()`): never steered.
         self._run_is_summary = False
+        # Hub inputs steered into the live run, oldest first:
+        # [client_message_id, text, announced]. `inputs_taken` names one when
+        # the run appends it to the conversation (`user-message-appended`,
+        # matched by text) — or at once (announced) until this process has
+        # seen the SDK say so for a steer (`_append_echo`): no wait on a
+        # signal that may never come. `_turn_inputs`: this run's `stop.inputs`.
+        self._steered: list[list[Any]] = []
+        self._append_echo = False
+        self._turn_inputs: list[str] = []
+        self._turn_opening_text: Optional[str] = None
         # Construction inputs the LIVE agent object was built with, so the turn
         # loop can tell a per-send change (model, mode) from one that needs the
         # agent rebuilt (the sandbox). See _construction_signature.
@@ -414,7 +424,7 @@ class CursorSession:
             except Exception as e:
                 self._emit("error", msg=f"{type(e).__name__}: {e}",
                            fatal=_is_auth_error(e))
-                self._emit("stop", subtype="error")
+                self._emit("stop", subtype="error", inputs=self._close_turn_inputs())
                 if self.status not in ("sleeping", "killed"):
                     self._set_status("active")
 
@@ -481,14 +491,53 @@ class CursorSession:
     # ── turns ───────────────────────────────────────────────────────────────
 
     async def send_input(self, content: str, *, peer_request_id: str | None = None,
-                         client_message_id: str | None = None) -> None:
+                         client_message_id: str | None = None) -> dict[str, Any]:
+        """→ `tracked`: an `inputs_taken` names the input once the run has it
+        (steered: see `_steered`; queued: the run it opens)."""
         if self.status not in ("active", "thinking", "starting"):
             raise RuntimeError(f"session {self.session_id} not running (status={self.status})")
-        if await self._try_steer(content, peer_request_id):
-            return
-        await self._stdin_queue.put({"content": content, "peer_request_id": peer_request_id})
+        cmid = client_message_id if isinstance(client_message_id, str) and client_message_id else None
+        if await self._try_steer(content, peer_request_id, cmid):
+            return {"tracked": cmid is not None}
+        await self._stdin_queue.put({"content": content, "peer_request_id": peer_request_id,
+                                     "client_message_id": cmid})
+        return {"tracked": cmid is not None}
 
-    async def _try_steer(self, content: str, peer_request_id: str | None) -> bool:
+    def _note_inputs_taken(self, cmids: list[str]) -> None:
+        if cmids:
+            self._turn_inputs.extend(cmids)
+            self._emit("inputs_taken", client_message_ids=cmids)
+
+    def _note_user_appended(self, message: Any) -> None:
+        """The run appended a user message to its conversation: the steered
+        input with that text is read (its own opening text is not a steer)."""
+        text = _plain_text(message)
+        if not text:
+            return
+        if self._turn_opening_text is not None and text == self._turn_opening_text:
+            self._turn_opening_text = None
+            return
+        at = next((i for i, e in enumerate(self._steered) if e[1] == text), None)
+        if at is None:
+            at = next((i for i, e in enumerate(self._steered) if e[1] and e[1] in text), None)
+        if at is None:
+            return
+        cmid, _, announced = self._steered.pop(at)
+        self._append_echo = True
+        if not announced:
+            self._note_inputs_taken([cmid])
+
+    def _close_turn_inputs(self) -> list[str]:
+        """This run's `stop.inputs`: a steered input it never announced is
+        read by now (the run had it)."""
+        left = [e[0] for e in self._steered if not e[2]]
+        self._steered.clear()
+        self._note_inputs_taken(left)
+        took, self._turn_inputs = self._turn_inputs, []
+        return took
+
+    async def _try_steer(self, content: str, peer_request_id: str | None,
+                         cmid: str | None = None) -> bool:
         """A message sent while a run works joins THAT run (`run.steer`,
         cursor-sdk ≥ 1.4), like a Claude or Codex message mid-turn. False ⇒
         the caller queues it as the next turn, as before steering existed.
@@ -503,9 +552,18 @@ class CursorSession:
         if (not callable(steer) or self._run_is_summary or self._steer_unavailable
                 or not self._stdin_queue.empty() or self._active_peer_request_id):
             return False
+        # Recorded BEFORE the await: the run may append it first.
+        entry = [cmid, _plain_text(content), False] if cmid else None
+        if entry:
+            self._steered.append(entry)
+
+        def drop() -> None:
+            if entry in self._steered:
+                self._steered.remove(entry)
         try:
             outcome = await steer(content)
         except Exception as e:
+            drop()
             name = type(e).__name__
             if name == "FeatureUnavailableError":
                 # The account has no steering: nothing was delivered.
@@ -515,13 +573,20 @@ class CursorSession:
                 return False  # documented as not delivered
             raise RuntimeError(f"steer failed ({name}: {e}); delivery unknown, not resent")
         if outcome == "revert_to_followup":
+            drop()
             return False
         if outcome == "complete_delivered" and peer_request_id and run is self._run:
             # The reply is this run's text from here on (§14.93).
             self._active_peer_request_id = peer_request_id
             self._peer_shared_turn = True
         # `complete_delivered`, or a cloud `SteerQueued` (already queued by the
-        # provider: never send it again).
+        # provider: never send it again). Read at once unless this process
+        # knows the run says when it appends a steer — or a queued follow-up.
+        if entry and entry in self._steered and (outcome != "complete_delivered" or not self._append_echo):
+            entry[2] = True
+            if outcome != "complete_delivered":
+                drop()
+            self._note_inputs_taken([cmid])
         return True
 
     async def compact(self) -> dict[str, Any]:
@@ -612,6 +677,12 @@ class CursorSession:
         self._saw_text_delta = False
         self._run_status_error = None
         self._set_status("thinking")
+        # Read now: the run it opens answers it (or fails for it).
+        self._turn_inputs = []
+        self._turn_opening_text = _plain_text(item["content"])
+        cmid = item.get("client_message_id")
+        if isinstance(cmid, str) and cmid:
+            self._note_inputs_taken([cmid])
         await self._rebuild_agent_if_stale()
 
         run = await self._agent.send(item["content"], sdk.SendOptions(**self._send_options()))
@@ -646,6 +717,9 @@ class CursorSession:
                 text = getattr(update, "text", None) or ""
                 if text:
                     self._emit("thinking", text=text)
+            elif kind == "user-message-appended":
+                self._note_user_appended(getattr(update, "user_message", None) or (
+                    update.get("userMessage") if isinstance(update, dict) else None))
         except Exception:
             traceback.print_exc()
 
@@ -665,6 +739,9 @@ class CursorSession:
                     self._emit("assistant_text", delta=text)
             elif mtype == "tool_call":
                 self._on_tool(msg)
+            elif mtype == "user":
+                # Never a bubble (the hub wrote the input); a steer's echo.
+                self._note_user_appended(getattr(msg, "message", None))
             elif mtype == "usage":
                 usage = self._json_safe(getattr(msg, "usage", None)) or {}
                 # SDKUsageMessage is per turn; run.usage has already accumulated
@@ -801,11 +878,11 @@ class CursorSession:
             # lapsed credential. Emitted under any other name, an expired Cursor
             # key never flipped `cursorLoggedIn=0` and no Sign-in card appeared.
             self._emit("turn_error", kind=_turn_error_kind(detail, getattr(result, "error_code", None)))
-            self._emit("stop", subtype="error")
+            self._emit("stop", subtype="error", inputs=self._close_turn_inputs())
         elif status == "cancelled":
-            self._emit("stop", subtype="cancelled")
+            self._emit("stop", subtype="cancelled", inputs=self._close_turn_inputs())
         else:
-            self._emit("stop")
+            self._emit("stop", inputs=self._close_turn_inputs())
 
     async def interrupt(self) -> None:
         run = self._run
@@ -948,6 +1025,34 @@ def _assistant_text(content: Any) -> str:
         if isinstance(text, str) and text:
             out.append(text)
     return "".join(out)
+
+
+def _plain_text(message: Any, _depth: int = 0) -> str:
+    """Every `text` (or bare string) in a user message, whatever its shape
+    (str, mapping, blocks, SDK objects), whitespace-normalized: how a steered
+    input and the message the run appends for it are matched."""
+    parts: list[str] = []
+
+    def walk(v: Any, depth: int) -> None:
+        if depth > 6 or v is None:
+            return
+        if isinstance(v, str):
+            parts.append(v)
+        elif isinstance(v, dict):
+            for key in ("text", "content", "message", "blocks", "parts"):
+                if key in v:
+                    walk(v[key], depth + 1)
+        elif isinstance(v, (list, tuple)):
+            for x in v:
+                walk(x, depth + 1)
+        else:
+            for key in ("text", "content", "message"):
+                x = getattr(v, key, None)
+                if x is not None:
+                    walk(x, depth + 1)
+                    break
+    walk(message, _depth)
+    return " ".join(" ".join(parts).split())
 
 
 def _error_text(detail: Any) -> str:

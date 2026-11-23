@@ -3008,34 +3008,6 @@ html[data-density='small'] .cs-sub-fold { font-size: 8.5px; }
 .bubble.finish-cue.is-error {
   --finish: var(--danger);
 }
-/* A message a compaction holds (§14.125): written, not yet sent — a dashed
-   frame in the compaction's colour and a `queued` chip; red while its
-   delivery fails (the hub retries). */
-.bubble.role-user.is-held {
-  border-style: dashed; border-color: color-mix(in srgb, var(--warning) 70%, transparent);
-  background: color-mix(in srgb, var(--warning) calc(6% * var(--bubble-tint)), transparent);
-}
-.bubble.role-user.is-held.is-held-error { border-color: color-mix(in srgb, var(--danger) 70%, transparent); }
-.bubble .held-chip {
-  display: inline-flex; align-items: center; gap: 4px;
-  padding: 0 6px; border-radius: var(--radius-sm);
-  border: 1px solid color-mix(in srgb, var(--warning) 45%, transparent);
-  background: color-mix(in srgb, var(--warning) 12%, transparent);
-  color: var(--warning-strong); font: 600 9.5px/16px var(--mono); text-transform: uppercase; letter-spacing: 0.04em;
-}
-.bubble .held-chip svg { width: 10px; height: 10px; }
-.bubble .held-chip.is-error {
-  border-color: color-mix(in srgb, var(--danger) 45%, transparent);
-  background: color-mix(in srgb, var(--danger) 12%, transparent);
-  color: var(--danger-strong);
-}
-/* Sent mid-turn, not read by the CLI yet: the same chip, plus "now". */
-.bubble .waiting-chip .send-now {
-  margin-left: 2px; padding: 0 5px; border-radius: var(--radius-sm);
-  border: 1px solid color-mix(in srgb, var(--warning) 60%, transparent);
-  background: transparent; color: inherit; font: inherit; cursor: pointer;
-}
-.bubble .waiting-chip .send-now:hover { background: color-mix(in srgb, var(--warning) 25%, transparent); }
 /* A turn that ended on its compaction: the marker is the finish (§14.47) — its
    label takes the answer's halo, its rules the colour. */
 .compaction-marker.finish-cue { --finish: var(--success); color: var(--text); }
@@ -3403,6 +3375,130 @@ html[data-density='small'] .cs-sub-fold { font-size: 8.5px; }
 .hljs-emphasis { font-style: italic; }
 .hljs-strong { font-weight: bold; }
 
+/* ── Messages not read yet (lib/waitingInputs.ts, §14.125) ──
+   Docked above the thinking bar, out of the conversation: a soft ghost of the
+   user's bubble that breathes while it waits, then rises away as the
+   provider reads it — and the bubble eases into the chat where it landed.
+   Held by a compaction: the compaction's colour; a failed delivery: red. */
+.pending-inputs {
+  display: flex; flex-direction: column; gap: 6px;
+  padding: 8px 26px 6px;
+  max-height: 32dvh; overflow-y: auto;
+}
+.pending-item {
+  --pi-tone: var(--info);
+  position: relative;
+  display: flex; align-items: center; gap: 10px;
+  min-width: 0;
+  padding: 7px 8px 7px 12px;
+  border: var(--bubble-edge) solid color-mix(in srgb, var(--pi-tone) 38%, transparent);
+  border-radius: var(--bubble-radius);
+  background: linear-gradient(100deg,
+    color-mix(in srgb, var(--pi-tone) 9%, transparent),
+    color-mix(in srgb, var(--pi-tone) 3%, transparent) 70%);
+  animation: piIn 0.32s cubic-bezier(0.2, 0.8, 0.3, 1);
+}
+/* The breath: a halo on its own layer, opacity alone animates (§14.38). */
+.pending-item::before {
+  content: ''; position: absolute; inset: calc(-1 * var(--bubble-edge)); pointer-events: none;
+  border: var(--bubble-edge) solid color-mix(in srgb, var(--pi-tone) 70%, transparent);
+  border-radius: inherit;
+  box-shadow: 0 0 14px 1px color-mix(in srgb, var(--pi-tone) 28%, transparent);
+  opacity: 0; animation: piBreath 2.6s infinite ease-in-out;
+}
+.pending-item.is-held { --pi-tone: var(--warning); }
+.pending-item.is-error { --pi-tone: var(--danger); }
+.pending-item.is-error::before { animation: none; }
+.pending-item.is-leaving {
+  pointer-events: none;
+  animation: piOut 0.26s cubic-bezier(0.4, 0, 0.6, 1) forwards;
+}
+.pending-item.is-leaving::before { animation: none; }
+@keyframes piIn {
+  from { opacity: 0; transform: translateY(6px) scale(0.985); }
+  to   { opacity: 1; transform: none; }
+}
+@keyframes piOut {
+  to { opacity: 0; transform: translateY(-14px) scale(0.98); }
+}
+@keyframes piBreath { 50% { opacity: 1; } }
+.pending-item .pi-dot {
+  flex: none; width: 7px; height: 7px; border-radius: 50%;
+  background: var(--pi-tone);
+  animation: cpulse 1.6s infinite ease-in-out;
+}
+.pending-item.is-error .pi-dot { animation: none; }
+.pending-item .pi-text {
+  flex: 1; min-width: 0;
+  color: var(--text); font-size: 13px; line-height: 1.4;
+  white-space: pre-wrap; overflow-wrap: anywhere;
+  display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; line-clamp: 2;
+  overflow: hidden;
+}
+.pending-item .pi-when {
+  flex: none; display: inline-flex; align-items: baseline; gap: 6px;
+  color: color-mix(in srgb, var(--pi-tone) 80%, var(--text-muted));
+  font-family: var(--display); font-size: 9.5px; letter-spacing: 0.14em; text-transform: uppercase;
+  white-space: nowrap;
+}
+.pending-item .pi-clock {
+  font-family: var(--mono); font-size: 11px; letter-spacing: 0; text-transform: none;
+  color: var(--text-muted); font-variant-numeric: tabular-nums;
+}
+/* Send now: a soft pill that wakes on hover and shows its keys. */
+.pending-item .pi-now {
+  flex: none; position: relative; overflow: hidden;
+  display: inline-flex; align-items: center; gap: 6px;
+  padding: 4px 11px 4px 9px;
+  border: 1px solid color-mix(in srgb, var(--accent) 45%, transparent);
+  border-radius: var(--chip-radius);
+  background: linear-gradient(135deg,
+    color-mix(in srgb, var(--accent) 22%, transparent),
+    color-mix(in srgb, var(--accent) 8%, transparent));
+  color: var(--accent-strong);
+  font: 600 11.5px/1.2 var(--body);
+  cursor: pointer;
+  transition: background-color 0.18s, border-color 0.18s, box-shadow 0.18s, transform 0.12s;
+}
+.pending-item .pi-now svg { width: 12px; height: 12px; transition: transform 0.25s cubic-bezier(0.2, 0.8, 0.3, 1); }
+.pending-item .pi-now:hover {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 14%, transparent);
+}
+.pending-item .pi-now:hover svg { transform: translate(2px, -2px) rotate(-8deg); }
+.pending-item .pi-now:active { transform: scale(0.96); }
+.pending-item .pi-now:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.pending-item .pi-keys {
+  display: inline-flex; gap: 2px;
+  max-width: 0; opacity: 0; overflow: hidden;
+  transition: max-width 0.25s ease, opacity 0.2s ease;
+}
+.pending-item .pi-now:hover .pi-keys,
+.pending-item .pi-now:focus-visible .pi-keys { max-width: 90px; opacity: 1; }
+.pending-item .pi-keys kbd {
+  padding: 0 4px; border-radius: var(--radius-sm);
+  border: 1px solid color-mix(in srgb, var(--accent) 35%, transparent);
+  background: color-mix(in srgb, var(--bg) 60%, transparent);
+  color: var(--text-muted); font: 500 9.5px/15px var(--mono);
+}
+/* Pressed: the message is on its way — it flies off when the CLI reads it. */
+.pending-item.is-pressed .pi-now { cursor: default; opacity: 0.75; }
+.pending-item.is-pressed .pi-now svg { animation: piFly 0.9s infinite ease-in-out; }
+@keyframes piFly {
+  50% { transform: translate(3px, -3px); opacity: 0.5; }
+}
+/* The bubble the provider just read eases into the chat where it landed. */
+.bubble.just-read { animation: piLand 0.42s cubic-bezier(0.2, 0.8, 0.3, 1); }
+@keyframes piLand {
+  from { opacity: 0; transform: translateY(10px); }
+  to   { opacity: 1; transform: none; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .pending-item, .pending-item.is-leaving, .bubble.just-read { animation: none; }
+  .pending-item::before, .pending-item .pi-dot, .pending-item.is-pressed .pi-now svg { animation: none; }
+  .pending-item.is-leaving { opacity: 0; }
+}
+
 /* ── Thinking bar (inline, just above the input) ── */
 .thinking-bar {
   display: flex; align-items: center; gap: 8px;
@@ -3501,8 +3597,6 @@ html[data-density='small'] .cs-sub-fold { font-size: 8.5px; }
   animation: ci-spin 0.9s linear infinite;
 }
 /* The messages it holds (§14.125), in the compaction's colour. */
-.thinking-bar .t-queued { display: inline-flex; align-items: center; gap: 4px; color: var(--warning-strong); font-weight: 600; }
-.thinking-bar .t-queued svg { width: 11px; height: 11px; }
 @media (prefers-reduced-motion: reduce) {
   .thinking-bar.is-compacting .t-dot { animation-duration: 2.4s; }
   .thinking-bar .t-label, .thinking-bar .t-now { animation: none; }
@@ -5957,6 +6051,11 @@ html[data-density='small'] .cs-sub-fold { font-size: 8.5px; }
     display: grid; grid-template-columns: auto minmax(0, max-content) auto 1fr;
     column-gap: 8px; row-gap: 4px; padding: 8px 12px;
   }
+  .pending-inputs { padding: 6px 12px 4px; }
+  .pending-item { flex-wrap: wrap; row-gap: 4px; }
+  .pending-item .pi-text { flex-basis: calc(100% - 24px); }
+  .pending-item .pi-when { margin-left: 17px; margin-right: auto; }
+  .pending-item .pi-keys { display: none; }
   .thinking-bar .t-dot       { grid-area: 1 / 1; }
   .thinking-bar .t-label     { grid-area: 1 / 2; }
   .thinking-bar .t-interrupt { grid-area: 1 / 3; }

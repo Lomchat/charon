@@ -396,6 +396,21 @@ def _path_string(v: Any) -> str | None:
     return str(raw) if raw is not None else None
 
 
+def _input_text(inputs: Any, fallback: str) -> str:
+    """The text of a Codex user input (wire dicts, or a `userMessage` item's
+    `UserInput` models), whitespace-normalized: how a steered input and the
+    item Codex records for it are matched. No text part ⇒ `fallback`."""
+    parts: list[str] = []
+    if isinstance(inputs, (list, tuple)):
+        for it in inputs:
+            it = getattr(it, "root", it)
+            kind = it.get("type") if isinstance(it, dict) else getattr(it, "type", None)
+            text = it.get("text") if isinstance(it, dict) else getattr(it, "text", None)
+            if _enum_val(kind) == "text" and isinstance(text, str):
+                parts.append(text)
+    return " ".join(" ".join(parts or [fallback or ""]).split())
+
+
 def _thread_inject_response_model():
     """Resolve lazily so an older SDK can still run ordinary Codex sessions;
     only the cross-provider fork reports that its newer primitive is missing."""
@@ -812,6 +827,18 @@ class CodexSession:
         self._active_peer_request_id: str | None = None
         # The active peer request was steered into a turn someone else opened.
         self._peer_shared_turn = False
+        # Hub inputs steered into the live turn that Codex has not read yet,
+        # oldest first: (client_message_id, text). Codex records a steered
+        # input as a `userMessage` item when it folds it into the context;
+        # `inputs_taken` tells the hub then. `_turn_inputs`: what this turn
+        # took (its `stop.inputs`).
+        self._steered: list[tuple[str, str]] = []
+        self._turn_inputs: list[str] = []
+        # The text of the input that opened the live turn (its own
+        # `userMessage` item is no steer), and the user items already seen
+        # (an item is announced started AND completed).
+        self._turn_opening_text: str | None = None
+        self._user_items_seen: set[str] = set()
 
     # ── Public API (mirrors AgentSession) ────────────────────────────────────
     async def start(self) -> None:
@@ -911,9 +938,13 @@ class CodexSession:
         codex_inputs: list[dict[str, Any]] | None = None,
         *,
         peer_request_id: str | None = None,
-    ) -> None:
+        client_message_id: str | None = None,
+    ) -> dict[str, Any]:
+        """→ `tracked`: an `inputs_taken` names the input once Codex reads it
+        (steered: its `userMessage` item; queued: the turn it opens)."""
         if self.status not in ("active", "thinking", "starting"):
             raise RuntimeError(f"session {self.session_id} not running (status={self.status})")
+        cmid = client_message_id if isinstance(client_message_id, str) and client_message_id else None
         # Mid-turn: steer the live turn (parity with Claude's mid-turn query).
         # A peer request steered in is answered by this turn's end (Codex
         # keeps sampling while steered input is pending), unless the turn
@@ -926,12 +957,18 @@ class CodexSession:
                 # the steer must still close this request.
                 self._active_peer_request_id = peer_request_id
                 self._peer_shared_turn = True
+            # Recorded BEFORE the await: its item may come first.
+            entry = (cmid, _input_text(codex_inputs, content)) if cmid else None
+            if entry:
+                self._steered.append(entry)
             try:
                 res = turn.steer(codex_inputs or content)
                 if asyncio.iscoroutine(res):
                     await res
-                return
+                return {"tracked": entry is not None}
             except Exception as e:
+                if entry in self._steered:
+                    self._steered.remove(entry)
                 if peer_request_id and self._active_peer_request_id == peer_request_id:
                     self._active_peer_request_id = None
                     self._peer_shared_turn = False
@@ -939,7 +976,50 @@ class CodexSession:
                 # fall through to queue for the next turn
         await self._stdin_queue.put({"type": "user_message", "content": content,
                                      "codex_inputs": codex_inputs,
-                                     "peer_request_id": peer_request_id})
+                                     "peer_request_id": peer_request_id,
+                                     "client_message_id": cmid})
+        return {"tracked": cmid is not None}
+
+    def _note_inputs_taken(self, cmids: list[str]) -> None:
+        if not cmids:
+            return
+        self._turn_inputs.extend(cmids)
+        self._emit("inputs_taken", client_message_ids=cmids)
+
+    def _close_turn_inputs(self, *, interrupted: bool) -> list[str]:
+        """The hub inputs this turn read: its `stop.inputs`. A turn that ran
+        to its end read every input steered into it (Codex samples on while
+        one is pending), item seen or not; an interrupted one may leave them
+        to the next turn."""
+        if self._steered and not interrupted:
+            left = [c for c, _ in self._steered]
+            self._steered.clear()
+            self._note_inputs_taken(left)
+        took, self._turn_inputs = self._turn_inputs, []
+        return took
+
+    def _note_user_item(self, item: Any) -> None:
+        """A `userMessage` item of the live turn: the steered input with its
+        text (the oldest such; one wrapped in more text counts) has been read.
+        The turn's own input is not one: it was taken when the turn opened.
+        No match ⇒ nothing: the turn's end takes what is left
+        (`_close_turn_inputs`), never a wrong one early."""
+        item_id = getattr(item, "id", None)
+        if isinstance(item_id, str):
+            if item_id in self._user_items_seen:
+                return
+            self._user_items_seen.add(item_id)
+        text = _input_text(getattr(item, "content", None), "")
+        if self._turn_opening_text is not None and text == self._turn_opening_text:
+            self._turn_opening_text = None
+            return
+        at = next((i for i, (_, t) in enumerate(self._steered) if t == text), None)
+        if at is None:
+            at = next((i for i, (_, t) in enumerate(self._steered) if t and t in text), None)
+        if at is None:
+            return
+        cmid, _ = self._steered.pop(at)
+        self._note_inputs_taken([cmid])
 
     async def interrupt(self) -> None:
         turn = self._active_turn
@@ -1829,6 +1909,8 @@ class CodexSession:
 
     async def _consume_external_turn(self, handle: Any) -> None:
         self._active_turn = handle
+        self._turn_opening_text = None
+        self._user_items_seen.clear()
         self._begin_turn()
         try:
             async for note in handle.stream():
@@ -2856,7 +2938,8 @@ class CodexSession:
                     out.append({"event": "error", "msg": str(msg)})
                 subtype = "interrupted" if str(status) == "interrupted" else (
                     "error" if str(status) == "failed" else "")
-                out.append({"event": "stop", "subtype": subtype})
+                out.append({"event": "stop", "subtype": subtype,
+                            "inputs": self._close_turn_inputs(interrupted=subtype == "interrupted")})
 
             elif pt == "ErrorNotification":
                 err = getattr(payload, "error", None)
@@ -3104,7 +3187,10 @@ class CodexSession:
         elif it == "UserMessageThreadItem":
             # Live user input is already durably written by the hub before
             # send_input. Keep the item understood (and available to thread
-            # readers/importers) without echoing a duplicate chat bubble.
+            # readers/importers) without echoing a duplicate chat bubble —
+            # but a steered input's item says Codex has read it.
+            if self._active_turn is not None:
+                self._note_user_item(item)
             return
 
         elif it == "DynamicToolCallThreadItem":
@@ -3531,9 +3617,19 @@ class CodexSession:
                         turn = self._active_turn
                         if turn is None:
                             raise RuntimeError("external Codex turn vanished before steer")
-                        res = turn.steer(turn_input)
-                        if asyncio.iscoroutine(res):
-                            await res
+                        cmid = msg.get("client_message_id")
+                        entry = (cmid, _input_text(msg.get("codex_inputs"), content)) \
+                            if isinstance(cmid, str) and cmid else None
+                        if entry:
+                            self._steered.append(entry)
+                        try:
+                            res = turn.steer(turn_input)
+                            if asyncio.iscoroutine(res):
+                                await res
+                        except Exception:
+                            if entry in self._steered:
+                                self._steered.remove(entry)
+                            raise
                         continue
                 except Exception as e:
                     # The active status can arrive just before thread/read
@@ -3556,6 +3652,14 @@ class CodexSession:
                 if self.model and self.model != self._effective_model:
                     self._effective_model = self.model
                     self._emit("effective_model", model=self.model)
+                # This turn's own input: read as it opens (not a steer).
+                self._turn_inputs = []
+                self._user_items_seen.clear()
+                self._turn_opening_text = _input_text(msg.get("codex_inputs"), content)
+                # Read now: the turn it opens answers it (or fails for it).
+                cmid = msg.get("client_message_id")
+                if isinstance(cmid, str) and cmid:
+                    self._note_inputs_taken([cmid])
                 try:
                     self._starting_turn = True
                     handle = await self._sdk_turn(thread, turn_input)
@@ -3570,7 +3674,8 @@ class CodexSession:
                 except Exception as e:
                     self._emit("error", msg=self._format_err("turn", e))
                     # Make sure the turn is closed on the stop path.
-                    self._emit("stop", subtype="error")
+                    self._emit("stop", subtype="error",
+                               inputs=self._close_turn_inputs(interrupted=True))
                 finally:
                     self._starting_turn = False
                     self._active_turn = None

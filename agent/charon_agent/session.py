@@ -828,6 +828,9 @@ class AgentSession:
         self._waiting: OrderedDict[str, str] = OrderedDict()
         # Asked to be read at once before their write (`send_now` raced it).
         self._send_now_wanted: set[str] = set()
+        # The CLI's init `capabilities[]` (this process): `send_now` needs
+        # `interrupt_send_now_v1` (an older CLI takes it for a plain interrupt).
+        self._cli_capabilities: set[str] = set()
         self._peer_defer_task: asyncio.Task | None = None
         # A fresh Event per turn lets interrupt wait for exactly the turn it
         # interrupted, even if a new prompt starts immediately after its result.
@@ -902,29 +905,46 @@ class AgentSession:
         await self._save_state()
 
     async def send_input(self, content: str, *, peer_request_id: str | None = None,
-                         client_message_id: str | None = None, send_now: bool = False) -> None:
+                         client_message_id: str | None = None, send_now: bool = False) -> dict[str, Any]:
+        """→ `tracked`: an `inputs_taken` will name this input when the CLI
+        reads it (a mid-turn write waits for the next request; a prompt the
+        CLI names, for the turn it opens). `send_now`: it can be pressed."""
         if self.status not in ("active", "thinking", "starting"):
             raise RuntimeError(f"session {self.session_id} not running (status={self.status})")
-        if send_now and client_message_id:
+        if send_now and client_message_id and self._can_send_now():
             self._send_now_wanted.add(client_message_id)
+            while len(self._send_now_wanted) > 64:
+                self._send_now_wanted.pop()
+        tracked = bool(client_message_id) and (self._uuid_echo or self.status == "thinking")
         await self._stdin_queue.put({
             "type": "user_message", "content": content,
             "peer_request_id": peer_request_id,
             "client_message_id": client_message_id,
         })
+        return {"tracked": tracked, "send_now": tracked and self._can_send_now()}
+
+    def _can_send_now(self) -> bool:
+        return "interrupt_send_now_v1" in self._cli_capabilities
 
     async def send_now(self, client_message_id: str) -> dict[str, Any]:
         """Have the CLI read a waiting input NOW: the `interrupt` control
         request with `send_now` + its uuid stops the running step (command
         included) and opens a turn for it. Not written yet ⇒ pressed right
-        after its write."""
+        after its write. → `outcome`: the CLI's `stopped` / `delivering` /
+        `nothing_waiting`."""
+        if not self._can_send_now():
+            return {"ok": False, "error": "this CLI cannot send a waiting message now"}
         uuid_ = next((u for u, c in self._waiting.items() if c == client_message_id), None)
         if uuid_ is None:
+            if any(w.get("cmid") == client_message_id and w.get("taken") for w in self._prompt_uuids.values()):
+                return {"ok": True, "outcome": "nothing_waiting"}
             self._send_now_wanted.add(client_message_id)
             return {"ok": True, "pending": True}
         return await self._press(uuid_)
 
     async def _press(self, uuid_: str) -> dict[str, Any]:
+        if not self._can_send_now():
+            return {"ok": False, "error": "this CLI cannot send a waiting message now"}
         send = getattr(getattr(self._client, "_query", None), "_send_control_request", None)
         if send is None:
             return {"ok": False, "error": "session not running"}
@@ -2627,6 +2647,8 @@ class AgentSession:
                         v = sdata.get(key)
                         if isinstance(v, list):
                             info[wire] = [x for x in v if isinstance(x, (str, int))]
+                    if "capabilities" in info:
+                        self._cli_capabilities = {x for x in info["capabilities"] if isinstance(x, str)}
                     efforts = _extract_effort_support(sdata)
                     if efforts:
                         info["model_efforts"] = efforts

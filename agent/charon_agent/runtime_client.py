@@ -220,7 +220,7 @@ class RemoteSession:
     async def send_input(self, content: str, codex_inputs: Any = None, *,
                          peer_request_id: str | None = None,
                          client_message_id: str | None = None,
-                         send_now: bool = False) -> None:
+                         send_now: bool = False) -> Any:
         params: dict[str, Any] = {"content": content}
         if send_now:
             params["send_now"] = True
@@ -230,7 +230,8 @@ class RemoteSession:
             params["peer_request_id"] = peer_request_id
         if client_message_id:
             params["client_message_id"] = client_message_id
-        await self._server._session_op(self, "send_input", params)
+        # The runtime's answer (`tracked` / `send_now`, session_ops.input_answer).
+        return await self._server._session_op(self, "send_input", params)
 
     async def interrupt(self) -> None:
         await self._server._session_op(self, "interrupt", {})

@@ -130,6 +130,10 @@ def _make_session(claude_session_id):
     s._stopped = asyncio.Event()
     s._stdin_queue = asyncio.Queue()
     s._codex_stderr_lines = []      # _format_err tails this
+    s._steered = []
+    s._turn_inputs = []
+    s._turn_opening_text = None
+    s._user_items_seen = set()
     s._emit = lambda ev, **kw: s._emitted.append((ev, kw))
     s._emit_to_server = lambda payload: None
     s._save_state = _noop_coro
@@ -543,6 +547,30 @@ class TestCodexResume(unittest.TestCase):
                 "kind": "finished", "task_id": "codex-terminal:pty-7",
                 "status": "completed", "terminal": True,
             }))
+
+        asyncio.run(main())
+
+    def test_a_steered_input_is_read_at_its_user_item(self):
+        async def main():
+            s = _make_session(THREAD_ID)
+            s.status = "thinking"
+            steered = []
+            s._active_turn = types.SimpleNamespace(steer=lambda inp: steered.append(inp))
+            s._turn_opening_text = "the turn's own"
+            taken = lambda: [kw["client_message_ids"] for ev, kw in s._emitted if ev == "inputs_taken"]  # noqa: E731
+            res = await s.send_input("fix  the\ntests", client_message_id="c1")
+            self.assertEqual((steered, res), (["fix  the\ntests"], {"tracked": True}))
+            item = lambda i, text: types.SimpleNamespace(  # noqa: E731
+                id=i, content=[types.SimpleNamespace(root=types.SimpleNamespace(type="text", text=text))])
+            s._note_user_item(item("u0", "the turn's own"))
+            self.assertEqual(taken(), [])
+            s._note_user_item(item("u1", "fix the tests"))
+            s._note_user_item(item("u1", "fix the tests"))   # completed after started
+            self.assertEqual(taken(), [["c1"]])
+            # Never named by an item: a turn that ran to its end read it.
+            await s.send_input("and the docs", client_message_id="c2")
+            self.assertEqual(s._close_turn_inputs(interrupted=False), ["c1", "c2"])
+            self.assertEqual(taken(), [["c1"], ["c2"]])
 
         asyncio.run(main())
 

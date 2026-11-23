@@ -84,6 +84,26 @@ class CursorSteerTestCase(unittest.TestCase):
         stop = next(e for e in events if e["event"] == "stop")
         self.assertEqual((stop["_peer_request_id"], stop.get("_peer_shared")), ("m1", True))
 
+    def test_a_steer_is_read_at_once_until_the_run_says_when(self):
+        events = []
+        s = self._session(events)
+        taken = lambda: [e["client_message_ids"] for e in events if e["event"] == "inputs_taken"]  # noqa: E731
+
+        async def run():
+            s._run = _Run("complete_delivered", "complete_delivered")
+            await s.send_input("first", client_message_id="c1")
+            self.assertEqual(taken(), [["c1"]])   # no echo known: read now
+            s._on_delta({"type": "user-message-appended", "userMessage": {"text": "first"}})
+            await s.send_input("second", client_message_id="c2")
+            self.assertEqual(taken(), [["c1"]])   # the run will say
+            s._on_delta({"type": "user-message-appended", "userMessage": {"text": "an other"}})
+            self.assertEqual(taken(), [["c1"]])
+            s._on_delta({"type": "user-message-appended", "userMessage": {"text": "second"}})
+            self.assertEqual(taken(), [["c1"], ["c2"]])
+            self.assertEqual(s._close_turn_inputs(), ["c1", "c2"])
+
+        asyncio.run(run())
+
 
 if __name__ == "__main__":
     unittest.main()

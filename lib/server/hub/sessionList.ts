@@ -147,6 +147,7 @@ export function annotateSessionRows(
       recap: parseSessionRecap(r.recapJson),
       contextReadingJson: undefined as unknown as AgentSession['contextReadingJson'],
       heldInputsJson: undefined as unknown as AgentSession['heldInputsJson'],
+      waitingInputsJson: undefined as unknown as AgentSession['waitingInputsJson'],
       ultracode: ultracodeOf(r.providerConfig),
       accountProfile: accountProfileId(r.providerConfig), accountProfileNumber: accountProfileNumber(r.providerConfig),
       endpoint: publicConnection(r.providerConfig),

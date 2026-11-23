@@ -1,5 +1,6 @@
 import { ultracodeOf, fastModeOf, serviceTierOf } from '@/lib/providerConfigFlags';
 import { parseHeldInputs, publicHeldInputs } from '@/lib/heldInputs';
+import { parseWaitingInputs, publicWaitingInputs } from '@/lib/waitingInputs';
 import { accountProfileId, accountProfileNumber } from '@/lib/accountProfiles';
 import { publicConnection } from '@/lib/server/customEndpoints';
 import { sessionTokenUsage } from '@/lib/server/agent/sessionTokenUsage';
@@ -304,12 +305,13 @@ export async function GET(req: Request, { params }: { params: Promise<{ id: stri
     // The session's cross-session fact as the list/SSE carry it (§14.108);
     // null when archived. Window mode only.
     ...(since == null ? { summary: buildSessionSummary(id) } : {}),
-    session: { ...row, providerConfig: undefined, goalJson: undefined, contextReadingJson: undefined, heldInputsJson: undefined, ultracode: ultracodeOf(row.providerConfig), fastMode: fastModeOf(row.providerConfig), serviceTier: serviceTierOf(row.providerConfig), accountProfile: accountProfileId(row.providerConfig), accountProfileNumber: accountProfileNumber(row.providerConfig), endpoint: publicConnection(row.providerConfig) },
+    session: { ...row, providerConfig: undefined, goalJson: undefined, contextReadingJson: undefined, heldInputsJson: undefined, waitingInputsJson: undefined, ultracode: ultracodeOf(row.providerConfig), fastMode: fastModeOf(row.providerConfig), serviceTier: serviceTierOf(row.providerConfig), accountProfile: accountProfileId(row.providerConfig), accountProfileNumber: accountProfileNumber(row.providerConfig), endpoint: publicConnection(row.providerConfig) },
     liveStatus: stream ? stream.status : row.status,
     liveCompacting: stream?.compacting === true,
     // Inputs a compaction holds (§14.125): the stream's list, else the column.
     heldInputs: stream ? stream.heldInputs() : publicHeldInputs(parseHeldInputs(row.heldInputsJson)),
-    waitingInputs: stream ? stream.waitingInputs() : [],
+    // Inputs the provider has not read yet (lib/waitingInputs.ts): idem.
+    waitingInputs: stream ? stream.waitingInputs() : publicWaitingInputs(parseWaitingInputs(row.waitingInputsJson)),
     // Still on the agent code of before an update (§14.117): header warning.
     liveRuntimeOutdated: isRuntimeOutdated(id),
     liveRuntimeVersions: runtimeVersionsOf(id),
@@ -494,7 +496,7 @@ export async function PATCH(req: Request, { params }: { params: Promise<{ id: st
   // the summary dirty and makes legacy tabs refetch the list.
   emitGlobalSessionListChanged(id);
 
-  const publicRow = { ...row, providerConfig: undefined, goalJson: undefined, contextReadingJson: undefined, heldInputsJson: undefined, ultracode: ultracodeOf(row.providerConfig), fastMode: fastModeOf(row.providerConfig), serviceTier: serviceTierOf(row.providerConfig), accountProfile: accountProfileId(row.providerConfig), accountProfileNumber: accountProfileNumber(row.providerConfig), endpoint: publicConnection(row.providerConfig) };
+  const publicRow = { ...row, providerConfig: undefined, goalJson: undefined, contextReadingJson: undefined, heldInputsJson: undefined, waitingInputsJson: undefined, ultracode: ultracodeOf(row.providerConfig), fastMode: fastModeOf(row.providerConfig), serviceTier: serviceTierOf(row.providerConfig), accountProfile: accountProfileId(row.providerConfig), accountProfileNumber: accountProfileNumber(row.providerConfig), endpoint: publicConnection(row.providerConfig) };
   const sync = syncAfter([id]);
   return Response.json({ ...publicRow, sync });
 }

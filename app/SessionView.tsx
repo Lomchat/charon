@@ -12,7 +12,7 @@ import EndpointEffortPicker, { EndpointEffortSummary } from './EndpointEffortPic
 import { isOpenCodeGo } from '@/lib/opencodeModels';
 
 import SessionSettingsModal from './SessionSettingsModal';
-import { IconArrowRepeat, IconGear, IconPause, IconPlay, IconStop, IconRewind, IconGitBranch, IconBullseye, IconChatSide, IconSparkle, IconArrowsCollapse } from './icons';
+import { IconArrowRepeat, IconGear, IconPause, IconPlay, IconStop, IconRewind, IconGitBranch, IconBullseye, IconChatSide, IconSparkle } from './icons';
 import { goalIsLive, shownGoal } from '@/lib/sessionGoal';
 import { sameModel } from '@/lib/strictModel';
 import type { SessionRecap } from '@/lib/sessionRecap';
@@ -56,7 +56,7 @@ import QuestionCard from './QuestionCard';
 import AsyncQuestionBubble from './AsyncQuestionBubble';
 import AsyncQuestionStrip, { ComposerWithAsyncStrip } from './AsyncQuestionStrip';
 import { liveStreamingMessage, rowKey } from './sync/transcriptReducer';
-import type { HeldInputState } from '@/lib/heldInputs';
+import { PendingInputs, type PendingItem } from './PendingInputs';
 import ExitPlanCard from './ExitPlanCard';
 import ApprovalDeadline from './ApprovalDeadline';
 import PermissionActions from './PermissionActions';
@@ -253,7 +253,7 @@ export default function SessionView({
     provider: asSessionProvider(selected.kind),
   });
   const {
-    messages, currentAssistant, streamingInto, status, compacting: liveCompacting, held, waiting, runtimeOutdated, runtimeVersions, permissionMode,
+    messages, currentAssistant, streamingInto, status, compacting: liveCompacting, held, waiting, pendingIds, runtimeOutdated, runtimeVersions, permissionMode,
     liveActivity,
     model, fallbackModel, effort, ultracode, fastMode, fastModeVerdict, serviceTier, modelPendingApply, effortPendingApply,
     effectiveModel, liveUsage, tokenUsage, responseSpeed,
@@ -742,12 +742,59 @@ export default function SessionView({
     return out;
   }, [messages]);
 
+  // What the provider has not read yet waits beside the composer, not in the
+  // conversation (lib/waitingInputs.ts): it enters where it is read.
+  const pendingSet = useMemo(() => new Set(pendingIds), [pendingIds]);
   const visibleRenderable = useMemo(
-    () => showTools
-      ? renderable
-      : renderable.filter(({ msg }) => shouldShowChatRole(msg.role, false)),
-    [renderable, showTools],
+    () => renderable.filter(({ msg }) => !pendingSet.has(msg.id)
+      && (showTools || shouldShowChatRole(msg.role, false))),
+    [renderable, showTools, pendingSet],
   );
+  const pendingItems = useMemo<PendingItem[]>(() => {
+    if (!pendingIds.length) return [];
+    const byId = new Map(messages.map((m, i) => [m.id, [m, i] as const]));
+    const heldBy = new Map(held.map((h) => [rowKey(h.rowId), h] as const));
+    const waitingBy = new Map(waiting.map((w) => [rowKey(w.rowId), w] as const));
+    const out: Array<PendingItem & { at: number }> = [];
+    for (const id of pendingIds) {
+      const hit = byId.get(id);
+      if (!hit) continue;
+      const h = heldBy.get(id);
+      const w = waitingBy.get(id);
+      out.push({
+        id, at: hit[1], content: hit[0].content,
+        state: h ? 'held' : w ? 'waiting' : 'sending',
+        error: h?.error ?? null,
+        since: w?.since,
+        sendNowId: w?.sendNow ? w.clientMessageId : null,
+      });
+    }
+    // Send order: their place in the transcript they were appended to.
+    return out.sort((a, b) => a.at - b.at);
+  }, [pendingIds, messages, held, waiting]);
+  // The oldest one that can be read now (Ctrl/⌘+⇧+↵ on an empty composer).
+  const nowFirst = pendingItems.find((p) => p.sendNowId)?.sendNowId ?? null;
+  const sendFirstNow = useCallback((): boolean => {
+    if (!nowFirst) return false;
+    void sendNow(nowFirst);
+    return true;
+  }, [nowFirst, sendNow]);
+  // A message read leaves the tray and rises into the chat where it lands.
+  const pendingPrev = useRef<Set<string>>(pendingSet);
+  useEffect(() => {
+    const gone = [...pendingPrev.current].filter((id) => !pendingSet.has(id));
+    pendingPrev.current = pendingSet;
+    const root = chatBodyRef.current;
+    if (!gone.length || !root) return;
+    requestAnimationFrame(() => {
+      for (const id of gone) {
+        const el = root.querySelector<HTMLElement>(`[data-fold-key="${CSS.escape(id)}"]`);
+        if (!el) continue;
+        el.classList.add('just-read');
+        el.addEventListener('animationend', () => el.classList.remove('just-read'), { once: true });
+      }
+    });
+  }, [pendingSet]);
 
   // ── "Continue" affordance for a turn the transport cut (§14.68) ───────────
   // The CLI closes such a turn with a synthetic assistant bubble ("API Error:
@@ -824,16 +871,6 @@ export default function SessionView({
     }
     return null;
   }, [messages, finishCue]);
-  // The user rows a compaction holds (§14.125), by bubble id (memo, §14.38).
-  // Sent mid-turn, not read yet: row key → its clientMessageId (send now).
-  const waitingById = useMemo(
-    () => new Map(waiting.map((w) => [rowKey(w.rowId), w.clientMessageId] as const)),
-    [waiting],
-  );
-  const heldById = useMemo(
-    () => new Map(held.map((h) => [rowKey(h.rowId), h] as const)),
-    [held],
-  );
   // ANY action in the open session reads it, the same ack as leaving: a
   // click anywhere in it (link, button, scroll pill, composer, scrollbar), a
   // key, a wheel scroll — `<main>`'s capture handlers, which also see its
@@ -1369,8 +1406,7 @@ export default function SessionView({
                   limitMsgId={endpoint.active ? null : limitMsgId}
                   currentAccount={currentAccount}
                   onContinueWithAccount={continueWithAccount}
-                  finishMsgId={finishMsgId} finishCue={finishCue} heldById={heldById}
-                  waitingById={waitingById} onSendNow={sendNow}
+                  finishMsgId={finishMsgId} finishCue={finishCue}
                   // Conservative on purpose: `reconnecting` means we don't
                   // know yet, and a wrong "interrupted" is worse than a
                   // late one.
@@ -1452,11 +1488,13 @@ export default function SessionView({
           )}
         </div>
 
+        <PendingInputs items={pendingItems} turnRunning={status === 'thinking'}
+          compacting={liveCompacting} onSendNow={sendNow} />
+
         {status === 'thinking' && (
           <ThinkingBar
             label={liveCompacting ? providerText.compacting(sessionKind) : providerText.thinking(sessionKind)}
             compacting={liveCompacting}
-            queued={held.length}
             onInterrupt={interrupt}
             line={liveLine}
             toolCount={liveUsage?.tools ?? (showTools ? stepCount : 0)}
@@ -1602,6 +1640,7 @@ export default function SessionView({
             compact={compact}
             textareaRef={composerRef}
             onEmptyKey={onEmptyComposerKey}
+            onNowEmpty={sendFirstNow}
           />
           </>
         )}
@@ -1669,7 +1708,7 @@ export default function SessionView({
 // of <Message> elements; only the small live-tail bubble changes.
 const MessageHistory = memo(function MessageHistory({
   renderable, kind, vpsId, cwd, onReauth, authMsgId, continuableMsgId, schedulableMsgId, onContinue, onScheduleResume, onCancelScheduledResume, turnInFlight,
-  limitMsgId, currentAccount, onContinueWithAccount, finishMsgId, finishCue, heldById, waitingById, onSendNow,
+  limitMsgId, currentAccount, onContinueWithAccount, finishMsgId, finishCue,
   siblings, onOpenPeerSession, onPeerRequestHover, onPeerRequestJump, peerReplyToById,
   liveRow, substitute, selectedModel,
 }: {
@@ -1700,11 +1739,6 @@ const MessageHistory = memo(function MessageHistory({
   // bubble sees the value (memo, §14.38).
   finishMsgId: string | null;
   finishCue: 'unread' | 'error' | null;
-  // User rows a compaction holds (§14.125): only those bubbles see a value.
-  heldById: ReadonlyMap<string, HeldInputState>;
-  // User rows the CLI has not read yet → their clientMessageId (send now).
-  waitingById: ReadonlyMap<string, string>;
-  onSendNow: (clientMessageId: string) => void;
   // Is a turn in flight right now? A tool_use with no tool_result can only
   // still be running while one is: outside a turn nothing can produce that
   // result anymore (§14.91). Only the unresolved tool cards receive the
@@ -1737,9 +1771,6 @@ const MessageHistory = memo(function MessageHistory({
       onPeerRequestHover={onPeerRequestHover} onPeerRequestJump={onPeerRequestJump}
       peerReplyTo={peerReplyToById.get(msg.id)}
       finishCue={msg.id === finishMsgId ? finishCue : null}
-      held={msg.role === 'user' ? heldById.get(msg.id) ?? null : null}
-      waitingId={msg.role === 'user' ? waitingById.get(msg.id) ?? null : null}
-      onSendNow={onSendNow}
     />;
   });
 });
@@ -1810,8 +1841,11 @@ const ParentChip = memo(function ParentChip({ parentId, onOpen, beforeHandle }: 
 const ChatInputBar = memo(function ChatInputBar({
   sessionId, kind, permissionMode, onSetMode, onSend, prefillInput, clearPrefillInput,
   pending, onUploadFiles, onDismissPending, insertRequest, clearInsertRequest, siblings, compacting = false,
-  onAside, slashKey, onSlashAction, compact = false, textareaRef, onEmptyKey,
+  onAside, slashKey, onSlashAction, compact = false, textareaRef, onEmptyKey, onNowEmpty,
 }: {
+  /** Ctrl/⌘+⇧+↵ in an empty box: send the oldest waiting message now
+   *  (true = there was one). */
+  onNowEmpty?: () => boolean;
   /** SessionView's `compact`: the shared composer size is ignored (no grip,
    *  never collapsed, never revealed) and the box grows with its text. */
   compact?: boolean;
@@ -2440,6 +2474,7 @@ const ChatInputBar = memo(function ChatInputBar({
           }
           if (e.shiftKey && (e.ctrlKey || e.metaKey) && !e.altKey) {
             e.preventDefault();
+            if (!input.trim() && uploading.length === 0 && onNowEmpty?.()) return;
             void send(true);
             return;
           }
@@ -2602,7 +2637,7 @@ function CwdSubtitle({ cwd, vpsName }: { cwd: string; vpsName?: string }) {
 }
 
 function ThinkingBar({
-  line, toolCount, startedAt, tokens, responseSpeed, onInterrupt, label, compacting = false, queued = 0,
+  line, toolCount, startedAt, tokens, responseSpeed, onInterrupt, label, compacting = false,
 }: {
   /** What the turn is doing now (lib/liveActivity.ts); null = unknown: the
    *  provider's generic label. */
@@ -2617,8 +2652,6 @@ function ThinkingBar({
   /** The provider is summarising the conversation: no tool, speed or
    *  token figures describe that (they belong to the turn around it). */
   compacting?: boolean;
-  /** Messages the compaction holds (§14.125). */
-  queued?: number;
 }) {
   const [tick, setTick] = useState(0);
   useEffect(() => {
@@ -2654,11 +2687,6 @@ function ThinkingBar({
       )}
       {compacting ? (
         <span className="t-meta">
-          {queued > 0 && (
-            <span className="t-queued" title="Sent when the compaction ends">
-              <IconArrowsCollapse aria-hidden /> {queued} queued<span className="sep">·</span>
-            </span>
-          )}
           {elapsed != null && <>{fmtElapsed(elapsed)}</>}
         </span>
       ) : <span className="t-meta">

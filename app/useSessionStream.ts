@@ -22,7 +22,7 @@ import {
 } from './globalEventStream';
 import {
   applyFrame, applyLocalResolution, applyLocalSend, applyLocalSendAck, applyLocalSendFailed, toolCallTotal, applyOlderPage, applySnapshot,
-  createTranscriptState, isCoveredBySnapshot, newClientMessageId, pendingGateIds,
+  createTranscriptState, isCoveredBySnapshot, newClientMessageId, pendingGateIds, pendingMessageIds,
   type Effect, type SessionFrame, type TranscriptState,
 } from './sync/transcriptReducer';
 import { TranscriptJournal } from './sync/transcriptJournal';
@@ -113,8 +113,11 @@ export type SessionStreamState = {
   compacting: boolean;
   /** User rows a compaction holds, in send order (§14.125). */
   held: import('@/lib/heldInputs').HeldInputState[];
-  /** User rows the CLI has not read yet (sent mid-turn). */
+  /** User rows the provider has not read yet (sent mid-turn). */
   waiting: import('@/lib/server/hub/types').WaitingInput[];
+  /** The messages that wait beside the composer (held, waiting, or sent
+   *  mid-turn and not claimed yet): out of the conversation until read. */
+  pendingIds: string[];
   /** Runs the agent code of before an update (§14.117); moved when idle. */
   runtimeOutdated: boolean;
   /** What that older runtime runs (null = unknown), for the header. */
@@ -870,6 +873,7 @@ export function useSessionStream(
   }, []);
 
   const bgTasks = useMemo(() => bgTasksToArray(state.bgTasks), [state.bgTasks]);
+  const pendingIds = useMemo(() => pendingMessageIds(state), [state.held, state.waiting, state.sends]);
   // Snapshot count + live tool_use ids since (grows between window answers).
   const toolCallCount = toolCallTotal(state);
 
@@ -878,7 +882,7 @@ export function useSessionStream(
     messages: state.messages,
     currentAssistant: state.buf.assistant,
     streamingInto: state.buf.streamingInto,
-    status, compacting: state.compacting && status === 'thinking', held: state.held, waiting: state.waiting, runtimeOutdated: state.runtimeOutdated, runtimeVersions: state.runtimeVersions, permissionMode,
+    status, compacting: state.compacting && status === 'thinking', held: state.held, waiting: state.waiting, pendingIds, runtimeOutdated: state.runtimeOutdated, runtimeVersions: state.runtimeVersions, permissionMode,
     liveActivity: status === 'thinking' ? state.activity : null,
     model: modelPair.model, fallbackModel: modelPair.fallbackModel, effort, ultracode: state.meta.ultracode, fastMode: state.meta.fastMode, fastModeVerdict: state.meta.fastModeVerdict, serviceTier: state.meta.serviceTier,
     modelPendingApply: state.meta.modelPendingApply, effortPendingApply: state.meta.effortPendingApply,
@@ -896,7 +900,7 @@ export function useSessionStream(
     clearPrefillInput, refetchHistory, requestWindow, loadMoreHistory, trimHistory, setHistoryHold, clearError,
   }), [
     state, status, permissionMode, modelPair.model, modelPair.fallbackModel, effort, responseSpeed,
-    toolCallCount, bgTasks, editsMissing, loadEditContents, prefillInput, error, loadFailed, isSyncing, historyReady, isLoadingMore, view,
+    toolCallCount, bgTasks, pendingIds, editsMissing, loadEditContents, prefillInput, error, loadFailed, isSyncing, historyReady, isLoadingMore, view,
     windowInFlight,
     send, sendNow, interrupt, forceStop, setMode, setModel, setEffort, setUltracode, setFastMode, setServiceTier,
     doSleep, doResume, doRestart, doDelete,

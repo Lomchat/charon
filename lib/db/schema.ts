@@ -351,6 +351,10 @@ export const agentSessions = sqliteTable('agent_sessions', {
   // persisted user rows the agent has not received yet, in send order.
   // NULL = none. Never sent as a column (the window GET's `heldInputs`).
   heldInputsJson: text('held_inputs'),
+  // Inputs the provider has not read yet (lib/waitingInputs.ts): JSON
+  // `WaitingEntry[]`, oldest first. NULL = none. The window GET's
+  // `waitingInputs`.
+  waitingInputsJson: text('waiting_inputs'),
   // The routine whose run created this session (§14.120); NULL = a human's.
   // No foreign key (it would rebuild this table): a deleted routine clears it.
   routineId: text('routine_id'),

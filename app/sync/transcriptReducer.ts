@@ -72,7 +72,10 @@ export type LiveBuffers = { assistant: string; streamingInto: number | null; thi
 export type OptimisticSends = Map<string /*clientMessageId*/, { content: string; createdAt: number; rowId?: number;
   /** The POST failed without naming a row: the next snapshot lacking it drops
    *  the bubble (optimistic.ts) — never re-appended below later turns. */
-  failed?: boolean }>;
+  failed?: boolean;
+  /** Sent while a turn ran: it waits beside the composer until the hub's
+   *  `waiting_inputs` / `held_inputs` take over (lib/waitingInputs.ts). */
+  busy?: boolean }>;
 
 export type TranscriptCtx = {
   fromJournal: boolean;
@@ -466,8 +469,8 @@ export type TranscriptState = {
   /** The user rows a compaction holds, in send order (`held_inputs` frame /
    *  `heldInputs`, §14.125): their bubbles say they wait. */
   held: HeldInputState[];
-  /** The user rows the CLI has not read yet (`waiting_inputs` frame /
-   *  `waitingInputs`): their bubbles say they wait and offer "send now". */
+  /** The user rows the provider has not read yet (`waiting_inputs` frame /
+   *  `waitingInputs`, lib/waitingInputs.ts): they wait beside the composer. */
   waiting: WaitingInput[];
   /** Still on the agent code of before an update (`runtime_outdated` frame /
    *  `liveRuntimeOutdated`, §14.117): the header says so. */
@@ -769,6 +772,7 @@ export function applyFrame(s: TranscriptState, ev: SessionFrame, ctx: Transcript
       break;
     case 'waiting_inputs':
       st = { ...st, waiting: Array.isArray(ev.inputs) ? ev.inputs : [] };
+      if (Array.isArray(ev.taken) && ev.taken.length) st = applyTakenInputs(st, ev.taken);
       break;
     case 'runtime_outdated':
       st = { ...st, runtimeOutdated: ev.outdated === true, runtimeVersions: ev.outdated === true ? ev.versions ?? null : null };
@@ -1312,7 +1316,37 @@ export function toolCallTotal(s: TranscriptState): number | null {
 /** The composer's optimistic bubble (`u-<clientMessageId>`). */
 export function applyLocalSend(s: TranscriptState, clientMessageId: string, content: string, nowMs: number): TranscriptState {
   const added = addOptimisticSend(s.messages, s.sends, clientMessageId, content, Math.floor(nowMs / 1000));
-  return { ...s, messages: added.messages, sends: added.sends, liveUsage: null };
+  const sends = new Map(added.sends);
+  if (s.status === 'thinking') sends.set(clientMessageId, { ...sends.get(clientMessageId)!, busy: true });
+  return { ...s, messages: added.messages, sends, liveUsage: null };
+}
+
+/** The provider read these rows (`waiting_inputs.taken`): each moves where
+ *  it was read — the live end — as its new `ts_ms` puts it after a reload. */
+export function applyTakenInputs(s: TranscriptState, taken: ReadonlyArray<{ rowId: number; tsMs: number }>): TranscriptState {
+  let messages = s.messages;
+  let rows = s.rows;
+  for (const t of taken) {
+    const id = rowKey(t.rowId);
+    const at = messages.findIndex((m) => m.id === id);
+    if (at >= 0) messages = [...messages.slice(0, at), ...messages.slice(at + 1), messages[at]];
+    const r = rows.findIndex((m) => m.id === t.rowId);
+    if (r >= 0) rows = [...rows.slice(0, r), ...rows.slice(r + 1), { ...rows[r], tsMs: t.tsMs }];
+  }
+  return messages === s.messages && rows === s.rows ? s : { ...s, messages, rows };
+}
+
+/** The ids of the messages that wait beside the composer, oldest first: held
+ *  by a compaction, not read yet by the provider, or sent mid-turn and not
+ *  yet claimed by either list (lib/waitingInputs.ts). */
+export function pendingMessageIds(s: Pick<TranscriptState, 'held' | 'waiting' | 'sends'>): string[] {
+  const out: string[] = [];
+  const seen = new Set<string>();
+  const add = (id: string) => { if (!seen.has(id)) { seen.add(id); out.push(id); } };
+  for (const h of s.held) add(rowKey(h.rowId));
+  for (const w of s.waiting) add(rowKey(w.rowId));
+  for (const [cmid, e] of s.sends) if (e.busy && !e.failed) add(e.rowId != null ? rowKey(e.rowId) : optimisticUserId(cmid));
+  return out;
 }
 
 /** The input POST answered `{rowId}`. */

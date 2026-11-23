@@ -3,8 +3,8 @@
 import type { ClaudeEffort, ClaudeMode, SessionProvider } from '@/lib/sessionCapabilities';
 import type { SessionErrorPayload } from '@/lib/sessionError';
 import type { PermissionPrompt, PermissionSuggestion } from '@/lib/permissionSuggestions';
-/** A user row its provider has not read yet (`waiting_inputs`). */
-export type WaitingInput = { rowId: number; clientMessageId: string };
+/** A user row its provider has not read yet (`waiting_inputs`, lib/waitingInputs.ts). */
+export type WaitingInput = import('@/lib/waitingInputs').WaitingInput;
 
 // One sub-agent inside a running Workflow-tool task (from the SDK's raw
 // TaskProgressMessage.workflow_progress[]). Carried by bg_task_progress. §14.54.
@@ -40,10 +40,11 @@ export type BridgeEvent =
   // The inputs a compaction holds, in send order (§14.125): the WHOLE list
   // on every change. Durable (`held_inputs`), mirrored by `heldInputs`.
   | { type: 'held_inputs'; inputs: import('@/lib/heldInputs').HeldInputState[] }
-  // The user rows the provider has not read yet (sent mid-turn, `sendNow`
-  // capability): the WHOLE list on every change. Hub memory, mirrored by the
-  // window GET's `waitingInputs`.
-  | { type: 'waiting_inputs'; inputs: WaitingInput[] }
+  // The user rows the provider has not read yet (sent mid-turn, §14.125):
+  // the WHOLE list on every change, + `taken` = rows just read and their new
+  // `ts_ms` (moved to that point). Durable (`waiting_inputs`), mirrored by
+  // the window GET's `waitingInputs`.
+  | { type: 'waiting_inputs'; inputs: WaitingInput[]; taken?: import('@/lib/waitingInputs').TakenInput[] }
   // The session still runs the agent code of before an update (§14.117):
   // the header says so until the agent moves it. Hub memory, mirrored by
   // the window GET's `liveRuntimeOutdated`.

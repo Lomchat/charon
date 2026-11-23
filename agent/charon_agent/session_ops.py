@@ -48,6 +48,15 @@ def input_kwargs(session: Any, client_message_id: Any, send_now: Any = False) ->
     return out
 
 
+def input_answer(res: Any) -> dict[str, Any]:
+    """What a session's `send_input` says of the input, for the hub:
+    `tracked` (an `inputs_taken` will name it once the provider reads it)
+    and `send_now` (it can be pressed). Nothing said = untracked."""
+    if not isinstance(res, dict):
+        return {}
+    return {k: True for k in ("tracked", "send_now") if res.get(k) is True}
+
+
 PEER_HANDLE_RE = re.compile(r"^[a-z0-9](?:[a-z0-9-]{0,30}[a-z0-9])?$")
 _PEER_HANDLE_RE = PEER_HANDLE_RE
 _SPAWN_FIELD_MAX = 256
@@ -918,10 +927,10 @@ async def run(method: str, params: dict[str, Any], session: Any, host: Any) -> A
             return {"ok": True}
         kw = input_kwargs(session, params.get("client_message_id"), params.get("send_now"))
         if codex_inputs is not None:
-            await session.send_input(content, codex_inputs, **kw)
+            res = await session.send_input(content, codex_inputs, **kw)
         else:
-            await session.send_input(content, **kw)
-        return {"ok": True}
+            res = await session.send_input(content, **kw)
+        return {"ok": True, **input_answer(res)}
 
     if method == "sleep_session":
         if params.get("only_if_idle"):
