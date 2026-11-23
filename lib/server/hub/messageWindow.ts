@@ -229,3 +229,92 @@ export function loadMessageWindow(
 
   return { messages: sortMessages(messages), hasMore, oldestChatId: first.id };
 }
+
+function afterKey(key: Key): SQL {
+  return and(
+    gte(orderTs, key.ts),
+    or(gt(orderTs, key.ts), and(eq(orderTs, key.ts), gt(sessionMessages.id, key.id))),
+  )!;
+}
+
+function keyOf(sessionId: string, id: number): Key | null {
+  return db.select({ id: sessionMessages.id, ts: orderTs })
+    .from(sessionMessages)
+    .where(and(eq(sessionMessages.sessionId, sessionId), eq(sessionMessages.id, id)))
+    .get() ?? null;
+}
+
+/**
+ * The page NEWER than chat row `after` (a reader of a window around an old
+ * row, scrolling down): its next `limit` chat slots, ascending, with the
+ * side-channel rows each owns — the same half-open partition as
+ * `loadMessageWindow` (`after`'s own side rows came with `after`'s page).
+ * `hasNewer` false = the page reaches the live end.
+ */
+export function loadMessagesAfter(
+  sessionId: string,
+  limit: number,
+  after: number,
+  view: TranscriptView = 'full',
+): { messages: AgentSessionMessage[]; hasNewer: boolean; newestChatId: number | null } {
+  const cursor = keyOf(sessionId, after);
+  if (!cursor) return { messages: [], hasNewer: false, newestChatId: null };
+  const slots = db.select({ id: sessionMessages.id, ts: orderTs })
+    .from(sessionMessages)
+    .where(and(eq(sessionMessages.sessionId, sessionId), slotRows(view), afterKey(cursor)))
+    .orderBy(asc(orderTs), asc(sessionMessages.id))
+    .limit(limit + 1)
+    .all();
+  if (!slots.length) return { messages: [], hasNewer: false, newestChatId: null };
+  const hasNewer = slots.length > limit;
+  const boundary = hasNewer ? slots[limit]! : null;
+  if (hasNewer) slots.length = limit;
+  const where: SQL[] = [eq(sessionMessages.sessionId, sessionId), atOrAfterKey(slots[0]!)];
+  if (boundary) where.push(beforeKey(boundary));
+  const messages = db.select(publicMessageColumns).from(sessionMessages)
+    .where(and(...where, pageRows(view)))
+    .orderBy(asc(orderTs), asc(sessionMessages.id))
+    .all();
+  return { messages: sortMessages(messages), hasNewer, newestChatId: slots[slots.length - 1]!.id };
+}
+
+/**
+ * A window AROUND row `target` (a search hit far from the live end): about
+ * `limit / 2` chat slots up to and including it (with what they own), then
+ * as many newer ones. Pages from its `oldestChatId` (`loadMessageWindow`'s
+ * `before`) and its `newestChatId` (`loadMessagesAfter`) tile with it.
+ * Null when the row is not this session's.
+ */
+export function loadMessagesAround(
+  sessionId: string,
+  target: number,
+  limit: number,
+  view: TranscriptView = 'full',
+): {
+  messages: AgentSessionMessage[]; hasMore: boolean; oldestChatId: number | null;
+  hasNewer: boolean; newestChatId: number | null;
+} | null {
+  const key = keyOf(sessionId, target);
+  if (!key) return null;
+  const older = Math.max(1, Math.ceil(limit / 2));
+  // The first slot after the target bounds the older half (exclusive).
+  const next = db.select({ id: sessionMessages.id })
+    .from(sessionMessages)
+    .where(and(eq(sessionMessages.sessionId, sessionId), slotRows(view), afterKey(key)))
+    .orderBy(asc(orderTs), asc(sessionMessages.id))
+    .limit(1)
+    .get();
+  const back = loadMessageWindow(sessionId, older, next ? next.id : null, view);
+  if (!next) {
+    return { ...back, hasNewer: false, newestChatId: back.messages.length ? target : null };
+  }
+  // The newer half starts AT that slot: the rows the target owns came with it.
+  const ahead = loadMessagesAfter(sessionId, Math.max(1, limit - older), target, view);
+  return {
+    messages: sortMessages([...back.messages, ...ahead.messages]),
+    hasMore: back.hasMore,
+    oldestChatId: back.oldestChatId,
+    hasNewer: ahead.hasNewer,
+    newestChatId: ahead.newestChatId ?? target,
+  };
+}

@@ -1554,6 +1554,10 @@ export type AgentSessionMessageWindow = {
   messages: Array<AgentSessionMessage & { peerReplyTo?: string }>;
   hasMore: boolean;
   oldestChatId: number | null;
+  /** `?around=` / `?after=` pages only: more rows toward the live end, and
+   *  the newest chat row held (the next `?after=` cursor). */
+  hasNewer?: boolean;
+  newestChatId?: number | null;
   // The bus revision this page reflects (sync refonte C12). Optional: older
   // hubs omit it.
   sync?: import('@/lib/sync/protocol').SyncStamp;
@@ -1943,3 +1947,17 @@ export type WorkflowAgentsResponse =
 export type AgentRunConfigsResponse =
   | { ok: true; configs: Record<string, { model: string; effort: string | null }> }
   | { ok: false; error: string };
+
+// GET /api/sessions/[id]/search?q=&view= — the session's own rows matching
+// `q` (lib/server/hub/transcriptSearch.ts): newest first. `mode`: the words
+// as a phrase (in order, the last one a prefix), or — when the phrase found
+// nothing — every word anywhere in the row. `snippet` marks matches with
+// \u0002…\u0003.
+export type SessionSearchHit = { id: number; role: string; snippet: string; tsMs: number };
+export type SessionTranscriptSearchResponse = {
+  results: SessionSearchHit[];
+  /** Hits counted (≤ `cap`); `results` holds the newest ones. */
+  total: number;
+  cap: number;
+  mode: 'phrase' | 'words' | 'none';
+};

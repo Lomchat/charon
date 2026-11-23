@@ -12,7 +12,7 @@ import EndpointEffortPicker, { EndpointEffortSummary } from './EndpointEffortPic
 import { isOpenCodeGo } from '@/lib/opencodeModels';
 
 import SessionSettingsModal from './SessionSettingsModal';
-import { IconArrowRepeat, IconGear, IconPause, IconPlay, IconStop, IconRewind, IconGitBranch, IconBullseye, IconChatSide, IconSparkle } from './icons';
+import { IconArrowRepeat, IconGear, IconPause, IconPlay, IconStop, IconRewind, IconGitBranch, IconBullseye, IconChatSide, IconSparkle, IconSearch } from './icons';
 import { goalIsLive, shownGoal } from '@/lib/sessionGoal';
 import { sameModel } from '@/lib/strictModel';
 import type { SessionRecap } from '@/lib/sessionRecap';
@@ -107,6 +107,11 @@ import { usePeerMessageNavigation } from './usePeerMessageNavigation';
 import { outcome } from './outcome';
 import { useChatWindow, type ChatWindowController } from './chatWindow';
 import { parseAsyncQuestion } from '@/lib/asyncQuestions';
+import SessionSearch from './SessionSearch';
+import type { TranscriptView } from '@/lib/transcriptRows';
+import { clearSearchHighlight, highlightTerms } from './searchHighlight';
+import { rebuildStateFromMessages, type PersistedMessage } from './sessionRebuild';
+import type { AgentSessionMessageWindow, SessionSearchHit } from '@/lib/types/api';
 
 // Renders one active session. Stream state lives in useSessionStream;
 // global navigation, modals and polling stay in HubPanel.
@@ -212,6 +217,27 @@ const SYNC_CUE_DELAY_MS = 400;
 /** Aside (§14.119) whenever the session's process is up — mid-turn or idle:
  *  the CLI answers it either way. Asleep there is nothing to ask. */
 const ASIDE_STATUSES = new Set(['active', 'thinking', 'background', 'failed']);
+
+/** Rows of a window around a search hit (and the pages it grew by). */
+const AROUND_ROWS = 120;
+
+/** A read-only window of the transcript around a search hit far from the
+ *  live end: shown instead of the live transcript until the reader is back
+ *  at the live end (or clicks ↓, sends, leaves the session). */
+type DetachedWindow = {
+  view: TranscriptView; rows: AgentSessionMessageWindow['messages'];
+  hasMore: boolean; oldestChatId: number | null; hasNewer: boolean; newestChatId: number | null;
+  /** Identity of this window (pages of an older one are dropped). */
+  nonce: number;
+};
+
+/** The transcript row drawing persisted row `id`: itself, or the tool call a
+ *  tool_result rides on. */
+function rowFor(rows: readonly { msg: Msg; attached?: Msg }[], id: string): string | null {
+  return rows.find((e) => e.msg.id === id)?.msg.id ?? rows.find((e) => e.attached?.id === id)?.msg.id ?? null;
+}
+
+const NO_REPLIES: ReadonlyMap<string, string> = new Map();
 
 /** Pair tool_use ↔ tool_result for inline rendering: a result whose call is
  *  in the list rides on it (`attached`), the others stand alone. */
@@ -1009,6 +1035,122 @@ export default function SessionView({
     }, name);
   }, [oldestPending, liveActivity, currentTool, sessionKind]);
 
+  // ── Session search (the magnifier, Alt+F) and the window around a hit ──
+  const [searchOpen, setSearchOpen] = useState(false);
+  const [searchFocus, setSearchFocus] = useState(0);
+  const closeSearch = useCallback(() => { setSearchOpen(false); clearSearchHighlight(); }, []);
+  // Alt+F (Ctrl+F stays the browser's): a kept-alive pane hidden behind
+  // another has its effects unmounted, so only the shown session listens.
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (!e.altKey || e.ctrlKey || e.metaKey || e.shiftKey || e.code !== 'KeyF') return;
+      e.preventDefault();
+      setSearchOpen(true);
+      setSearchFocus((n) => n + 1);
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, []);
+  const [detached, setDetached] = useState<DetachedWindow | null>(null);
+  const [detachedPaging, setDetachedPaging] = useState<'older' | 'newer' | null>(null);
+  const detachedRef = useLatest(detached);
+  const pagingRef = useRef<'older' | 'newer' | null>(null);
+  // Back at the live end: where the transcript left it, or at its bottom.
+  const toBottomRef = useRef(false);
+  const exitDetached = useCallback((toBottom: boolean) => {
+    if (!detachedRef.current) return;
+    toBottomRef.current = toBottom;
+    pagingRef.current = null;
+    setDetachedPaging(null);
+    setDetached(null);
+  }, [detachedRef]);
+  useLayoutEffect(() => {
+    if (detached || !toBottomRef.current) return;
+    toBottomRef.current = false;
+    const el = chatBodyRef.current;
+    if (el) el.scrollTop = 0;
+  }, [detached]);
+  // Leaving (or hiding) the session, or another view, forgets the window.
+  useEffect(() => () => { setDetached(null); }, []);
+  useEffect(() => { if (detachedRef.current && detachedRef.current.view !== transcriptView) setDetached(null); }, [transcriptView, detachedRef]);
+  const detachedRenderable = useMemo(() => {
+    if (!detached) return null;
+    const msgs = rebuildStateFromMessages(detached.rows as unknown as PersistedMessage[], 'active', sessionKind).messages;
+    return pairToolResults(msgs).filter(({ msg }) => showTools || shouldShowChatRole(msg.role, false));
+  }, [detached, sessionKind, showTools]);
+  const loadDetached = useCallback(async (dir: 'older' | 'newer') => {
+    const d = detachedRef.current;
+    if (!d || pagingRef.current) return;
+    const cursor = dir === 'older' ? d.oldestChatId : d.newestChatId;
+    if (cursor == null) return;
+    pagingRef.current = dir;
+    setDetachedPaging(dir);
+    const r = await outcome(dir === 'older'
+      ? api.loadOlderMessages(sessionId, cursor, AROUND_ROWS, d.view)
+      : api.loadNewerMessages(sessionId, cursor, AROUND_ROWS, d.view));
+    if (pagingRef.current !== dir) return;          // exited meanwhile
+    pagingRef.current = null;
+    setDetachedPaging(null);
+    if (!r.ok) return;
+    const page = r.value;
+    setDetached((cur) => {
+      if (!cur || cur.nonce !== d.nonce) return cur;
+      return dir === 'older'
+        ? { ...cur, rows: [...page.messages, ...cur.rows], hasMore: page.hasMore, oldestChatId: page.oldestChatId }
+        : { ...cur, rows: [...cur.rows, ...page.messages], hasNewer: !!page.hasNewer, newestChatId: page.newestChatId ?? cur.newestChatId };
+    });
+  }, [detachedRef, sessionId]);
+  // A jump: the row is mounted from the rows shown (live or the window), else
+  // a window around it is fetched and the jump waits for it.
+  const pendingHitRef = useRef<{ id: string; terms: string[] } | null>(null);
+  const flashTimerRef = useRef<number | null>(null);
+  const flashHit = useCallback((key: string, terms: string[]) => {
+    let tries = 0;
+    const tick = () => {
+      const row = chatWindowRef.current?.rowElement(key);
+      if (!row) { tries += 1; if (tries < 12) requestAnimationFrame(tick); return; }
+      row.classList.remove('search-hit-flash');
+      void row.offsetWidth;   // restart the animation
+      row.classList.add('search-hit-flash');
+      if (flashTimerRef.current != null) clearTimeout(flashTimerRef.current);
+      flashTimerRef.current = window.setTimeout(() => row.classList.remove('search-hit-flash'), 1600);
+      highlightTerms(row, terms);
+    };
+    requestAnimationFrame(tick);
+  }, []);
+  useEffect(() => () => { if (flashTimerRef.current != null) clearTimeout(flashTimerRef.current); flashTimerRef.current = null; }, []);
+  const shownRows = detachedRenderable ?? visibleRenderable;
+  useEffect(() => {
+    const p = pendingHitRef.current;
+    if (!p) return;
+    const key = rowFor(shownRows, p.id);
+    if (!key) return;
+    pendingHitRef.current = null;
+    if (chatWindowRef.current?.scrollToKey(key)) flashHit(key, p.terms);
+  }, [shownRows, flashHit]);
+  const jumpToHit = useCallback(async (hit: SessionSearchHit, terms: string[]) => {
+    const id = rowKey(hit.id);
+    const shown = rowFor(shownRows, id);
+    if (shown && chatWindowRef.current?.scrollToKey(shown)) { flashHit(shown, terms); return; }
+    if (detachedRef.current && rowFor(visibleRenderable, id)) {
+      // In the live rows after all: back to them, then the jump.
+      pendingHitRef.current = { id, terms };
+      exitDetached(false);
+      return;
+    }
+    const view = transcriptView ?? 'full';
+    const r = await outcome(api.loadMessagesAround(sessionId, hit.id, AROUND_ROWS, view));
+    if (!r.ok) return;
+    const w = r.value;
+    pendingHitRef.current = { id, terms };
+    pagingRef.current = null;
+    setDetachedPaging(null);
+    setDetached({
+      view, rows: w.messages, hasMore: w.hasMore, oldestChatId: w.oldestChatId,
+      hasNewer: !!w.hasNewer, newestChatId: w.newestChatId ?? null, nonce: Date.now(),
+    });
+  }, [shownRows, visibleRenderable, detachedRef, exitDetached, flashHit, sessionId, transcriptView]);
+
   // ── Scroll mechanics (column-reverse, |scrollTop| ≈ 0 = visual bottom) ───
   // In column-reverse:
   //   scrollTop ≈ 0           → visually at the bottom (newest message)
@@ -1051,7 +1193,14 @@ export default function SessionView({
     // `max > 0` guard: when the content is shorter than the container there is
     // nothing to scroll, distFromTop is 0, and this would otherwise paginate
     // the whole history in a loop on every commit.
-    if (max > 0 && distFromTop < loadAhead && hasMore && !isLoadingMore) {
+    const d = detachedRef.current;
+    if (d) {
+      // The window around a hit pages both ways; back at the live end, the
+      // live transcript takes over (its bottom is the same rows).
+      if (max > 0 && distFromTop < loadAhead && d.hasMore) void loadDetached('older');
+      else if (Math.abs(el.scrollTop) < loadAhead && d.hasNewer) void loadDetached('newer');
+      if (Math.abs(el.scrollTop) < 2 && !d.hasNewer && !pagingRef.current) exitDetached(true);
+    } else if (max > 0 && distFromTop < loadAhead && hasMore && !isLoadingMore) {
       loadMoreHistory();
     }
     setIsAtTop(max <= 0 || distFromTop < 4);
@@ -1070,7 +1219,7 @@ export default function SessionView({
       jumpable = gap > 4;
     }
     setShowJumpToMsgStart(jumpable);
-  }, [hasMore, isLoadingMore, loadMoreHistory, setHistoryHold, isPeerJumping, isQuestionJumping]);
+  }, [hasMore, isLoadingMore, loadMoreHistory, setHistoryHold, isPeerJumping, isQuestionJumping, detachedRef, loadDetached, exitDetached]);
   // rAF-coalesced scroll handler. The measurement above reads scrollHeight /
   // clientHeight and two getBoundingClientRect — each one forces a synchronous
   // layout, and with `content-visibility: auto` on every bubble that layout has
@@ -1094,11 +1243,18 @@ export default function SessionView({
   }, []);
   // Recompute isAtTop when the content changes (new messages → max moves).
   useEffect(() => { handleChatScroll(); }, [visibleRenderable.length, handleChatScroll]);
+  // Sending from a window around a hit: back to the live end, where it lands.
+  const sendFromComposer = useCallback((...args: Parameters<typeof streamSend>) => {
+    exitDetached(true);
+    return streamSend(...args);
+  }, [exitDetached, streamSend]);
   const onPillClick = useCallback(() => {
     setNewCount(0);
+    // In a window around a hit, ↓ is "back to the present".
+    if (detachedRef.current) { exitDetached(true); return; }
     const el = chatBodyRef.current;
     if (el) el.scrollTo({ top: 0, behavior: 'smooth' });
-  }, []);
+  }, [detachedRef, exitDetached]);
 
   // ── Scroll-up, message by message ─────────────────────────────────────
   // TWO up buttons stacked above the ↓ pill, one per role, so the user can
@@ -1119,9 +1275,9 @@ export default function SessionView({
   // Roles come from Message.tsx's `data-msg-role` — only the rendered chat
   // bubbles carry it (tool/thinking cards don't), which is exactly the set
   // worth stopping on.
-  const roleByRowId = useMemo(() => new Map(visibleRenderable.map(({ msg }) => [msg.id, msg.role] as const)), [visibleRenderable]);
+  const roleByRowId = useMemo(() => new Map(shownRows.map(({ msg }) => [msg.id, msg.role] as const)), [shownRows]);
   // Alt+fold reaches the rows the window has not mounted (bubbleFold.tsx).
-  const foldRows = useLatest(visibleRenderable);
+  const foldRows = useLatest(shownRows);
   useEffect(() => {
     const el = chatBodyRef.current;
     if (!el) return;
@@ -1142,7 +1298,9 @@ export default function SessionView({
       mounted.scrollIntoView({ block: 'start', behavior: 'smooth' });
     } else if (key) {
       win!.scrollToKey(key);
-    } else if (hasMore && !isLoadingMore) {
+    } else if (detachedRef.current?.hasMore) {
+      void loadDetached('older');
+    } else if (!detachedRef.current && hasMore && !isLoadingMore) {
       // No more message of that role above, but there's still history left:
       // paginate. Once the older messages are loaded, the user can click
       // again to keep scrolling up.
@@ -1150,12 +1308,12 @@ export default function SessionView({
     } else {
       // Visual top reached: align the last DOM child (= visually at the
       // very top in column-reverse) with the top of the container.
-      const oldest = visibleRenderable[0]?.msg.id;
+      const oldest = shownRows[0]?.msg.id;
       if (win && oldest && !win.rowElement(oldest)) { win.scrollToKey(oldest); return; }
       const last = el.lastElementChild as HTMLElement | null;
       if (last) last.scrollIntoView({ block: 'start', behavior: 'smooth' });
     }
-  }, [hasMore, isLoadingMore, loadMoreHistory, roleByRowId, visibleRenderable]);
+  }, [hasMore, isLoadingMore, loadMoreHistory, roleByRowId, shownRows, detachedRef, loadDetached]);
   const onScrollUpUserClick = useCallback(() => scrollUpToRole('user'), [scrollUpToRole]);
   const onScrollUpAgentClick = useCallback(() => scrollUpToRole('assistant'), [scrollUpToRole]);
 
@@ -1357,6 +1515,9 @@ export default function SessionView({
                   onClick={() => setGoalEditorOpen(true)}
                   aria-label="Session goal" title={goalIsLive(shownGoal(selected.goal)) ? 'Change the goal' : 'Set a goal the session keeps working toward'}><IconBullseye /></button>
               )}
+              <button type="button" className={`session-action${searchOpen ? ' is-on' : ''}`} aria-pressed={searchOpen}
+                onClick={() => { if (searchOpen) closeSearch(); else { setSearchOpen(true); setSearchFocus((n) => n + 1); } }}
+                aria-label="Search this session" title="search · Alt+F"><IconSearch /></button>
               <button type="button" className="session-action session-settings-button" onClick={() => setSessionSettingsOpen(true)} aria-label="Session settings" title="Session settings"><IconGear /></button>
             </div>
           </div>
@@ -1407,6 +1568,10 @@ export default function SessionView({
 
         <div className="app-chat-wrap">
           <QuoteSelectionButton chatRef={chatBodyRef} onQuote={requestQuote} />
+          {searchOpen && (
+            <SessionSearch sessionId={sessionId} view={transcriptView ?? 'full'} focusSignal={searchFocus}
+              onJump={jumpToHit} onClose={closeSearch} />
+          )}
           <div className="app-chat" ref={chatBodyRef} onScroll={handleChatScroll}>
             {isLoadingHistory && messages.length === 0 ? (
               // Placeholder during the 1st refetch — differentiates "empty
@@ -1416,6 +1581,37 @@ export default function SessionView({
                 <span className="app-history-loading-spinner" aria-hidden />
                 <span>loading history…</span>
               </div>
+            ) : detached && detachedRenderable ? (
+              // A window around a search hit (read-only), paged both ways.
+              <>
+                {detachedPaging === 'newer' && (
+                  <div className="app-loadmore-indicator" role="status"><span className="app-history-loading-spinner" aria-hidden /></div>
+                )}
+                <MessageHistory key={`around-${detached.nonce}`}
+                  scrollerRef={chatBodyRef} windowRef={chatWindowRef} followNewest={false}
+                  siblings={siblings} onOpenPeerSession={onOpenSession}
+                  onPeerRequestHover={hoverRequest} onPeerRequestJump={jumpToRequest}
+                  peerReplyToById={NO_REPLIES}
+                  renderable={detachedRenderable}
+                  liveRow={null}
+                  kind={sessionKind}
+                  substitute={substitute} selectedModel={model}
+                  vpsId={selected.vpsId}
+                  cwd={selected.cwd}
+                  authMsgId={null} continuableMsgId={null} schedulableMsgId={null} limitMsgId={null}
+                  onContinue={sendContinue}
+                  onScheduleResume={scheduleResume}
+                  onCancelScheduledResume={cancelScheduledResume}
+                  currentAccount={currentAccount}
+                  onContinueWithAccount={continueWithAccount}
+                  finishMsgId={null} finishCue={null}
+                  turnInFlight={false}
+                />
+                {(detached.hasMore || detachedPaging === 'older') && (
+                  <div className="app-loadmore-indicator" role="status"><span className="app-history-loading-spinner" aria-hidden /></div>
+                )}
+                {!detached.hasMore && <div className="app-history-start">— start of history —</div>}
+              </>
             ) : (
               <>
                 {/* First DOM child = visual BOTTOM (column-reverse): the cue
@@ -1434,7 +1630,7 @@ export default function SessionView({
                     substitutedFor={substitute ? model : null}
                     peerReplyTo={peerReplies.streamingReplyTo} onPeerRequestHover={hoverRequest} onPeerRequestJump={jumpToRequest} />
                 )}
-                <MessageHistory
+                <MessageHistory key="live"
                   scrollerRef={chatBodyRef} windowRef={chatWindowRef}
                   siblings={siblings} onOpenPeerSession={onOpenSession}
                   onPeerRequestHover={hoverRequest} onPeerRequestJump={jumpToRequest}
@@ -1523,7 +1719,7 @@ export default function SessionView({
               <span className="app-scroll-arrow">▴</span>
             </button>
           )}
-          {!isAtBottom && (
+          {(!isAtBottom || detached) && (
             <button
               type="button"
               className={`app-scroll-pill${newCount > 0 ? ' has-new' : ''}`}
@@ -1673,7 +1869,7 @@ export default function SessionView({
             kind={sessionKind}
             permissionMode={permissionMode}
             onSetMode={setMode}
-            onSend={streamSend}
+            onSend={sendFromComposer}
             prefillInput={prefillInput}
             clearPrefillInput={clearPrefillInput}
             pending={pendingUploads}
@@ -1759,8 +1955,11 @@ const MessageHistory = memo(function MessageHistory({
   renderable, kind, vpsId, cwd, onReauth, authMsgId, continuableMsgId, schedulableMsgId, onContinue, onScheduleResume, onCancelScheduledResume, turnInFlight,
   limitMsgId, currentAccount, onContinueWithAccount, finishMsgId, finishCue,
   siblings, onOpenPeerSession, onPeerRequestHover, onPeerRequestJump, peerReplyToById,
-  liveRow, substitute, selectedModel, scrollerRef, windowRef,
+  liveRow, substitute, selectedModel, scrollerRef, windowRef, followNewest = true,
 }: {
+  /** False for a window around a search hit: pages loaded toward the live
+   *  end never move what is read (chatWindow.ts). */
+  followNewest?: boolean;
   renderable: { msg: Msg; attached?: Msg }[];
   /** The chat column (the window's scroller) and the window's controller
    *  (chatWindow.ts): only the rows near the viewport are mounted. */
@@ -1808,7 +2007,7 @@ const MessageHistory = memo(function MessageHistory({
   const order = useMemo(() => [...renderable].reverse(), [renderable]);
   const keys = useMemo(() => order.map((e) => e.msg.id), [order]);
   const estimate = useCallback((i: number) => estimateRowHeight(order[i]!.msg), [order]);
-  const { start, end, bottomSpace, topSpace } = useChatWindow({ keys, estimate, scrollerRef, controllerRef: windowRef });
+  const { start, end, bottomSpace, topSpace } = useChatWindow({ keys, estimate, scrollerRef, controllerRef: windowRef, followNewest });
   const rows = order.slice(start, end).map(({ msg, attached }) => {
     // One wrapper per row: the window measures it (`.vrow:empty` = a row
     // that draws nothing, no height and no gap).

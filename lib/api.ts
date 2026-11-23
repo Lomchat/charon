@@ -665,6 +665,30 @@ export const api = {
     if (view) p.set('view', view);
     return send<AgentSessionMessageWindow>('GET', `/api/sessions/${id}?${p.toString()}`);
   },
+  // A window AROUND row `around` (a search hit far from the live end) and the
+  // pages newer than one (`after` = the `newestChatId` held): LEAN pages of
+  // the same endpoint (AgentSessionMessageWindow + hasNewer/newestChatId).
+  loadMessagesAround: (id: string, around: number, limit = 120, view?: TranscriptView) => {
+    const p = new URLSearchParams();
+    p.set('around', String(around));
+    p.set('limit', String(limit));
+    if (view) p.set('view', view);
+    return send<AgentSessionMessageWindow>('GET', `/api/sessions/${id}?${p.toString()}`);
+  },
+  loadNewerMessages: (id: string, after: number, limit = 120, view?: TranscriptView) => {
+    const p = new URLSearchParams();
+    p.set('after', String(after));
+    p.set('limit', String(limit));
+    if (view) p.set('view', view);
+    return send<AgentSessionMessageWindow>('GET', `/api/sessions/${id}?${p.toString()}`);
+  },
+  // The session header's magnifier: this session's rows matching `q`.
+  searchSessionTranscript: (id: string, q: string, view: TranscriptView, signal?: AbortSignal) => {
+    const p = new URLSearchParams();
+    p.set('q', q);
+    p.set('view', view);
+    return send<import('@/lib/types/api').SessionTranscriptSearchResponse>('GET', `/api/sessions/${id}/search?${p.toString()}`, undefined, { signal });
+  },
   // The transcript's O(1) rev-gated check (app/sync/repairPolicy.ts): the hub
   // pushes one heartbeat to `conn` first. 404 = an older hub (no route) or a
   // deleted session — the caller asks for a window either way.

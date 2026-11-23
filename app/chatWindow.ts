@@ -56,8 +56,12 @@ export function useChatWindow(o: {
   estimate: (index: number) => number;
   scrollerRef: RefObject<HTMLElement | null>;
   controllerRef?: { current: ChatWindowController | null };
+  /** False: rows appearing at the newest end (a window around an old row,
+   *  paging toward the live end) never move what is read. True (the live
+   *  transcript): as before — a reader away from the bottom sees them push. */
+  followNewest?: boolean;
 }): { start: number; end: number; bottomSpace: number; topSpace: number } {
-  const { keys, estimate, scrollerRef, controllerRef } = o;
+  const { keys, estimate, scrollerRef, controllerRef, followNewest = true } = o;
   const heights = useRef(new Map<string, number>()).current;
   const gapRef = useRef(10);
   const [range, setRange] = useState<Range>(() => ({
@@ -71,6 +75,10 @@ export function useChatWindow(o: {
   const rafRef = useRef<number | null>(null);
   const observed = useRef(new Map<string, Element>()).current;
   const roRef = useRef<ResizeObserver | null>(null);
+  // Keys of the last settle: a row unknown then was never in a spacer (its
+  // first measurement corrects nothing), and the ones before the old newest
+  // are rows that just appeared at the newest end.
+  const knownRef = useRef<{ keys: Set<string>; newest: string | null }>({ keys: new Set(), newest: null });
 
   const indexOf = (k: string | null, fallback: number) => {
     if (k == null) return fallback;
@@ -107,24 +115,34 @@ export function useChatWindow(o: {
     const atBottom = Math.abs(el.scrollTop) < 2;
     const index = new Map<string, number>();
     ks.forEach((k, i) => index.set(k, i));
+    const known = knownRef.current;
+    // Rows that appeared at the newest end since the last settle.
+    const prevNewest = known.newest != null ? index.get(known.newest) : undefined;
+    const appeared = !followNewest && prevNewest != null && prevNewest > 0 ? prevNewest : 0;
 
     // 1. Measure. A first measurement below the viewport replaces the
-    //    estimate the spacer used: scroll that difference back.
+    //    estimate the spacer used: scroll that difference back. Rows that
+    //    just appeared at the newest end (not following it): their whole
+    //    height, mounted or not.
+    const mounted = new Map<string, Element>();
+    for (const child of el.children) {
+      const key = (child as HTMLElement).dataset?.vkey;
+      if (key != null && index.has(key)) mounted.set(key, child);
+    }
     let shift = 0;
     let anchor: { i: number; bottom: number } | null = null;
     const ro = roRef.current;
-    const seen = new Set<string>();
-    for (const child of el.children) {
-      const key = (child as HTMLElement).dataset?.vkey;
-      if (key == null) continue;
-      const i = index.get(key);
-      if (i == null) continue;
-      seen.add(key);
+    for (let i = 0; i < appeared; i++) {
+      const node = mounted.get(ks[i]!);
+      const h = node ? node.getBoundingClientRect().height : heights.get(ks[i]!) ?? est(i);
+      shift += h > 0 ? h + gap : 0;
+    }
+    for (const [key, child] of mounted) {
+      const i = index.get(key)!;
       if (ro && !observed.has(key)) { ro.observe(child); observed.set(key, child); }
       const r = child.getBoundingClientRect();
       const h = r.height;
-      const before = heights.get(key);
-      if (before === undefined && !atBottom && r.top >= viewBottom - 1) {
+      if (i >= appeared && !heights.has(key) && known.keys.has(key) && !atBottom && r.top >= viewBottom - 1) {
         const e = est(i);
         shift += (h > 0 ? h + gap : 0) - (e > 0 ? e + gap : 0);
       }
@@ -132,8 +150,9 @@ export function useChatWindow(o: {
       if (h > 0 && (anchor == null || i < anchor.i)) anchor = { i, bottom: r.bottom };
     }
     for (const [k, node] of observed) {
-      if (!seen.has(k)) { ro?.unobserve(node); observed.delete(k); }
+      if (!mounted.has(k)) { ro?.unobserve(node); observed.delete(k); }
     }
+    knownRef.current = { keys: new Set(ks), newest: ks[0] ?? null };
     if (shift !== 0) el.scrollTop -= shift;
 
     // 2. A pending jump: align the row's top, again until it holds.

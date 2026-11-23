@@ -69,6 +69,29 @@ beforeAll(async () => {
 });
 
 describe('chronological pagination with a repaired row (Codex 18)', () => {
+  // The session search's jump (§14.128): a window AROUND an old row, then the
+  // pages older and newer than it, must give back every row exactly once, in
+  // order — a gap would hide rows from the reader, a duplicate draw one twice.
+  it('a window around an old row tiles with the pages before and after it', async () => {
+    const { loadMessagesAround, loadMessagesAfter } = await import('@/lib/server/hub/messageWindow');
+    const all = loadMessageWindow(SID, 1000, null).messages.map((m: any) => m.id);
+    const target = loadMessageWindow(SID, 1000, null).messages.find((m: any) => m.content === 'msg-150').id;
+    const around = loadMessagesAround(SID, target, 20)!;
+    let ids: number[] = around.messages.map((m: any) => m.id);
+    expect(ids).toContain(target);
+    for (let cursor = around.oldestChatId, more = around.hasMore; more;) {
+      const p = loadMessageWindow(SID, 30, cursor);
+      ids = [...p.messages.map((m: any) => m.id), ...ids];
+      cursor = p.oldestChatId; more = p.hasMore;
+    }
+    for (let cursor = around.newestChatId, more = around.hasNewer; more;) {
+      const p = loadMessagesAfter(SID, 30, cursor!);
+      ids = [...ids, ...p.messages.map((m: any) => m.id)];
+      cursor = p.newestChatId; more = p.hasNewer;
+    }
+    expect(ids).toEqual(all);
+  });
+
   it('the initial window selects by chronology — the repaired row is NOT in the newest page', () => {
     const page1 = loadMessageWindow(SID, 200, null);
     expect(page1.hasMore).toBe(true);

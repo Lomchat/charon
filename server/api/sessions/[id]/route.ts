@@ -21,7 +21,7 @@ import { isAsyncQuestionDelivering } from '@/lib/server/agent/asyncQuestionDeliv
 import { buildSessionSummary, syncAfter } from '@/lib/server/sync/sessionSummaries';
 import { getAgentClientForVpsId } from '@/lib/server/agent/AgentClientPool';
 import { orderChronologically } from '@/lib/server/hub/messageOrder';
-import { loadMessageWindow, publicMessageColumns } from '@/lib/server/hub/messageWindow';
+import { loadMessageWindow, loadMessagesAfter, loadMessagesAround, publicMessageColumns } from '@/lib/server/hub/messageWindow';
 import { countToolCalls, exitPlanFallback, withBgTaskLaunchers } from '@/lib/server/hub/conversationSources';
 import type { TranscriptView } from '@/lib/transcriptRows';
 import { normalizeSessionHandle } from '@/lib/server/agent/sessionHandles';
@@ -125,6 +125,14 @@ function legacyOpenThinkingRow(sessionId: string, text: string, tsMs: number | n
 //                compact sources in BOTH views (conversationSources.ts):
 //                `toolCallCount`, running tasks' launcher `command`/
 //                `description`, an empty ExitPlan's plan file. Default `full`.
+//   ?around=K  — LEAN like `before`: a window AROUND row K (a session search
+//                hit far from the live end, messageWindow.ts §
+//                loadMessagesAround) → {messages, hasMore, oldestChatId,
+//                hasNewer, newestChatId, sync}. 404 when K is not this
+//                session's row.
+//   ?after=K   — LEAN: the page NEWER than chat row K (`newestChatId` of the
+//                page held) → {messages, hasMore: false, oldestChatId: null,
+//                hasNewer, newestChatId, sync}.
 //   ?conn=<uuid>&focusSeq=N — window mode only (sync refonte C12): apply
 //                this SSE connection's focus INSIDE the GET (routing only,
 //                latest-wins by focusSeq) → `focus:{applied, focused,
@@ -161,7 +169,11 @@ export async function GET(req: Request, { params }: { params: Promise<{ id: stri
   const focusConn = url.searchParams.get('conn');
   const focusSeqRaw = Number(url.searchParams.get('focusSeq'));
   let focus: { applied: boolean; focused: boolean; focusSeq: number } | undefined;
-  if (since == null && url.searchParams.get('before') == null && focusConn
+  const aroundRaw = url.searchParams.get('around');
+  const afterRaw = url.searchParams.get('after');
+  const around = aroundRaw != null && /^\d+$/.test(aroundRaw) ? Number(aroundRaw) : null;
+  const after = afterRaw != null && /^\d+$/.test(afterRaw) ? Number(afterRaw) : null;
+  if (since == null && url.searchParams.get('before') == null && around == null && after == null && focusConn
     && focusConn.length >= 8 && focusConn.length <= 64 && Number.isSafeInteger(focusSeqRaw) && focusSeqRaw >= 0) {
     const f = setConnectionFocus(focusConn, id, focusSeqRaw, true, { routingOnly: true });
     markLeftRead(f.read);
@@ -183,6 +195,8 @@ export async function GET(req: Request, { params }: { params: Promise<{ id: stri
   let oldestChatId: number | null;
   let includeBackgroundSnapshot = false;
   let lean = false;
+  // `around` / `after` pages: how far they reach toward the live end.
+  let newer: { hasNewer: boolean; newestChatId: number | null } | null = null;
   const windowStarted = performance.now();
   if (since != null) {
     // Delta mode: every row with id > since. Cap at 1000 just in case
@@ -202,6 +216,23 @@ export async function GET(req: Request, { params }: { params: Promise<{ id: stri
     // again on its delta poll — the `bg_tasks_snapshot` frame is one-shot
     // and lost when it outruns the view's SSE (§14.24 poll backstop).
     includeBackgroundSnapshot = url.searchParams.get('bg') === '1';
+  } else if (around != null || after != null) {
+    const limit = Math.min(Math.max(Number(url.searchParams.get('limit') ?? 200), 1), 1000);
+    lean = true;
+    if (around != null) {
+      const win = loadMessagesAround(id, around, limit, view);
+      if (!win) return Response.json({ error: 'not found' }, { status: 404 });
+      messages = win.messages;
+      hasMore = win.hasMore;
+      oldestChatId = win.oldestChatId;
+      newer = { hasNewer: win.hasNewer, newestChatId: win.newestChatId };
+    } else {
+      const page = loadMessagesAfter(id, limit, after!, view);
+      messages = page.messages;
+      hasMore = false;
+      oldestChatId = null;
+      newer = { hasNewer: page.hasNewer, newestChatId: page.newestChatId };
+    }
   } else {
     const limit = Math.min(Math.max(Number(url.searchParams.get('limit') ?? 200), 1), 1000);
     const beforeRaw = url.searchParams.get('before');
@@ -224,7 +255,7 @@ export async function GET(req: Request, { params }: { params: Promise<{ id: stri
     // (lib/api.ts § loadOlderMessages). The session-wide envelope —
     // token fold, expiry sweep, pendings, max(id), bg registry — belongs to
     // the window and the delta poll.
-    const page: AgentSessionMessageWindow = { messages, hasMore, oldestChatId, sync: currentRev() };
+    const page: AgentSessionMessageWindow = { messages, hasMore, oldestChatId, ...newer, sync: currentRev() };
     const response = Response.json(page);
     response.headers.set('server-timing', `message-window;dur=${windowMs.toFixed(1)}, session-total;dur=${(performance.now() - perfStarted).toFixed(1)}`);
     return response;
