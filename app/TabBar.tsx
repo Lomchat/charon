@@ -212,9 +212,10 @@ export default function TabBar({
     // machines that have never been dragged — every row starts at 0.
     const folderPos = new Map(vpsFolders.map((f) => [f.id, f.position]));
     const sidebarOrder = new Map(
-      [...vpsList].sort((a, b) =>
-        (folderPos.get(a.folderId ?? 'default') ?? 99) - (folderPos.get(b.folderId ?? 'default') ?? 99)
-        || (a.position ?? 0) - (b.position ?? 0)).map((v, i) => [v.id, i]),
+      [...vpsList].sort((a, b) => {
+        const byFolder = (folderPos.get(a.folderId ?? 'default') ?? 99) - (folderPos.get(b.folderId ?? 'default') ?? 99);
+        return byFolder !== 0 ? byFolder : (a.position ?? 0) - (b.position ?? 0);
+      }).map((v, i) => [v.id, i]),
     );
 
     // Everything below is built from the SHOWN tabs, so a folder or a machine

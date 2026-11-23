@@ -22,7 +22,10 @@ function serverOnlyGuard(): Plugin {
 // (server/http/pages.ts).
 export default defineConfig({
   root,
-  plugins: [react(), serverOnlyGuard()],
+  // React Compiler: memoization written at build time (components and hooks
+  // that follow the Rules of React; the others are left as written), so a
+  // parent's render no longer re-renders every child by default (§14.38).
+  plugins: [react({ babel: { plugins: ['babel-plugin-react-compiler'] } }), serverOnlyGuard()],
   resolve: { alias: { '@': root } },
   publicDir: 'public',
   build: {

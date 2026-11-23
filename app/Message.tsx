@@ -32,6 +32,7 @@ import { FoldEdge, FoldLine, foldRootProps, foldText, useBubbleFold } from './bu
 // Shared desktop/mobile type defined in `./sessionTypes`. Re-exported here
 // to preserve historical imports (`import { Msg } from './Message'`).
 import type { Msg } from './sessionTypes';
+import { settled } from './outcome';
 export type { Msg };
 
 /** Where a file link goes, for a host without Charon's explorer (the desk).
@@ -612,7 +613,8 @@ function ScheduledResumeMessage({ m, scheduled, onCancel }: {
       {scheduled.status === 'scheduled' && onCancel && (
         <button type="button" className="wiz-btn" disabled={cancelling} onClick={async () => {
           setCancelling(true);
-          try { await onCancel(scheduled.scheduleId); } finally { setCancelling(false); }
+          await settled(() => onCancel(scheduled.scheduleId));
+          setCancelling(false);
         }}>{cancelling ? 'cancelling…' : 'Cancel'}</button>
       )}
     </div>
@@ -841,15 +843,7 @@ function ToolUseCard({ m, attachedResult, orphaned = false }: { m: Msg; attached
   const summary = summarizeToolInput(name, input);
 
   // Parse the attached result
-  let resultObj: { content: string; isError: boolean } | null = null;
-  if (attachedResult) {
-    try {
-      const rp = JSON.parse(attachedResult.content);
-      resultObj = { content: String(rp.content ?? ''), isError: !!rp.is_error };
-    } catch {
-      resultObj = { content: attachedResult.content, isError: false };
-    }
-  }
+  const resultObj = attachedResult ? parseAttachedResult(attachedResult.content) : null;
 
   const resultPreview = resultObj
     ? (() => {
@@ -905,16 +899,31 @@ function ToolUseCard({ m, attachedResult, orphaned = false }: { m: Msg; attached
   );
 }
 
+/** A paired tool_result row's text and error flag (raw text when unparsable). */
+function parseAttachedResult(raw: string): { content: string; isError: boolean } {
+  try {
+    const rp = JSON.parse(raw);
+    return { content: String(rp.content ?? ''), isError: !!rp.is_error };
+  } catch {
+    return { content: raw, isError: false };
+  }
+}
+
+/** A standalone tool_result row's text: its `content` field, else the raw row. */
+function orphanResultText(raw: string): string {
+  try {
+    const parsed = JSON.parse(raw);
+    if (typeof parsed === 'object' && parsed?.content != null) return String(parsed.content);
+  } catch { /* not JSON: shown as is */ }
+  return raw;
+}
+
 function ToolResultCard({ m }: { m: Msg }) {
   // Displayed standalone when we couldn't link it to a tool_use
   // (should be rare). Discreet style.
   const [open, setOpen] = useState(false);
   const isFolded = useBubbleFold(m.id);
-  let content = m.content;
-  try {
-    const parsed = JSON.parse(m.content);
-    if (typeof parsed === 'object' && parsed?.content != null) content = String(parsed.content);
-  } catch {}
+  const content = orphanResultText(m.content);
   const preview = content.split('\n').slice(0, 2).join(' ').slice(0, 120);
   const isLong = content.length > 240 || content.split('\n').length > 3;
   return (

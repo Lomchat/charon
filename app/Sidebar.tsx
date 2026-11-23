@@ -1,5 +1,5 @@
 'use client';
-import { Fragment, memo, useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
+import { Fragment, memo, useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore, type CSSProperties } from 'react';
 import type { Vps, VpsFolder, VpsPath } from '@/lib/db/schema';
 import type { SessionListItem, InstallInfo, AgentKind, VpsStalenessBaselines } from '@/lib/types/api';
 import { IconAlarm, IconArrowClockwise, IconArrowRepeat, IconCheck2Circle, IconClockHistory, IconLightningCharge, IconEyeSlash, IconListUl, IconMoon, IconPencil, IconRobot, IconServers, IconTerminal, IconTrash, IconWrench } from './icons';
@@ -17,7 +17,7 @@ import { buildOffscreenTargets, collapsedAttentionCounts, type OffscreenTarget }
 import { REVEAL_TTL_MS, revealScrollDelta } from './sidebarReveal';
 import { colorToCss } from './SessionContextMenu';
 import { useLongPress } from './useLongPress';
-import { useStableCallback, useStableOptionalCallback } from './useStable';
+import { useLatest, useStableCallback, useStableOptionalCallback } from './useStable';
 import { isVersionOutdated, isAgentOutdated, agentBuildRelation } from '@/lib/version';
 import { backendAvailability, backendLauncher, parseAgentLastError, type BackendLauncher } from './vpsHealth';
 import { useHasSavedEndpoints } from './savedEndpointsStore';
@@ -85,13 +85,33 @@ export function installKeepsVpsVisible(install: InstallInfo | null, selectedInst
   return install.endedAt != null && Date.now() - install.endedAt < INSTALL_LINGER_MS;
 }
 
+/** The ids saved under `key` (a JSON array of strings): null when absent,
+ *  corrupt or unreadable. */
+/** Sidebar order of a machine's sessions: `position`, then creation, then id. */
+function bySidebarPosition(a: SessionListItem, b: SessionListItem): number {
+  return (a.position ?? 0) - (b.position ?? 0) || a.createdAt - b.createdAt || a.id.localeCompare(b.id);
+}
+
+/** A '1'/'0' flag in browser storage; a failed write (quota, private mode)
+ *  only means it does not persist. */
+function storeFlag(key: string, on: boolean): void {
+  try { localStorage.setItem(key, on ? '1' : '0'); } catch { /* not persisted */ }
+}
+
+function readStoredIds(key: string): string[] | null {
+  try {
+    const saved: unknown = JSON.parse(localStorage.getItem(key) ?? '[]');
+    return Array.isArray(saved) ? saved.filter((id): id is string => typeof id === 'string') : null;
+  } catch {
+    return null;
+  }
+}
+
 function useCollapsedGroups(storageKey: string) {
   const [collapsed, setCollapsed] = useState<ReadonlySet<string>>(() => new Set());
   useEffect(() => {
-    try {
-      const saved: unknown = JSON.parse(localStorage.getItem(storageKey) ?? '[]');
-      if (Array.isArray(saved)) setCollapsed(new Set(saved.filter((id): id is string => typeof id === 'string')));
-    } catch {}
+    const saved = readStoredIds(storageKey);
+    if (saved) setCollapsed(new Set(saved));
   }, [storageKey]);
   const update = useCallback((id: string, value?: boolean) => {
     setCollapsed((current) => {
@@ -307,9 +327,11 @@ export const AGENT_BADGE: Record<string, { glyph: string; label: string }> = {
   unknown:  { glyph: '?', label: 'agent never tested' },
 };
 
+const NO_IDS: ReadonlySet<string> = new Set();
+
 export default function Sidebar({
   vpsList, vpsFolders, sessions, shells, installs,
-  deletingSessionIds = new Set(),
+  deletingSessionIds = NO_IDS,
   selectedId,
   selectedShellId, selectedInstallId,
   openTabRef = null,
@@ -387,14 +409,14 @@ export default function Sidebar({
   }, []);
   function toggleFocus(key: string, set: (fn: (v: boolean) => boolean) => void) {
     set((v) => {
-      try { localStorage.setItem(key, v ? '0' : '1'); } catch {}
+      storeFlag(key, !v);
       return !v;
     });
   }
   function toggleShowDetails() {
     setShowDetails((v) => {
       const next = !v;
-      try { localStorage.setItem(DETAILS_KEY, next ? '1' : '0'); } catch {}
+      storeFlag(DETAILS_KEY, next);
       return next;
     });
   }
@@ -429,19 +451,21 @@ export default function Sidebar({
   const parentPathKey = selectedPathEntity
     ? pathCollapseKey(selectedPathEntity.vpsId, selectedPathEntity.cwd) : null;
 
+  // Deliberately run on navigation, not on collapse state: the user may hide
+  // the currently open session until they navigate to another row. The
+  // folders and their toggle are read as they are then.
+  const foldersNow = useLatest(vpsFolders);
+  const toggleFolderNow = useLatest(onToggleFolderCollapsed);
   useEffect(() => {
     pendingReveal.current = activeTabId ? { id: activeTabId, until: Date.now() + REVEAL_TTL_MS } : null;
     if (!parentVpsId) return;
     setVpsCollapsed(parentVpsId, false);
     if (parentPathKey) setPathCollapsed(parentPathKey, false);
     if (parentFolderId) {
-      const f = vpsFolders.find((ff) => ff.id === parentFolderId);
-      if (f && f.collapsed === 1) onToggleFolderCollapsed?.(parentFolderId, false);
+      const f = foldersNow.current.find((ff) => ff.id === parentFolderId);
+      if (f && f.collapsed === 1) toggleFolderNow.current?.(parentFolderId, false);
     }
-    // Deliberately depend on navigation, not collapse state: the user may
-    // hide the currently open session until they navigate to another row.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [activeTabId, parentVpsId, parentFolderId, parentPathKey, setVpsCollapsed, setPathCollapsed]);
+  }, [activeTabId, parentVpsId, parentFolderId, parentPathKey, setVpsCollapsed, setPathCollapsed, foldersNow, toggleFolderNow]);
 
   useEffect(() => {
     // Ancestor expansion can arrive in a later render (folder state is remote).
@@ -527,8 +551,7 @@ export default function Sidebar({
       // `position` first, `createdAt` as the tiebreak: every pre-existing row
       // is position 0, so an untouched sidebar sorts exactly as it did before
       // and only a list that was actually dragged looks different.
-      .sort((a, b) => (a.position ?? 0) - (b.position ?? 0)
-        || a.createdAt - b.createdAt || a.id.localeCompare(b.id));
+      .sort(bySidebarPosition);
   }
   function visibleSessionsFor(all: SessionListItem[]): SessionListItem[] {
     return sidebarVisiblePathItems(all, (s) => s.id === selectedId
@@ -627,13 +650,12 @@ export default function Sidebar({
       setPeek(false);
     }, PEEK_CLOSE_MS);
   }, []);
-  const holdPeekRef = useRef(holdPeek);
-  holdPeekRef.current = holdPeek;
+  const holdPeekRef = useLatest(holdPeek);
   const peekEnter = useCallback(() => { peekHovered.current = true; schedulePeek(true); }, [schedulePeek]);
   const peekLeave = useCallback(() => {
     peekHovered.current = false;
     if (!holdPeekRef.current) schedulePeek(false);
-  }, [schedulePeek]);
+  }, [schedulePeek, holdPeekRef]);
   useEffect(() => {
     if (!holdPeek && !peekHovered.current) schedulePeek(false);
   }, [holdPeek, schedulePeek]);
@@ -1578,7 +1600,7 @@ const SubFoldRow = memo(function SubFoldRow({ parentId, depth, folded, count, at
   const label = `${count} sub-session${count === 1 ? '' : 's'}`;
   return (
     <button type="button" className={`cs-sub-fold${attention ? ` is-${attention}` : ''}`}
-      style={{ ['--sub-depth' as any]: depth }}
+      style={{ '--sub-depth': depth } as CSSProperties}
       aria-expanded={!folded} aria-label={`${folded ? 'expand' : 'fold'} ${label}`}
       onClick={() => onToggle(parentId)}
       {...tipAttrs({
@@ -1890,7 +1912,7 @@ const SessionRow = memo(function SessionRow({
       title={deleting ? `Deleting ${headline}…` : headline}
       {...tooltip}
       suppressHydrationWarning
-      style={colorToken || depth ? { ...(colorToken ? { ['--c' as any]: colorToCss(colorToken) } : null), ...(depth ? { ['--sub-depth' as any]: depth } : null) } : undefined}
+      style={colorToken || depth ? { ...(colorToken ? { '--c': colorToCss(colorToken) } : null), ...(depth ? { '--sub-depth': depth } : null) } as CSSProperties : undefined}
     >
       <span className="cs-card-stripe" />
       <div className="cs-card-top">
@@ -1977,7 +1999,7 @@ const ShellRow = memo(function ShellRow({ sh, selected, showDetails, onSelect, o
         detail: [sh.exited ? 'SSH shell · ended' : 'SSH shell', sh.cwd ?? '~', age ? agePhrase('started', age) : null],
         actions: [['Click', 'open'], ['Right-click', 'actions']],
       })}
-      style={sh.color ? { ['--c' as any]: colorToCss(sh.color) } : undefined}
+      style={sh.color ? { '--c': colorToCss(sh.color) } as CSSProperties : undefined}
     >
       <span className="cs-card-stripe" />
       <div className="cs-card-top">

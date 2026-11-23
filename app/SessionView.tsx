@@ -104,6 +104,7 @@ import { ContextWindowContext, useSessionCacheReading } from './PromptCacheMarks
 import { peerAssistantReplies, peerSessionTarget } from './peerMessageLinks';
 import { attentionForRow } from '@/lib/sessionAttention';
 import { usePeerMessageNavigation } from './usePeerMessageNavigation';
+import { outcome } from './outcome';
 
 // Renders one active session. Stream state lives in useSessionStream;
 // global navigation, modals and polling stay in HubPanel.
@@ -209,6 +210,81 @@ const SYNC_CUE_DELAY_MS = 400;
 /** Aside (§14.119) whenever the session's process is up — mid-turn or idle:
  *  the CLI answers it either way. Asleep there is nothing to ask. */
 const ASIDE_STATUSES = new Set(['active', 'thinking', 'background', 'failed']);
+
+/** Pair tool_use ↔ tool_result for inline rendering: a result whose call is
+ *  in the list rides on it (`attached`), the others stand alone. */
+function pairToolResults(messages: Msg[]): { msg: Msg; attached?: Msg }[] {
+  const resultByToolUseId = new Map<string, Msg>();
+  for (const m of messages) {
+    if (m.role !== 'tool_result') continue;
+    try {
+      const parsed = JSON.parse(m.content);
+      if (parsed?.tool_use_id) resultByToolUseId.set(String(parsed.tool_use_id), m);
+    } catch {}
+  }
+  const out: { msg: Msg; attached?: Msg }[] = [];
+  const consumedResults = new Set<string>();
+  for (const m of messages) {
+    if (m.role === 'tool_result') {
+      try {
+        const parsed = JSON.parse(m.content);
+        if (parsed?.tool_use_id && resultByToolUseId.has(String(parsed.tool_use_id))) {
+          if (consumedResults.has(m.id)) continue;
+          continue;
+        }
+      } catch {}
+      out.push({ msg: m });
+      continue;
+    }
+    if (m.role === 'tool_use') {
+      let attached: Msg | undefined;
+      try {
+        const parsed = JSON.parse(m.content);
+        if (parsed?.id) {
+          attached = resultByToolUseId.get(String(parsed.id));
+          if (attached) consumedResults.add(attached.id);
+        }
+      } catch {}
+      out.push({ msg: m, attached });
+      continue;
+    }
+    out.push({ msg: m });
+  }
+  return out;
+}
+
+/** A ref the parent handed down, set like React would (a callback or an object). */
+function assignRef<T>(ref: Ref<T> | undefined, el: T): void {
+  if (typeof ref === 'function') ref(el);
+  else if (ref) (ref as { current: T }).current = el;
+}
+
+// The header actions' requests, outside the component: they throw, and the
+// handlers branch on `outcome()` (React Compiler, app/outcome.ts).
+async function postCompact(sessionId: string): Promise<void> {
+  const r = await fetch(`/api/sessions/${sessionId}/compact`, { method: 'POST' });
+  if (!r.ok) throw new Error((await r.json().catch(() => null))?.error || 'compaction failed');
+}
+async function postRollback(sessionId: string, messageId: string): Promise<void> {
+  const r = await fetch(`/api/sessions/${sessionId}/rollback`, {
+    method: 'POST', headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ messageId }),
+  });
+  const j = await r.json().catch(() => null);
+  if (!r.ok) throw new Error(j?.error || 'rewind failed');
+}
+async function postFork(sessionId: string, targetKind: AgentKind, options?: {
+  lastTurnId?: string; cutoffMessageId?: number; replacementPrompt?: string; targetProfile?: string;
+}): Promise<{ id: string; vpsId: string; cwd?: string | null }> {
+  const r = await fetch(`/api/sessions/${sessionId}/fork`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ targetKind, ...options }),
+  });
+  const j = await r.json().catch(() => null);
+  if (!r.ok || !j?.session?.id) throw new Error(j?.error || 'fork failed');
+  return j.session;
+}
 
 export default function SessionView({
   sessionId, selected, showTools, showToolsReady, selectedVps, handle, handleConfirmed, siblings: siblingsProp,
@@ -395,34 +471,22 @@ export default function SessionView({
     if (compacting || !compactAllowed) return;
     setCompacting(true);
     setCompactError(null);
-    try {
-      const r = await fetch(`/api/sessions/${sessionId}/compact`, { method: 'POST' });
-      if (!r.ok) throw new Error((await r.json().catch(() => null))?.error || 'compaction failed');
-      // Codex compact() resolves after the operation. Claude queues /compact
-      // and refreshes again on thinking→active, so this immediate read is both
-      // useful for Codex and harmless for Claude.
-      await refreshContext();
-    } catch (e: any) {
-      setCompactError(String(e?.message || e));
-    } finally { setCompacting(false); }
+    // Codex compact() resolves after the operation. Claude queues /compact
+    // and refreshes again on thinking→active, so this immediate read is both
+    // useful for Codex and harmless for Claude.
+    const r = await outcome(postCompact(sessionId).then(() => refreshContext()));
+    if (!r.ok) setCompactError(r.message);
+    setCompacting(false);
   }, [compacting, compactAllowed, refreshContext, sessionId]);
   const doRewind = useCallback(async (messageId: string) => {
     if (rewinding || status === 'thinking') return;
     setRewinding(true); setRewindError(null);
-    try {
-      const r = await fetch(`/api/sessions/${sessionId}/rollback`, {
-        method: 'POST', headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ messageId }),
-      });
-      const j = await r.json().catch(() => null);
-      if (!r.ok) throw new Error(j?.error || 'rewind failed');
-      // The local hook intentionally never deletes historical rows during an
-      // SSE stream. Reload once after this explicit destructive action so its
-      // cache is rebuilt from the now-rewound SQLite transcript.
-      window.location.reload();
-    } catch (e: any) {
-      setRewindError(String(e?.message || e)); setRewinding(false);
-    }
+    const r = await outcome(postRollback(sessionId, messageId));
+    if (!r.ok) { setRewindError(r.message); setRewinding(false); return; }
+    // The local hook intentionally never deletes historical rows during an
+    // SSE stream. Reload once after this explicit destructive action so its
+    // cache is rebuilt from the now-rewound SQLite transcript.
+    window.location.reload();
   }, [rewinding, sessionId, status]);
   // The recap under the last answer (§14.122): shown only while the row it
   // follows is still the conversation's last word and nothing is running.
@@ -455,7 +519,7 @@ export default function SessionView({
     const inform = (what: string) => { setSlashNote({ text: what, ok: true }); return true; };
     const live = ['active', 'failed', 'background'].includes(status ?? '');
     const cwd = selected.cwd ?? '';
-    try {
+    const run = async (): Promise<boolean> => {
       switch (action) {
         case 'model':
           if (!arg) { openRuntimePicker('model'); return true; }
@@ -598,10 +662,10 @@ export default function SessionView({
           onNewRoutine({ vpsId, cwd, kind: sessionKind, prompt: arg });
           return true;
       }
-    } catch (e) {
-      return refuse(`/${action === 'aside' ? 'btw' : action}: ${e instanceof Error ? e.message : String(e)}`);
-    }
-    return false;
+      return false;
+    };
+    const r = await outcome(run());
+    return r.ok ? r.value : refuse(`/${action === 'aside' ? 'btw' : action}: ${r.message}`);
   });
   const doFork = useCallback(async (targetKind: AgentKind, options?: {
     lastTurnId?: string; cutoffMessageId?: number; replacementPrompt?: string; targetProfile?: string;
@@ -609,38 +673,25 @@ export default function SessionView({
     if (forking) return;
     setForking(targetKind);
     setForkError(null);
-    try {
-      const r = await fetch(`/api/sessions/${sessionId}/fork`, {
-        method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ targetKind, ...options }),
-      });
-      const j = await r.json().catch(() => null);
-      if (!r.ok || !j?.session?.id) {
-        setForkError(j?.error || 'fork failed');
-        return;
-      }
+    const r = await outcome(postFork(sessionId, targetKind, options));
+    if (r.ok) {
+      const branch = r.value;
       // The branch inherits the source's notification rules. The Telegram half
       // came across with the fork itself; this one is localStorage, so only
       // this device can carry it — fire-and-forget, since a push-sync hiccup
       // must not turn a successful fork into an error.
-      void copySessionNotifications(sessionId, j.session.id).catch(() => {});
+      void copySessionNotifications(sessionId, branch.id).catch(() => {});
       // Open the branch straight away: the point of forking is to work in it.
       // Creating, not browsing — so hand over the row we just got back and PIN
       // it (§14.78). Looking the id up in `sessions` would lose the race with
       // the list refresh and land on a pane the tab bar does not list.
       setForkError(null);
       setForkModalOpen(false);
-      onOpenSession?.(
-        j.session.id,
-        { vpsId: j.session.vpsId, cwd: j.session.cwd ?? '' },
-        true,
-      );
-    } catch (e: any) {
-      setForkError(String(e?.message || e));
-    } finally {
-      setForking(null);
+      onOpenSession?.(branch.id, { vpsId: branch.vpsId, cwd: branch.cwd ?? '' }, true);
+    } else {
+      setForkError(r.message);
     }
+    setForking(null);
   }, [forking, sessionId, onOpenSession]);
 
   const [errorOpen, setErrorOpen] = useState(false);
@@ -702,45 +753,7 @@ export default function SessionView({
 
   // ── Computeds ─────────────────────────────────────────────────────────────
   // Pair tool_use ↔ tool_result for inline rendering.
-  const renderable = useMemo(() => {
-    const resultByToolUseId = new Map<string, Msg>();
-    for (const m of messages) {
-      if (m.role !== 'tool_result') continue;
-      try {
-        const parsed = JSON.parse(m.content);
-        if (parsed?.tool_use_id) resultByToolUseId.set(String(parsed.tool_use_id), m);
-      } catch {}
-    }
-    const out: { msg: Msg; attached?: Msg }[] = [];
-    const consumedResults = new Set<string>();
-    for (const m of messages) {
-      if (m.role === 'tool_result') {
-        try {
-          const parsed = JSON.parse(m.content);
-          if (parsed?.tool_use_id && resultByToolUseId.has(String(parsed.tool_use_id))) {
-            if (consumedResults.has(m.id)) continue;
-            continue;
-          }
-        } catch {}
-        out.push({ msg: m });
-        continue;
-      }
-      if (m.role === 'tool_use') {
-        let attached: Msg | undefined;
-        try {
-          const parsed = JSON.parse(m.content);
-          if (parsed?.id) {
-            attached = resultByToolUseId.get(String(parsed.id));
-            if (attached) consumedResults.add(attached.id);
-          }
-        } catch {}
-        out.push({ msg: m, attached });
-        continue;
-      }
-      out.push({ msg: m });
-    }
-    return out;
-  }, [messages]);
+  const renderable = useMemo(() => pairToolResults(messages), [messages]);
 
   // What the provider has not read yet waits beside the composer, not in the
   // conversation (lib/waitingInputs.ts): it enters where it is read.
@@ -1900,8 +1913,7 @@ const ChatInputBar = memo(function ChatInputBar({
   const taRef = useRef<HTMLTextAreaElement | null>(null);
   const setTextarea = useCallback((el: HTMLTextAreaElement | null) => {
     taRef.current = el;
-    if (typeof textareaRef === 'function') textareaRef(el);
-    else if (textareaRef) (textareaRef as { current: HTMLTextAreaElement | null }).current = el;
+    assignRef(textareaRef, el);
   }, [textareaRef]);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   // Last known caret offset. A drop lands on the WINDOW, not the textarea, so
@@ -2168,7 +2180,7 @@ const ChatInputBar = memo(function ChatInputBar({
     const onEnter = (e: DragEvent) => {
       const kind = kindOf(e);
       if (!kind) return;
-      depth++;
+      depth += 1;
       // Measured once per drag: where the panel starts is where the chat's
       // side of the screen ends.
       if (depth === 1) {
@@ -2838,9 +2850,8 @@ function SessionRuntimePanel({
     if (saving) return;
     setSaving(true);
     setSaveError(null);
-    try {
+    const r = await outcome((async () => {
       if (open === 'model' && (value || null) !== model) {
-        // Preserve the independently configured fallback when changing Claude's model.
         // Preserve the independently configured fallback only where the
         // backend HAS one; the others must not be sent a stale id.
         await onSetModel(value || null,
@@ -2854,15 +2865,13 @@ function SessionRuntimePanel({
           if (kept !== effort) await onSetEffort(kept);
         }
       } else if (open === 'effort' && (value || null) !== (endpoint.active ? customEffort : effort)) {
-        if (endpoint.active) {
-          await onSetEffort(value || null);
-          onEndpointChanged();
-        } else await onSetEffort(value || null);
+        await onSetEffort(value || null);
+        if (endpoint.active) onEndpointChanged();
       }
       close();
-    } catch (e) {
-      setSaveError(e instanceof Error ? e.message : 'Could not save this selection.');
-    } finally { setSaving(false); }
+    })(), 'Could not save this selection.');
+    if (!r.ok) setSaveError(r.message);
+    setSaving(false);
   }
 
   const customEfforts = endpointParameters(endpoint.active, kind, model || '');
@@ -2903,9 +2912,9 @@ function SessionRuntimePanel({
   const saveInPlace = async (run: () => Promise<void>) => {
     if (saving) return;
     setSaving(true); setSaveError(null);
-    try { await run(); }
-    catch (err) { setSaveError(err instanceof Error ? err.message : 'Could not save this setting.'); }
-    finally { setSaving(false); }
+    const r = await outcome(run(), 'Could not save this setting.');
+    if (!r.ok) setSaveError(r.message);
+    setSaving(false);
   };
   const EffortSwitches = endpoint.active ? undefined : PROVIDER_CATALOGS[kind].EffortSwitches;
   const title = `Model: ${model ?? 'default'}${effectiveModel ? ` · effective: ${effectiveModel}` : ''}${anyPending ? ' · pending until resume' : ''}`;
@@ -2954,9 +2963,10 @@ function SessionRuntimePanel({
               <button type="button" className="pop-action" onClick={() => { close(); setEndpointOpen(true); }}>⚯ {endpoint.active ? 'Change endpoint…' : 'Custom endpoint…'}</button>
               {endpoint.active && <button type="button" className="pop-action" disabled={saving} onClick={async () => {
                 setSaving(true); setSaveError(null);
-                try { await api.setSessionEndpoint(sessionId, { endpoint: null }); onEndpointChanged(); close(); }
-                catch (e) { setSaveError(e instanceof Error ? e.message : 'Could not restore connection.'); }
-                finally { setSaving(false); }
+                const r = await outcome(api.setSessionEndpoint(sessionId, { endpoint: null }).then(() => { onEndpointChanged(); close(); }),
+                  'Could not restore connection.');
+                if (!r.ok) setSaveError(r.message);
+                setSaving(false);
               }}>Return to standard connection</button>}
             </>}
             {endpoint.active?.usageUrl && <a className="pop-action" href={endpoint.active.usageUrl} target="_blank" rel="noopener noreferrer">Open usage ↗</a>}
@@ -3010,9 +3020,9 @@ function SessionRuntimePanel({
           {saveError && <p className="runtime-choice-error" role="alert">{saveError}</p>}
           {(modelPendingApply || effortPendingApply) && !endpoint.pending && onApplyNow && <button type="button" className="runtime-apply" disabled={saving} onClick={async () => {
             setSaving(true); setSaveError(null);
-            try { await onApplyNow(); close(); }
-            catch (e) { setSaveError(e instanceof Error ? e.message : 'Could not apply the change.'); }
-            finally { setSaving(false); }
+            const r = await outcome(Promise.resolve().then(onApplyNow).then(() => close()), 'Could not apply the change.');
+            if (!r.ok) setSaveError(r.message);
+            setSaving(false);
           }}>↻ Apply pending changes</button>}
         </div>}
       </div>

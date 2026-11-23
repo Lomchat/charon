@@ -88,6 +88,7 @@
     "@types/three": "^0.186.0",
     "@types/web-push": "^3.6.4",
     "@vitejs/plugin-react": "^5.2.0",
+    "babel-plugin-react-compiler": "1.0.0",
     "drizzle-kit": "^0.31.10",
     "esbuild": "^0.25.12",
     "typescript": "^5.7.3",

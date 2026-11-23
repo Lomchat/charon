@@ -25,6 +25,33 @@ export function useStableOptionalCallback<A extends unknown[], R>(
   return fn ? stable : undefined;
 }
 
+/** The latest `value` in a ref-like box, for handlers and effects that
+ *  subscribe once (read at call time, never during render). Kept out of the
+ *  components on purpose: the React Compiler compiles a component that only
+ *  READS `.current` in callbacks, never one that writes it while rendering. */
+export function useLatest<T>(value: T): { readonly current: T } {
+  const ref = useRef(value);
+  ref.current = value;
+  return ref;
+}
+
+/** `keys` in the order each first appeared (a key keeps its place while it
+ *  stays): mount order for panes React must never move (a re-inserted iframe
+ *  reloads). Same order ⇒ the previous array. */
+export function useMountOrder(keys: readonly string[]): readonly string[] {
+  const seqRef = useRef(new Map<string, number>());
+  const prevRef = useRef<readonly string[]>([]);
+  const seq = seqRef.current;
+  for (const k of [...seq.keys()]) if (!keys.includes(k)) seq.delete(k);
+  let next = Math.max(0, ...seq.values()) + 1;
+  for (const k of keys) if (!seq.has(k)) seq.set(k, next++);
+  const sorted = [...keys].sort((a, b) => seq.get(a)! - seq.get(b)!);
+  const prev = prevRef.current;
+  if (sorted.length === prev.length && sorted.every((k, i) => k === prev[i])) return prev;
+  prevRef.current = sorted;
+  return sorted;
+}
+
 /** The previous value while `equal(previous, next)`: a rebuilt-but-identical
  *  array or object keeps its identity. */
 export function useStableValue<T>(value: T, equal: (a: T, b: T) => boolean): T {

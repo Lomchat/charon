@@ -63,11 +63,12 @@ import SessionView from './SessionView';
 import HeaderSessionNav from './HeaderSessionNav';
 import AccountNav from './AccountNav';
 import ResetCalendar from './ResetCalendar';
+import { outcome } from './outcome';
 import ResetsModalHost from './ResetsModalHost';
 import { accountGroupRepresentative, buildAccountGroups, type AccountGroup } from '@/lib/accountGroups';
 import { useShowHidden } from './showPaused';
 import { dropOtherLoginUsage, putUsage, useUsageFeed } from './usageStore';
-import { useStableCallback } from './useStable';
+import { useLatest, useMountOrder, useStableCallback } from './useStable';
 import { backendAvailability, type VpsFixAction } from './vpsHealth';
 import { useHasSavedEndpoints } from './savedEndpointsStore';
 import {
@@ -188,6 +189,27 @@ function mergeRuntimeSlices(current: Vps[], slices: Array<Record<string, unknown
   return changed ? next : current;
 }
 
+// Browser storage that may be missing or full (private mode, quota): a read
+// answers null, a write is dropped. Outside the component on purpose (the
+// React Compiler cannot compile a try with a value inside it, §14.38).
+function storageGet(key: string): string | null {
+  try { return localStorage.getItem(key); } catch { return null; }
+}
+function storageSet(key: string, value: string): void {
+  try { localStorage.setItem(key, value); } catch { /* quota / private mode */ }
+}
+const LAST_TAB_BY_GROUP_KEY = 'hub.tabs.lastByGroup.v1';
+/** The tab last focused per group, as saved: null when corrupt or unavailable. */
+function loadLastTabByGroup(): Map<string, string> | null {
+  const raw = storageGet(LAST_TAB_BY_GROUP_KEY);
+  if (!raw) return null;
+  try { return new Map(JSON.parse(raw) as [string, string][]); } catch { return null; }
+}
+/** The newest 200 entries; a failed write only means it does not persist. */
+function saveLastTabByGroup(map: Map<string, string>): void {
+  storageSet(LAST_TAB_BY_GROUP_KEY, JSON.stringify([...map.entries()].slice(-200)));
+}
+
 export default function HubPanel({ vpsList: initialVpsList, vpsFolders: initialFolders, vpsPaths: initialPaths, initialSessions, builtPyzSha, builtAgentVersion, staleness, initialTabs, initialSummaries, initialSync, initialPanels = DEFAULT_PANEL_LAYOUT }: Props) {
   // The workspace is part of the page seed. Hydrating it synchronously
   // prevents the initial session from mounting, being cleared by an empty tab
@@ -216,15 +238,13 @@ export default function HubPanel({ vpsList: initialVpsList, vpsFolders: initialF
   // first (React runs the child's effects before this one, §14.107).
   const [showToolsReady, setShowToolsReady] = useState(false);
   useEffect(() => {
-    try {
-      if (localStorage.getItem(SHOW_TOOLS_STORAGE_KEY) === '0') setShowTools(false);
-    } catch {}
+    if (storageGet(SHOW_TOOLS_STORAGE_KEY) === '0') setShowTools(false);
     setShowToolsReady(true);
   }, []);
   const toggleShowTools = useCallback(() => {
     setShowTools((current) => {
       const next = !current;
-      try { localStorage.setItem(SHOW_TOOLS_STORAGE_KEY, next ? '1' : '0'); } catch {}
+      storageSet(SHOW_TOOLS_STORAGE_KEY, next ? '1' : '0');
       return next;
     });
   }, []);
@@ -312,7 +332,7 @@ export default function HubPanel({ vpsList: initialVpsList, vpsFolders: initialF
   const sessionDeepLink = useRef(new DeepLinkGuard());
   const shellDeepLink = useRef(new DeepLinkGuard());
   // The page-load links: the first list that lacks one proves it dead.
-  const linkAtLoad = useRef({ session: queryParamSession, shell: queryParamShell }).current;
+  const [linkAtLoad] = useState(() => ({ session: queryParamSession, shell: queryParamShell }));
   // Re-runs the tab → pane bridge and the URL sync: a link that has no row must
   // not leave a selection or a URL behind with no active-tab change to undo them.
   const [paneResync, resyncPane] = useReducer((n: number) => n + 1, 0);
@@ -353,13 +373,16 @@ export default function HubPanel({ vpsList: initialVpsList, vpsFolders: initialF
     useState<{ vps: Vps; provider: AgentKind; profile?: AccountProfile } | null>(null);
   const profiles = useAccountProfiles();
   const profilesLoaded = useAccountProfilesLoaded();
-  const profileState = useRef(profiles); profileState.current = profiles;
+  const profileState = useLatest(profiles);
   // Hub-owned accounts (§14.115): the Accounts panel and its own sign-in
   // (opened from the panel/banner, where no VPS is involved).
   const [accountsOpen, setAccountsOpen] = useState(false);
   const [hubLogin, setHubLogin] = useState<{ provider: AgentKind; accountId: string | null } | null>(null);
   // The list only: a usage reading must not re-render the hub (usageStore.ts).
   const accountsState = useAccountList();
+  // Unified "new session" wizard (VPS → path → name). `kind` is fixed by the
+  // button that opened it (＋Agent vs ＋Shell).
+  const [wizard, setWizard] = useState<null | { kind: 'agent' | 'shell'; vpsId?: string; cwd?: string | null; agentKind?: AgentKind; accountProfile?: string; offerShell?: boolean }>(null);
   /** Open a provider's sign-in surface. Closing the wizard is the surface's own
    *  declared behaviour, not the caller's guess. */
   const openProviderLogin = useCallback((v: Vps, provider: AgentKind, profile?: AccountProfile) => {
@@ -401,8 +424,7 @@ export default function HubPanel({ vpsList: initialVpsList, vpsFolders: initialF
   const [shells, setShells] = useState<ShellListItem[]>([]);
   const [shellsLoaded, setShellsLoaded] = useState(false);
   // Read by the SSE handler below, which subscribes once.
-  const shellsRef = useRef(shells);
-  shellsRef.current = shells;
+  const shellsRef = useLatest(shells);
   const shellStatusRef = useRef(new Map<string, string>());
   // Shells created with no explicit cwd start in the SSH user's home and are
   // historically stored as cwd=null. The IDE APIs need an absolute root, so
@@ -487,7 +509,7 @@ export default function HubPanel({ vpsList: initialVpsList, vpsFolders: initialF
   // Agent install sessions. In-memory only (shell pattern). One install
   // per VPS max (cf. installSession.ts § startInstall).
   const [installs, setInstalls] = useState<InstallInfo[]>([]);
-  const installsRef = useRef(installs); installsRef.current = installs;
+  const installsRef = useLatest(installs);
   // If non-null, an install session occupies the main panel.
   const [selectedInstallId, setSelectedInstallId] = useState<string | null>(null);
 
@@ -536,7 +558,7 @@ export default function HubPanel({ vpsList: initialVpsList, vpsFolders: initialF
     if (currentProfile?.accountKey && fresh.accountKey && currentProfile.accountKey !== fresh.accountKey) return;
     // Keyed by what was ASKED (a reading names its account, §14.115).
     putUsage(vpsId, { ...fresh, provider: sessionProvider, accountProfile: profile });
-  }, []);
+  }, [profileState]);
   const refreshUsage = useCallback((vpsId: string | null | undefined, provider: AgentKind = 'claude', profile = 'default', force = false, cachedOnly = false) => {
     if (!vpsId) return;
     const usageKey = `${vpsId}\u0000${provider}\u0000${profile}`;
@@ -589,13 +611,13 @@ export default function HubPanel({ vpsList: initialVpsList, vpsFolders: initialF
   //     can reopen the log (manual close via right-click)
   useEffect(() => {
     const refreshOne = async (installId: string) => {
-      try {
-        const info = await api.getInstall(installId);
-        setInstalls((prev) => {
-          const others = prev.filter((i) => i.id !== installId);
-          return [...others, info];
-        });
-      } catch {}
+      const r = await outcome(api.getInstall(installId));
+      if (!r.ok) return;
+      const info = r.value;
+      setInstalls((prev) => {
+        const others = prev.filter((i) => i.id !== installId);
+        return [...others, info];
+      });
     };
     const unsub = subscribeAll((ev) => {
       if (!('installId' in ev)) return;
@@ -732,6 +754,17 @@ export default function HubPanel({ vpsList: initialVpsList, vpsFolders: initialF
     dismiss: dismissInstallNotif,
   } = useInstallNotifications();
 
+  const [browseVpsId, setBrowseVpsId] = useState<string | null>(null);
+  const [browsePath, setBrowsePath] = useState<string | null>(null);
+  /** Open (or focus) something as a tab. Preview unless `pin`. */
+  const openEntityTab = useCallback((
+    kind: 'session' | 'shell' | 'install' | 'file',
+    ref: string, vpsId: string, path: string, pin = false,
+  ) => {
+    setBrowseVpsId(null); setBrowsePath(null);
+    void openWorkspaceTab({ vpsId, path, kind, ref, pin });
+  }, []);
+
   // Adopt an already-created shell into the sidebar/tab state + select it.
   // The actual creation now happens inside <NewShellDialog> (so it can show
   // inline busy/error like the session dialog); this just wires the result in.
@@ -779,12 +812,10 @@ export default function HubPanel({ vpsList: initialVpsList, vpsFolders: initialF
   // When we select a Claude session, we deselect shell + install
   // Stable for the memoized header navs (AccountNav items): the latest
   // `selectSession` through a ref.
-  const selectSessionRef = useRef<(id: string, pin?: boolean) => void>(() => {});
-  selectSessionRef.current = selectSession;
-  const openFromNav = useCallback((id: string) => selectSessionRef.current(id, true), []);
-  const selectShellRef = useRef<(id: string, pin?: boolean) => void>(() => {});
-  selectShellRef.current = selectShell;
-  const openShellFromNav = useCallback((id: string) => selectShellRef.current(id, true), []);
+  const selectSessionRef = useLatest<(id: string, pin?: boolean) => void>(selectSession);
+  const openFromNav = useCallback((id: string) => selectSessionRef.current(id, true), [selectSessionRef]);
+  const selectShellRef = useLatest<(id: string, pin?: boolean) => void>(selectShell);
+  const openShellFromNav = useCallback((id: string) => selectShellRef.current(id, true), [selectShellRef]);
   function selectSession(id: string, pin = false) {
     const sess = sessions.find((x) => x.id === id);
     // Always the tab store, even from an empty workspace (no open tab): a
@@ -828,11 +859,11 @@ export default function HubPanel({ vpsList: initialVpsList, vpsFolders: initialF
   // dialog is reachable later from DataModal: on a brand-new box the files it
   // names do not exist yet, so this is a policy, never a selection.
   async function openSettingScope(vps: Vps, mode: 'install' | 'edit' = 'edit') {
-    let hubDefault = [...DEFAULT_SETTING_SOURCES];
-    try {
-      const s = await api.getSettings();
-      hubDefault = resolveSettingSources(safeParseSettingSources(s['claude.setting_sources']));
-    } catch { /* the built-in default is a fine answer */ }
+    // Unreadable settings: the built-in default is a fine answer.
+    const r = await outcome(api.getSettings());
+    const hubDefault = r.ok
+      ? resolveSettingSources(safeParseSettingSources(r.value['claude.setting_sources']))
+      : [...DEFAULT_SETTING_SOURCES];
     setScopeModal({ vps, hubDefault, mode });
   }
 
@@ -841,27 +872,22 @@ export default function HubPanel({ vpsList: initialVpsList, vpsFolders: initialF
   }
 
   async function startInstallSession(vps: Vps) {
-    try {
-      const info = await api.startInstall(vps.id);
-      // Optimistic update — the install_started event will also arrive via SSE.
-      setInstalls((prev) => {
-        const others = prev.filter((i) => i.id !== info.id);
-        return [...others, info];
-      });
-      // Starting an install is a decision to WATCH it: land on its console.
-      selectInstall(info.id, info);
-    } catch (e: any) {
-      setError({ msg: 'start install: ' + (e?.message ?? e) });
-    }
+    const r = await outcome(api.startInstall(vps.id));
+    if (!r.ok) { setError({ msg: 'start install: ' + r.message }); return; }
+    const info = r.value;
+    // Optimistic update — the install_started event will also arrive via SSE.
+    setInstalls((prev) => {
+      const others = prev.filter((i) => i.id !== info.id);
+      return [...others, info];
+    });
+    // Starting an install is a decision to WATCH it: land on its console.
+    selectInstall(info.id, info);
   }
 
   async function killInstallOne(id: string) {
-    try {
-      await api.closeInstall(id);
-      installClosed(id);
-    } catch (e: any) {
-      setError({ msg: 'close install: ' + (e?.message ?? e) });
-    }
+    const r = await outcome(api.closeInstall(id));
+    if (r.ok) installClosed(id);
+    else setError({ msg: 'close install: ' + r.message });
   }
   // `mountedShellIds` is the set of shell ids whose <ShellTerminal> stays
   // MOUNTED (its WebSocket + xterm alive) even while another entity is
@@ -916,14 +942,10 @@ export default function HubPanel({ vpsList: initialVpsList, vpsFolders: initialF
     });
   }, [shells, workspaceTabs]);
 
-  // Unified "new session" wizard (VPS → path → name). `kind` is fixed by the
-  // button that opened it (＋Agent vs ＋Shell). Replaces the old
-  // NewSessionDialog / NewShellDialog.
-  const [wizard, setWizard] = useState<null | { kind: 'agent' | 'shell'; vpsId?: string; cwd?: string | null; agentKind?: AgentKind; accountProfile?: string; offerShell?: boolean }>(null);
   // The explorer's ＋ (ToolPanel): which folder to open as a tab of the
   // workspace `(vpsId, cwd)` it was asked from (`explorerRoots.ts`).
   const [folderPicker, setFolderPicker] = useState<null | { vpsId: string; cwd: string }>(null);
-  const openFolderPicker = useCallback((vpsId: string, cwd: string) => setFolderPicker({ vpsId, cwd }), []);
+  const openFolderPicker = useCallback((vpsId: string, cwd: string) => setFolderPicker({ vpsId, cwd }), [setFolderPicker]);
   const folderPickerInUse = useMemo(() => {
     if (!folderPicker) return [] as string[];
     const out: string[] = [];
@@ -1007,11 +1029,11 @@ export default function HubPanel({ vpsList: initialVpsList, vpsFolders: initialF
   const [routineDraft, setRoutineDraft] = useState<Pick<RoutineInput, 'vpsId' | 'cwd' | 'kind' | 'prompt'> | null>(null);
   // A calendar run: the modal opens on that routine.
   const [routineFocus, setRoutineFocus] = useState<string | null>(null);
-  const openRoutine = useCallback((id: string) => { setRoutineFocus(id); setRoutinesOpen(true); }, []);
+  const openRoutine = useCallback((id: string) => { setRoutineFocus(id); setRoutinesOpen(true); }, [setRoutineFocus, setRoutinesOpen]);
   const newRoutineFrom = useCallback((draft: Pick<RoutineInput, 'vpsId' | 'cwd' | 'kind' | 'prompt'>) => {
     setRoutineDraft(draft);
     setRoutinesOpen(true);
-  }, []);
+  }, [setRoutineDraft, setRoutinesOpen]);
   const newShellIn = useCallback((vpsId: string, cwd: string) => setWizard({ kind: 'shell', vpsId, cwd }), []);
   const browserNotifications = useBrowserNotifications();
   const pushOn = browserNotifications.enabled;
@@ -1035,8 +1057,9 @@ export default function HubPanel({ vpsList: initialVpsList, vpsFolders: initialF
   async function runRefreshAgent(vps: Vps) {
     if (refreshingAgentVpsIds.has(vps.id)) return;
     setRefreshingAgentVpsIds((prev) => new Set(prev).add(vps.id));
-    try {
-      const r = await api.refreshVpsAgent(vps.id);
+    const res = await outcome(api.refreshVpsAgent(vps.id));
+    if (res.ok) {
+      const r = res.value;
       setVpsList((prev) => prev.map((v) =>
         v.id === vps.id
           ? ({
@@ -1053,22 +1076,22 @@ export default function HubPanel({ vpsList: initialVpsList, vpsFolders: initialF
       if (!r.ok) {
         setError({ msg: `refresh agent: ${r.error ?? 'agent still unreachable'}` });
       }
-    } catch (e: any) {
-      setError({ msg: `refresh agent: ${e?.message ?? e}` });
-    } finally {
-      setRefreshingAgentVpsIds((prev) => {
-        const n = new Set(prev);
-        n.delete(vps.id);
-        return n;
-      });
+    } else {
+      setError({ msg: `refresh agent: ${res.message}` });
     }
+    setRefreshingAgentVpsIds((prev) => {
+      const n = new Set(prev);
+      n.delete(vps.id);
+      return n;
+    });
   }
 
   async function runUpdateAgent(vps: Vps) {
     if (updatingAgentVpsIds.has(vps.id)) return;
     setUpdatingAgentVpsIds((prev) => new Set(prev).add(vps.id));
-    try {
-      const r = await api.updateVpsAgent(vps.id);
+    const res = await outcome(api.updateVpsAgent(vps.id));
+    if (res.ok) {
+      const r = res.value;
       // Patch the local row to reflect the new versions — prevents the
       // "outdated" badge from staying displayed until the next hello. EVERY
       // provider's columns, derived from the registry: the sidebar ORs all the
@@ -1093,8 +1116,8 @@ export default function HubPanel({ vpsList: initialVpsList, vpsFolders: initialF
       if (r?.warnings?.length) {
         setError({ msg: `update ${vps.name}: partial — ${r.warnings.join(' · ')}` });
       }
-    } catch (e: any) {
-      const msg = String(e?.message ?? e);
+    } else {
+      const msg = res.message;
       // A client/proxy timeout does NOT mean the update failed: pip can take
       // minutes and the flow finishes server-side (the badge then clears
       // itself via the next hello). Don't cry wolf for that case.
@@ -1103,13 +1126,12 @@ export default function HubPanel({ vpsList: initialVpsList, vpsFolders: initialF
       } else {
         setError({ msg: `update ${vps.name}: ${msg}` });
       }
-    } finally {
-      setUpdatingAgentVpsIds((prev) => {
-        const n = new Set(prev);
-        n.delete(vps.id);
-        return n;
-      });
     }
+    setUpdatingAgentVpsIds((prev) => {
+      const n = new Set(prev);
+      n.delete(vps.id);
+      return n;
+    });
   }
 
   // One dispatcher for the health-chip / wizard-row repair buttons
@@ -1195,7 +1217,7 @@ export default function HubPanel({ vpsList: initialVpsList, vpsFolders: initialF
   const reauthSelectedVps = useCallback(() => {
     if (!selectedVps) return;
     openProviderLogin(selectedVps, asSessionProvider(selected?.kind), profiles.find((p) => p.vpsId === selectedVps.id && p.provider === asSessionProvider(selected?.kind) && p.id === accountProfileId(selected)));
-  }, [selected?.kind, selected?.accountProfile, selectedVps, profiles, openProviderLogin]);
+  }, [selected, selectedVps, profiles, openProviderLogin]);
 
   // Hydrate the current VPS's usage on select (SSE is live-only, §14.14): a
   // freshly-mounted tab has no snapshot until the next 60s poll — fetch once so
@@ -1220,8 +1242,6 @@ export default function HubPanel({ vpsList: initialVpsList, vpsFolders: initialF
   const activeTab = useMemo(() => resolvedTabs.find((t) => t.active) ?? null, [resolvedTabs]);
   // Row 1 / row 2 follow the active tab, but stay independently steerable so
   // clicking a VPS or a folder can browse without changing what's open.
-  const [browseVpsId, setBrowseVpsId] = useState<string | null>(null);
-  const [browsePath, setBrowsePath] = useState<string | null>(null);
   const activeVpsId = browseVpsId ?? activeTab?.vpsId ?? resolvedTabs[0]?.vpsId ?? null;
   const activePath = browsePath ?? (activeTab && activeTab.vpsId === activeVpsId
     ? activeTab.path
@@ -1261,14 +1281,6 @@ export default function HubPanel({ vpsList: initialVpsList, vpsFolders: initialF
     setSelectedInstallId(activeTab.kind === 'install' ? activeTab.ref : null);
   }, [activeTab, workspaceTabsLoaded, paneResync]);
 
-  /** Open (or focus) something as a tab. Preview unless `pin`. */
-  const openEntityTab = useCallback((
-    kind: 'session' | 'shell' | 'install' | 'file',
-    ref: string, vpsId: string, path: string, pin = false,
-  ) => {
-    setBrowseVpsId(null); setBrowsePath(null);
-    void openWorkspaceTab({ vpsId, path, kind, ref, pin });
-  }, []);
 
   // Consume external deep links without feeding Charon's own URL writes back
   // into local active-tab state. The guard also keeps a new arrival in
@@ -1369,19 +1381,14 @@ export default function HubPanel({ vpsList: initialVpsList, vpsFolders: initialF
    */
   const lastTabByGroup = useRef<Map<string, string>>(new Map());
   useEffect(() => {
-    try {
-      const raw = localStorage.getItem('hub.tabs.lastByGroup.v1');
-      if (raw) lastTabByGroup.current = new Map(JSON.parse(raw) as [string, string][]);
-    } catch { /* corrupt or unavailable — start empty */ }
+    const saved = loadLastTabByGroup();
+    if (saved) lastTabByGroup.current = saved;
   }, []);
   useEffect(() => {
     if (!activeTab) return;
     lastTabByGroup.current.set(`${activeTab.vpsId}\u0000${activeTab.path}`, activeTab.id);
     lastTabByGroup.current.set(activeTab.vpsId, activeTab.id);
-    try {
-      localStorage.setItem('hub.tabs.lastByGroup.v1',
-        JSON.stringify([...lastTabByGroup.current.entries()].slice(-200)));
-    } catch { /* quota / private mode — the memory just doesn't persist */ }
+    saveLastTabByGroup(lastTabByGroup.current);
   }, [activeTab]);
 
   /** Focus the tab you were last on in this group, else its first tab. */
@@ -1444,8 +1451,7 @@ export default function HubPanel({ vpsList: initialVpsList, vpsFolders: initialF
   // the browser keeps Ctrl+W. An app window delivers Ctrl+W too, and closes
   // itself on an unhandled one — hence preventDefault even with nothing to
   // close. AltGr (= Ctrl+Alt) is neither. Key-repeat closes nothing.
-  const closeActiveTabRef = useRef<() => void>(() => {});
-  closeActiveTabRef.current = () => { if (activeTab) onTabCloseClick(activeTab); };
+  const closeActiveTabRef = useLatest<() => void>(() => { if (activeTab) onTabCloseClick(activeTab); });
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       const ctrl = e.ctrlKey || e.metaKey;
@@ -1608,6 +1614,41 @@ export default function HubPanel({ vpsList: initialVpsList, vpsFolders: initialF
     return () => unsub();
   }, [refreshSessions]);
 
+  // Shared settings (Telegram, backend switches, theme, density): a
+  // revision-guarded resource (app/sync/revResource.ts) — a `settings_changed`
+  // frame at R is only satisfied by an answer whose `sync ≥ R`; one GET at a
+  // time; the resync handler and window focus refresh it.
+  // The saved look (theme, density, file icons), applied by the effect below.
+  const [savedLook, setSavedLook] = useState<{ theme?: string; density?: string; icons?: string } | null>(null);
+  const [settingsResource] = useState(() => createRevResource<Awaited<ReturnType<typeof api.getSettings>>>({
+    fetch: () => api.getSettings(),
+    stampOf: (s) => (s as unknown as { sync?: SyncRev }).sync ?? null,
+    apply: (s) => {
+      setTgEnabled(s['telegram.enabled'] === 'true');
+      setTgConfigured(!!s['telegram.bot_token'] && !!s['telegram.chat_id']);
+      setBackends((prev) => {
+        const next = enabledBackendsFromSettings(s);
+        // `sameBackends`, never a hand-written pair: comparing only claude and
+        // codex discarded the whole object whenever those two agreed, pinning
+        // every later provider to its default (§14.102).
+        return sameBackends(prev, next) ? prev : next;
+      });
+      const look = { theme: s['app.theme'], density: s['app.density'], icons: s['app.file_icons'] };
+      setSavedLook((prev) => (prev && prev.theme === look.theme && prev.density === look.density
+        && prev.icons === look.icons ? prev : look));
+    },
+  }));
+  // The theme is hub-wide: this is how the OTHER tabs and devices follow a
+  // change. Held while the settings modal is open — it is previewing a theme
+  // that is deliberately not saved yet, and the settings refresh runs on
+  // window focus (§11); closing it puts the saved look back.
+  useEffect(() => {
+    if (settingsOpen || !savedLook) return;
+    applyTheme(savedLook.theme);
+    applyDensity(savedLook.density);
+    applyFileIcons(savedLook.icons);
+  }, [settingsOpen, savedLook]);
+
   // The explicit resync (§9): the hub's ring could not cover what this tab
   // missed. Everything the bus would have carried is refetched ONCE: the list
   // (meta + runtime; the summaries already came in the snapshot), tabs and
@@ -1644,9 +1685,9 @@ export default function HubPanel({ vpsList: initialVpsList, vpsFolders: initialF
 
   async function toggleNotifSound() {
     setPushBusy(true);
-    try { await saveBrowserNotifications({ ...readBrowserNotifications(), sound: !notifSoundEnabled }); }
-    catch (e) { alert('Notification settings: ' + (e instanceof Error ? e.message : String(e))); }
-    finally { setPushBusy(false); }
+    const r = await outcome(Promise.resolve().then(() => saveBrowserNotifications({ ...readBrowserNotifications(), sound: !notifSoundEnabled })));
+    if (!r.ok) alert('Notification settings: ' + r.message);
+    setPushBusy(false);
   }
 
   useEffect(() => { void ensureFreshServiceWorker(); }, []);
@@ -1681,42 +1722,11 @@ export default function HubPanel({ vpsList: initialVpsList, vpsFolders: initialF
 
   async function togglePush() {
     setPushBusy(true);
-    try {
-      await saveBrowserNotifications({ ...readBrowserNotifications(), enabled: !pushOn });
-    } catch (e) {
-      alert('Notification settings: ' + (e instanceof Error ? e.message : String(e)));
-    } finally { setPushBusy(false); }
+    const r = await outcome(Promise.resolve().then(() => saveBrowserNotifications({ ...readBrowserNotifications(), enabled: !pushOn })));
+    if (!r.ok) alert('Notification settings: ' + r.message);
+    setPushBusy(false);
   }
 
-  // Shared settings (Telegram, backend switches, theme, density): a
-  // revision-guarded resource (app/sync/revResource.ts) — a `settings_changed`
-  // frame at R is only satisfied by an answer whose `sync ≥ R`; one GET at a
-  // time; the resync handler and window focus refresh it.
-  const settingsOpenRef = useRef(settingsOpen); settingsOpenRef.current = settingsOpen;
-  const [settingsResource] = useState(() => createRevResource<Awaited<ReturnType<typeof api.getSettings>>>({
-    fetch: () => api.getSettings(),
-    stampOf: (s) => (s as unknown as { sync?: SyncRev }).sync ?? null,
-    apply: (s) => {
-      setTgEnabled(s['telegram.enabled'] === 'true');
-      setTgConfigured(!!s['telegram.bot_token'] && !!s['telegram.chat_id']);
-      setBackends((prev) => {
-        const next = enabledBackendsFromSettings(s);
-        // `sameBackends`, never a hand-written pair: comparing only claude and
-        // codex discarded the whole object whenever those two agreed, pinning
-        // every later provider to its default (§14.102).
-        return sameBackends(prev, next) ? prev : next;
-      });
-      // The theme is hub-wide: this is how the OTHER tabs and devices follow
-      // a change. Held while the settings modal is open — it is previewing a
-      // theme that is deliberately not saved yet, and this same refresh runs
-      // on window focus (§11).
-      if (!settingsOpenRef.current) {
-        applyTheme(s['app.theme']);
-        applyDensity(s['app.density']);
-        applyFileIcons(s['app.file_icons']);
-      }
-    },
-  }));
   useEffect(() => {
     const unsub = subscribeAll((ev, reception) => {
       if (ev.type === 'settings_changed') void settingsResource.invalidate(reception.rev);
@@ -1734,11 +1744,9 @@ export default function HubPanel({ vpsList: initialVpsList, vpsFolders: initialF
     setTgBusy(true);
     const next = !tgEnabled;
     setTgEnabled(next); // optimistic
-    try {
-      await api.updateSettings({ 'telegram.enabled': next ? 'true' : 'false' });
-    } catch {
-      setTgEnabled(!next); // revert on failure
-    } finally { setTgBusy(false); }
+    const r = await outcome(api.updateSettings({ 'telegram.enabled': next ? 'true' : 'false' }));
+    if (!r.ok) setTgEnabled(!next); // revert on failure
+    setTgBusy(false);
   }
 
   // Note: before the refactor, applyApiPendings synced permQueue/
@@ -1766,13 +1774,13 @@ export default function HubPanel({ vpsList: initialVpsList, vpsFolders: initialF
   async function renameSession(id: string, name: string) {
     setEditingId(null);
     const o = addOverlay(id, { name: name || null });
-    try {
-      const r = await api.renameAgentSession(id, name || null);
-      o.ack(r?.sync);
+    const r = await outcome(api.renameAgentSession(id, name || null));
+    if (r.ok) {
+      o.ack(r.value?.sync);
       refreshIfDegraded();
-    } catch (e: any) {
+    } else {
       o.fail();
-      setError({ msg: 'rename: ' + (e?.message ?? e) });
+      setError({ msg: 'rename: ' + r.message });
     }
   }
 
@@ -1803,7 +1811,7 @@ export default function HubPanel({ vpsList: initialVpsList, vpsFolders: initialF
     if (!ids.length) return;
     void Promise.allSettled(ids.map(async (id) => {
       const o = addOverlay(id, { hidden: hidden ? 1 : 0 });
-      try { o.ack((await api.setSessionHidden(id, hidden))?.sync); } catch (e) { o.fail(); throw e; }
+      await api.setSessionHidden(id, hidden).then((r) => o.ack(r?.sync), (e: unknown) => { o.fail(); throw e; });
     })).then((results) => {
       const failed = results.filter((r) => r.status === 'rejected');
       if (failed.length) {
@@ -1820,7 +1828,7 @@ export default function HubPanel({ vpsList: initialVpsList, vpsFolders: initialF
     if (!ids.length) return;
     void Promise.allSettled(ids.map(async (id) => {
       const o = addOverlay(id, { color });
-      try { o.ack((await api.patchAgentSession(id, { color }))?.sync); } catch (e) { o.fail(); throw e; }
+      await api.patchAgentSession(id, { color }).then((r) => o.ack(r?.sync), (e: unknown) => { o.fail(); throw e; });
     })).then((results) => {
       const failed = results.filter((r) => r.status === 'rejected');
       if (failed.length) {
@@ -1871,22 +1879,23 @@ export default function HubPanel({ vpsList: initialVpsList, vpsFolders: initialF
       for (const id of ids) next.add(id);
       return next;
     });
-    try {
-      const r = await api.bulkDeleteSessions({ ids, onlyPaused: true });
+    const res = await outcome(api.bulkDeleteSessions({ ids, onlyPaused: true }));
+    if (res.ok) {
+      const r = res.value;
       const gone = new Set([...r.deleted, ...r.missing]);
       const sync = (r as { sync?: SyncRev }).sync;
       for (const id of gone) addOverlay(id, { removed: true }).ack(sync);
       // Functional: the user may have navigated while the request ran.
       setSelectedId((current) => (current && gone.has(current) ? null : current));
-      return r;
-    } finally {
-      setDeletingSessionIds((current) => {
-        const next = new Set(current);
-        for (const id of ids) next.delete(id);
-        return next;
-      });
-      refreshIfDegraded();
     }
+    setDeletingSessionIds((current) => {
+      const next = new Set(current);
+      for (const id of ids) next.delete(id);
+      return next;
+    });
+    refreshIfDegraded();
+    if (!res.ok) throw res.error;
+    return res.value;
   }
 
   async function updateSessionHandle(sess: SessionListItem, value: string) {
@@ -1898,33 +1907,25 @@ export default function HubPanel({ vpsList: initialVpsList, vpsFolders: initialF
   }
 
   async function patchShell(id: string, body: { name?: string | null; color?: string | null }) {
-    try {
-      const updated = await api.updateShell(id, body);
-      setShells((prev) => prev.map((s) => s.id === id ? { ...s, ...updated } : s));
-    } catch (e: any) {
-      setError({ msg: 'patch shell: ' + (e?.message ?? e) });
-    }
+    const r = await outcome(api.updateShell(id, body));
+    if (!r.ok) { setError({ msg: 'patch shell: ' + r.message }); return; }
+    const updated = r.value;
+    setShells((prev) => prev.map((s) => s.id === id ? { ...s, ...updated } : s));
   }
 
   async function killShellOne(id: string) {
-    try {
-      await api.killShell(id);
-      shellKilled(id);
-    } catch (e: any) {
-      // Kill failed (agent unreachable). Offer "forget": drop the Charon row
-      // anyway — the detached holder may keep running on the VPS (P0.6).
-      const msg = String(e?.message ?? e);
-      if (window.confirm(`kill failed (${msg}).\nForget this shell anyway? The remote bash may keep running on the VPS.`)) {
-        try {
-          await api.killShell(id, true);
-          shellKilled(id);
-        } catch (e2: any) {
-          setError({ msg: 'forget shell: ' + (e2?.message ?? e2) });
-        }
-      } else {
-        setError({ msg: 'kill shell: ' + msg });
-      }
+    const r = await outcome(api.killShell(id));
+    if (r.ok) { shellKilled(id); return; }
+    // Kill failed (agent unreachable). Offer "forget": drop the Charon row
+    // anyway — the detached holder may keep running on the VPS (P0.6).
+    const msg = r.message;
+    if (!window.confirm(`kill failed (${msg}).\nForget this shell anyway? The remote bash may keep running on the VPS.`)) {
+      setError({ msg: 'kill shell: ' + msg });
+      return;
     }
+    const forget = await outcome(api.killShell(id, true));
+    if (forget.ok) shellKilled(id);
+    else setError({ msg: 'forget shell: ' + forget.message });
   }
 
   // Cross-session permission popup → when the user clicks allow/deny on
@@ -1933,12 +1934,9 @@ export default function HubPanel({ vpsList: initialVpsList, vpsFolders: initialF
   async function respondPermissionCrossSession(
     sessionId: string, permId: string, allow: boolean, always: boolean, suggestion?: number,
   ) {
-    try {
-      await api.respondPermission(sessionId, permId, allow, always, suggestion);
-      refreshIfDegraded();
-    } catch (e: any) {
-      setError({ msg: String(e?.message ?? e) });
-    }
+    const r = await outcome(api.respondPermission(sessionId, permId, allow, always, suggestion));
+    if (r.ok) refreshIfDegraded();
+    else setError({ msg: r.message });
   }
 
   // The shells whose <ShellTerminal> is kept mounted (union of the lazily-
@@ -1984,22 +1982,18 @@ export default function HubPanel({ vpsList: initialVpsList, vpsFolders: initialF
   // Rendered in MOUNT order, never in recency order: React moving a pane's
   // node re-inserts it, and a re-inserted iframe reloads (and scroll offsets
   // reset). The LRU above only decides who stays.
-  const fileMountSeq = useRef(new Map<string, number>());
+  // The selection renders on its first frame, before the effect commits.
+  const fileKeysShown = useMemo(() => (selectedFileKey && !mountedFileKeys.includes(selectedFileKey)
+    ? [...mountedFileKeys, selectedFileKey] : mountedFileKeys), [mountedFileKeys, selectedFileKey]);
+  const fileMountOrder = useMountOrder(fileKeysShown);
   const mountedFiles = useMemo(() => {
-    const keys = [...mountedFileKeys];
-    // The selection renders on its first frame, before the effect commits.
-    if (selectedFileKey && !keys.includes(selectedFileKey)) keys.push(selectedFileKey);
-    const seq = fileMountSeq.current;
-    for (const k of [...seq.keys()]) if (!keys.includes(k)) seq.delete(k);
-    let next = Math.max(0, ...seq.values()) + 1;
-    for (const k of keys) if (!seq.has(k)) seq.set(k, next++);
     const out: ResolvedTab[] = [];
-    for (const k of [...keys].sort((a, b) => seq.get(a)! - seq.get(b)!)) {
+    for (const k of fileMountOrder) {
       const t = fileTabsByKey.get(k) ?? (k === selectedFileKey ? selectedFile : null);
       if (t) out.push(t);
     }
     return out;
-  }, [mountedFileKeys, selectedFileKey, fileTabsByKey, selectedFile]);
+  }, [fileMountOrder, selectedFileKey, fileTabsByKey, selectedFile]);
 
   // Stable for the memoized ToolPanel beside a file or a shell (§14.38).
   const openSessionFromPanel = useStableCallback((id: string) => openSessionById(id, false));
@@ -2007,7 +2001,7 @@ export default function HubPanel({ vpsList: initialVpsList, vpsFolders: initialF
 
   // The global palette (SearchModal): stable callbacks, so its memoized
   // sections do not recompute on every hub render.
-  const closeSearch = useCallback(() => setSearchOpen(false), []);
+  const closeSearch = useCallback(() => setSearchOpen(false), [setSearchOpen]);
   const searchOpenSession = useStableCallback((id: string, pin: boolean) => openSessionById(id, pin));
   const searchOpenShell = useStableCallback((id: string, pin: boolean) => selectShell(id, pin));
   const searchOpenProject = useStableCallback((vpsId: string, path: string) => {
@@ -2035,7 +2029,7 @@ export default function HubPanel({ vpsList: initialVpsList, vpsFolders: initialF
       { id: 'toggle-tools', label: 'Toggle tools panel', keywords: 'explorer git search side panel', run: toggleShowTools },
     );
     return list;
-  }, [searchActionFolder?.vpsId, searchActionFolder?.path, toggleShowTools]);
+  }, [searchActionFolder, toggleShowTools, showHidden, setFolderPicker, setResumeOpen, setSettingsOpen, setRoutinesOpen, setSettingsCat, setDataOpen]);
 
   return (
     <PanelLayoutProvider value={initialPanels}>
@@ -2309,10 +2303,9 @@ export default function HubPanel({ vpsList: initialVpsList, vpsFolders: initialF
         onToggleFolderCollapsed={async (folderId, collapsed) => {
           // Optimistic: update immediately, then POST. Roll back if it fails.
           setVpsFolders((prev) => prev.map((f) => f.id === folderId ? { ...f, collapsed: collapsed ? 1 : 0 } : f));
-          try {
-            await api.updateVpsFolder(folderId, { collapsed });
-          } catch (e: any) {
-            setError({ msg: String(e?.message ?? e) });
+          const r = await outcome(api.updateVpsFolder(folderId, { collapsed }));
+          if (!r.ok) {
+            setError({ msg: r.message });
             setVpsFolders((prev) => prev.map((f) => f.id === folderId ? { ...f, collapsed: collapsed ? 0 : 1 } : f));
           }
         }}
@@ -2636,8 +2629,8 @@ export default function HubPanel({ vpsList: initialVpsList, vpsFolders: initialF
           onImported={(c) => { setResumeOpen(null); applyCreatedSession(c); }}
           onResumed={async (id) => {
             setResumeOpen(null);
-            try { await api.resumeSession(id); }
-            catch (e: any) { setError({ msg: String(e?.message ?? e) }); return; }
+            const r = await outcome(api.resumeSession(id));
+            if (!r.ok) { setError({ msg: r.message }); return; }
             openSessionById(id, true);
             refreshIfDegraded();
           }}

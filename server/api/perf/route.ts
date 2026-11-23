@@ -17,8 +17,9 @@ export async function GET() {
   );
 }
 
-// POST /api/perf {frames} — a browser's long frames (app/perfReport.ts), one
-// `[client-perf]` journal line each: the user's machine, not a probe's.
+// POST /api/perf {frames, inp?} — a browser's long frames (app/perfReport.ts),
+// one `[client-perf]` journal line each, and its interactions since the last
+// POST, ONE `[client-inp]` line: the user's machine, not a probe's.
 // Bounded: ≤ MAX_FRAMES per POST, ≤ LINES_PER_MIN lines a minute in all.
 const MAX_FRAMES = 20;
 const LINES_PER_MIN = 60;
@@ -38,12 +39,23 @@ function browser(ua: string | null): string {
 export async function POST(req: Request) {
   const s = await requireApiSession();
   if (s instanceof Response) return s;
-  let frames: unknown;
-  try { frames = (await req.json())?.frames; } catch { frames = null; }
+  let body: Record<string, unknown> | null;
+  try { body = await req.json(); } catch { body = null; }
+  const frames = body?.frames;
   if (!Array.isArray(frames)) return Response.json({ error: 'frames: array' }, { status: 400 });
   const who = browser(req.headers.get('user-agent'));
   const minute = Math.floor(Date.now() / 60_000);
   if (budget.minute !== minute) { budget.minute = minute; budget.lines = 0; }
+  const inp = body?.inp as Record<string, unknown> | undefined;
+  if (inp && typeof inp === 'object' && budget.lines < LINES_PER_MIN) {
+    budget.lines += 1;
+    // Slowest first: where, which control, how the time split (waiting for
+    // the main thread, the handlers, then the next frame).
+    const worst = (Array.isArray(inp.worst) ? inp.worst.slice(0, 3) : [])
+      .map((w: Record<string, unknown>) => `${num(w?.ms)}ms ${str(w?.kind, 8)}@${str(w?.where, 12) || '?'} "${str(w?.what, 40)}" (wait ${num(w?.wait)} run ${num(w?.run)} paint ${Math.max(0, num(w?.ms) - num(w?.wait) - num(w?.run))})`)
+      .join(' ; ');
+    console.warn(`[client-inp] ${who} n=${num(inp.n)} p50=${num(inp.p50)} p90=${num(inp.p90)} max=${num(inp.max)} slow=${num(inp.slow)} up=${num(inp.upMin)}min heap=${num(inp.heapMb)}MB nodes=${num(inp.nodes)} | ${worst || '-'}`);
+  }
   for (const f of frames.slice(0, MAX_FRAMES) as Array<Record<string, unknown>>) {
     if (!f || typeof f !== 'object' || budget.lines >= LINES_PER_MIN) break;
     budget.lines += 1;
