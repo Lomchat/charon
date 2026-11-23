@@ -1,53 +1,21 @@
 'use client';
-import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { memo, useCallback, useEffect, useMemo, useState } from 'react';
 import { sessionApi } from '@/lib/api';
 import { createLatestGate } from './sync/revResource';
-import TaskModal, { TaskGroup } from './TaskModal';
-import BgTaskConstellation from './BgTaskConstellation';
-import { backgroundWorkText } from '@/lib/providerText';
-import { fmtDuration, fmtMoment } from './taskTime';
-import { bgWorkItems, CODEX_TERMINAL_TASK_PREFIX, codexTerminalProcessId, effectiveBgStatus, isBgCommandTask } from './bgTasks';
-import type { BgTask, BgTaskStatus } from './bgTasks';
+import TaskModal from './TaskModal';
+import BgFrise from './BgFrise';
+import { bgTaskOwnAgent, bgWorkItems, CODEX_TERMINAL_TASK_PREFIX, effectiveBgStatus } from './bgTasks';
+import { useBgAgentRuns } from './AgentRunTag';
+import { isWorkflowTask, terminalCommand, terminalId, type CodexTerminal } from './bgFrise';
+import type { BgTask } from './bgTasks';
 import type { SessionProvider } from '@/lib/sessionCapabilities';
-import { providerText } from '@/lib/providerText';
-
-type CodexTerminal = {
-  process_id?: string; processId?: string;
-  command?: string | string[]; cwd?: string;
-  cpu_percent?: number | null; cpuPercent?: number | null;
-  rss_kb?: number | null; rssKb?: number | null;
-};
-
-function terminalId(term: CodexTerminal): string {
-  return String(term.process_id ?? term.processId ?? '');
-}
-
-function terminalCommand(term: CodexTerminal): string {
-  if (Array.isArray(term.command)) return term.command.join(' ');
-  return typeof term.command === 'string' && term.command ? term.command : terminalId(term);
-}
-
-// Per-sub-agent state glyphs for a Workflow run's fan-out (bg_task_progress).
-const AGENT_STATE: Record<string, { glyph: string; cls: string }> = {
-  start: { glyph: '◐', cls: 'running' },
-  running: { glyph: '◐', cls: 'running' },
-  done: { glyph: '✓', cls: 'completed' },
-  error: { glyph: '✗', cls: 'failed' },
-  failed: { glyph: '✗', cls: 'failed' },
-};
-
-function agentsDone(t: BgTask): number {
-  return (t.agents ?? []).filter((a) => (a.state ?? '').toLowerCase() === 'done').length;
-}
-function isWorkflow(t: BgTask): boolean {
-  return t.taskType === 'local_workflow' || !!t.workflowName;
-}
 
 // ── BgTasksBar ───────────────────────────────────────────────────────────────
 // Slim status line above the chat input: shows the session's BACKGROUND tasks
 // (Bash run_in_background / background subagents) — how many are running and
-// what the freshest one is doing. Click → modal with the full registry
-// (command, status, elapsed, output file, completion summary).
+// what the freshest one is doing. Click → the modal: ONE frise of every
+// command, agent, workflow and process (`BgFrise`), the selected one's detail
+// underneath.
 //
 // Rendering rules:
 //   - visible while ≥1 task is running, plus a grace window after the last
@@ -60,23 +28,6 @@ const ENDED_GRACE_S = 600; // keep the bar 10min after the last task ended
 // A stop the CLI never answers must not leave the button disabled for good.
 const STOP_RETRY_MS = 20_000;
 
-const STATUS_META: Record<BgTaskStatus, { label: string; cls: string; hint?: string }> = {
-  running: { label: 'running', cls: 'running' },
-  completed: { label: 'done', cls: 'completed' },
-  failed: { label: 'failed', cls: 'failed' },
-  killed: { label: 'stopped', cls: 'killed' },
-  stale: { label: 'lost', cls: 'stale', hint: 'The session restarted while this ran: its outcome is unknown.' },
-};
-
-/** A task's pill: its status, except that a command the CLI stopped at its
- *  background time limit says so rather than a bare "stopped". */
-function statusMeta(t: BgTask, status: BgTaskStatus): { label: string; cls: string; hint?: string } {
-  if (status === 'killed' && t.stopCause === 'time_limit') {
-    return { label: backgroundWorkText.timeLimit, cls: 'killed', hint: backgroundWorkText.timeLimitHint };
-  }
-  return STATUS_META[status] ?? STATUS_META.stale;
-}
-
 function fmtElapsed(fromS: number, toS: number): string {
   const d = Math.max(0, toS - fromS);
   if (d < 60) return `${d}s`;
@@ -84,17 +35,12 @@ function fmtElapsed(fromS: number, toS: number): string {
   return `${Math.floor(d / 3600)}h${String(Math.floor((d % 3600) / 60)).padStart(2, '0')}m`;
 }
 
-function fmtTokens(n: number): string {
-  return n >= 1000 ? `${(n / 1000).toFixed(n >= 10_000 ? 0 : 1)}k tokens` : `${n} tokens`;
-}
-
 function taskTitle(t: BgTask): string {
   return t.description || t.workflowName || t.command || t.taskId;
 }
 
-function taskKind(t: BgTask): string {
-  return isWorkflow(t) ? backgroundWorkText.workflow : isBgCommandTask(t) ? backgroundWorkText.command
-    : t.taskType === 'local_agent' ? backgroundWorkText.agent : backgroundWorkText.task;
+function agentsDone(t: BgTask): number {
+  return (t.agents ?? []).filter((a) => (a.state ?? '').toLowerCase() === 'done').length;
 }
 
 function BgTasksBarImpl({ tasks, olderEnded = 0, sessionId, provider, sessionStatus, vpsId, cwd }: {
@@ -109,8 +55,6 @@ function BgTasksBarImpl({ tasks, olderEnded = 0, sessionId, provider, sessionSta
 }) {
   const [open, setOpen] = useState(false);
   const [selectedTaskId, setSelectedTaskId] = useState<string | null>(null);
-  const [historyOpen, setHistoryOpen] = useState(false);
-  const [historyLimit, setHistoryLimit] = useState(20);
   const [nowS, setNowS] = useState(() => Math.floor(Date.now() / 1000));
   // taskId → in-flight/failed kill. Pessimistic (§14.18): the row keeps saying
   // "running" until the CLI's own terminal event arrives, because only the CLI
@@ -196,6 +140,7 @@ function BgTasksBarImpl({ tasks, olderEnded = 0, sessionId, provider, sessionSta
     () => bgWorkItems(tasks.map((t) => ({ t, status: effectiveBgStatus(t, nowS) }))),
     [tasks, nowS],
   );
+  // A Codex process the live registry lists is counted once: by the registry.
   const terminalTaskIds = useMemo(
     () => new Set(terminals.map((term) => `${CODEX_TERMINAL_TASK_PREFIX}${terminalId(term)}`)),
     [terminals],
@@ -208,9 +153,6 @@ function BgTasksBarImpl({ tasks, olderEnded = 0, sessionId, provider, sessionSta
     () => taskView.filter((v) => v.status === 'running').map((v) => v.t),
     [taskView],
   );
-  // The modal's two groups: what still runs (oldest first), what ended
-  // (newest first) — the order `bgTasksToArray` already gives.
-  const runningRows = useMemo(() => taskView.filter((v) => v.status === 'running'), [taskView]);
   const ended = useMemo(() => taskView.filter((v) => v.status !== 'running'), [taskView]);
   const lastEndedAt = useMemo(
     () => view.reduce((m, { t }) => Math.max(m, t.endedAt ?? 0), 0),
@@ -226,16 +168,11 @@ function BgTasksBarImpl({ tasks, olderEnded = 0, sessionId, provider, sessionSta
     return () => clearInterval(iv);
   }, [running.length, open]);
 
-  const defaultTask = runningRows[runningRows.length - 1] ?? ended[0];
-  const selectedTask = taskView.find(({ t }) => t.taskId === selectedTaskId) ?? defaultTask;
-  // Every running item stays in sight (a picker hiding all but one read as
-  // "one task"); a finished one opened from the history joins them.
-  const picks = selectedTask && selectedTask.status !== 'running' ? [...runningRows, selectedTask] : runningRows;
-  const detailRef = useRef<HTMLDivElement>(null);
-  const inspect = useCallback((taskId: string) => {
-    setSelectedTaskId(taskId);
-    detailRef.current?.scrollIntoView({ block: 'start' });
-  }, []);
+  const defaultTask = running[running.length - 1] ?? ended[0]?.t;
+  // What each background agent runs on (model + effort), read while open.
+  const agentIds = useMemo(() => view.flatMap(({ t }) => { const id = bgTaskOwnAgent(t, provider); return id ? [id] : []; }).slice(-50),
+    [view, provider]);
+  const agentRuns = useBgAgentRuns(sessionId, agentIds, open);
   // Session sub-agents are listed by native id; a `local_agent` task id IS it.
   const agentLabels = useMemo(() => new Map(tasks.flatMap((t) => t.description ? [[t.taskId, t.description] as const] : [])), [tasks]);
 
@@ -257,126 +194,20 @@ function BgTasksBarImpl({ tasks, olderEnded = 0, sessionId, provider, sessionSta
     : terminals.length > 0 ? undefined : ended[0]?.t;
   const newestTerminal = terminals[terminals.length - 1];
 
-  function renderTask({ t, status }: { t: BgTask; status: BgTaskStatus }) {
-    const meta = statusMeta(t, status);
-    const end = t.endedAt ?? nowS;
-    const kstate = killing[t.taskId];
-    // A Codex row is stoppable only when it IS a background terminal (its
-    // task id carries the process id): the provider has no per-item stop for
-    // a sub-agent spawn, so offering ⊘ there could only produce an error toast.
-    const stoppable = provider !== 'codex' || !!codexTerminalProcessId(t.taskId);
-    const title = taskTitle(t);
-    const tokens = t.usage?.tokens ?? 0;
-    return (
-      <article key={t.taskId} className={`tm-card ${meta.cls}`}>
-        <div className="tm-card-top">
-          <span className={`tm-pill ${meta.cls}`} title={meta.hint}><i aria-hidden />{meta.label}</span>
-          <button type="button" className="tm-card-title bgc-inspect-task" onClick={() => inspect(t.taskId)} title={backgroundWorkText.inspect}>{title}</button>
-          {status === 'running' && (stoppable ? (
-            // Kills the TASK, not the session. The row stays "running" until
-            // the CLI's own terminal event lands (§14.18).
-            <button
-              type="button"
-              className="tm-stop"
-              disabled={kstate === 'pending'}
-              onClick={() => kill(t.taskId)}
-              title="Stop this task. The session keeps running."
-            >
-              {kstate === 'pending' ? 'stopping…' : 'Stop'}
-            </button>
-          ) : (
-            <span className="tm-nostop" title={providerText.noPerItemStop(provider)}>no per-item stop</span>
-          ))}
-        </div>
-        <div className="tm-meta">
-          {isWorkflow(t) && (
-            <span className="tm-tag workflow" title="Workflow tool run">workflow{t.workflowName ? ` · ${t.workflowName}` : ''}</span>
-          )}
-          <span>{status === 'running'
-            ? `running for ${fmtDuration((nowS - t.startedAt) * 1000)}`
-            : `took ${fmtDuration((end - t.startedAt) * 1000)}`}</span>
-          <span>{status === 'running'
-            ? `started ${fmtMoment(t.startedAt * 1000, nowS * 1000)}`
-            : `ended ${fmtMoment(end * 1000, nowS * 1000)}`}</span>
-          {tokens > 0 && <span>{fmtTokens(tokens)}</span>}
-          <span className="tm-id" title={t.taskType ? `type: ${t.taskType}` : undefined}>{t.taskId}</span>
-        </div>
-        {meta.hint && <div className="tm-note muted">{meta.hint}</div>}
-        {kstate && kstate !== 'pending' && <div className="tm-error">Could not stop it: {kstate}</div>}
-        {t.command && t.command !== title && <pre className="tm-code">{t.command}</pre>}
-        {t.summary && <div className="tm-note">{t.summary}</div>}
-        {t.agents && t.agents.length > 0 && (
-          <div className="tm-agents">
-            <div className="tm-agents-h">
-              sub-agents · {agentsDone(t)}/{t.agents.length} done
-            </div>
-            {t.agents.map((a, i) => {
-              const st = AGENT_STATE[(a.state ?? '').toLowerCase()] ?? { glyph: '◦', cls: 'stale' };
-              return (
-                <div key={a.label ?? i} className={`tm-agent ${st.cls}`}>
-                  <span className={`tm-agent-state ${st.cls}`} aria-hidden>{st.glyph}</span>
-                  <span className="tm-agent-label">{a.label || `agent ${(a.index ?? i) + 1}`}</span>
-                  {a.phaseTitle && <span className="tm-agent-dim">{a.phaseTitle}</span>}
-                  {a.model && <span className="tm-agent-dim">{a.model}</span>}
-                  {typeof a.tokens === 'number' && a.tokens > 0 && <span className="tm-agent-dim">{fmtTokens(a.tokens)}</span>}
-                  {a.resultPreview && <span className="tm-agent-result" title={a.resultPreview}>{a.resultPreview}</span>}
-                </div>
-              );
-            })}
-          </div>
-        )}
-        {t.outputFile && (
-          <div className="tm-path" title="Output file on the VPS">
-            <span>output</span><code>{t.outputFile}</code>
-          </div>
-        )}
-      </article>
-    );
-  }
-
-  function renderTerminal(term: CodexTerminal, i: number) {
-    const processId = terminalId(term);
-    const cpu = term.cpu_percent ?? term.cpuPercent;
-    const rss = term.rss_kb ?? term.rssKb;
-    const kstate = terminalKilling[processId];
-    return (
-      <article key={processId || `terminal-${i}`} className="tm-card running">
-        <div className="tm-card-top">
-          <span className="tm-pill running"><i aria-hidden />running</span>
-          <span className="tm-card-title mono">{terminalCommand(term)}</span>
-          {!!processId && (
-            <button type="button" className="tm-stop" disabled={kstate === 'pending'}
-              onClick={() => void killTerminal(processId)} title="Stop this process. The session keeps running.">
-              {kstate === 'pending' ? 'stopping…' : 'Stop'}
-            </button>
-          )}
-        </div>
-        <div className="tm-meta">
-          <span className="tm-tag">process</span>
-          {cpu != null && <span>{cpu}% CPU</span>}
-          {rss != null && <span>{Math.round(rss / 1024)} MB</span>}
-          <span className="tm-id">{processId || 'unknown pid'}</span>
-        </div>
-        {term.cwd && <div className="tm-path"><span>in</span><code>{term.cwd}</code></div>}
-        {kstate && kstate !== 'pending' && <div className="tm-error">Could not stop it: {kstate}</div>}
-      </article>
-    );
-  }
-
   return (
     <>
       <button
         type="button"
         className={`bgtasks-bar${runningCount > 0 ? ' active' : ''}`}
         // Pin the task shown at opening: a later launch must not swap it out.
-        onClick={() => { setSelectedTaskId(defaultTask?.t.taskId ?? null); setOpen(true); }}
+        onClick={() => { setSelectedTaskId(defaultTask?.taskId ?? null); setOpen(true); }}
         title="click for background task details"
       >
         <span className={`bgtasks-dot ${runningCount > 0 ? 'running' : 'done'}`} aria-hidden />
         <span className="bgtasks-headline">{headline}</span>
         {newest && (
           <span className="bgtasks-snippet">
-            {isWorkflow(newest) && <span className="bgtask-badge workflow" aria-hidden>⚙</span>}
+            {isWorkflowTask(newest) && <span className="bgtask-badge workflow" aria-hidden>⚙</span>}
             {taskTitle(newest)}
             {newest.agents && newest.agents.length > 0 && ` · ${agentsDone(newest)}/${newest.agents.length} agents`}
             {running.length > 0 && ` · ${fmtElapsed(newest.startedAt, nowS)}`}
@@ -399,41 +230,15 @@ function BgTasksBarImpl({ tasks, olderEnded = 0, sessionId, provider, sessionSta
           title="Background work"
           subtitle={<>
             {runningCount > 0 ? `${runningCount} running` : 'Nothing running'}
-            {ended.length > 0 && ` · ${ended.length + olderEnded} finished`}
+            {ended.length + olderEnded > 0 && ` · ${ended.length + olderEnded} finished`}
             {' · stopping one leaves the session running'}
           </>}
           onClose={close}
         >
-          {selectedTask && <div ref={detailRef} className="bgc-detail">
-            {picks.length > 1 && <div className="bgc-picks" role="group" aria-label={backgroundWorkText.task}>
-              {picks.map(({ t, status }) => {
-                const meta = statusMeta(t, status);
-                const on = t.taskId === selectedTask.t.taskId;
-                return <button type="button" key={t.taskId} className={`bgc-pick ${meta.cls}${on ? ' selected' : ''}`} aria-pressed={on}
-                  onClick={() => setSelectedTaskId(t.taskId)} title={taskTitle(t)}>
-                  <span className={`tm-pill ${meta.cls}`} title={meta.hint}><i aria-hidden />{meta.label}</span>
-                  <span className="bgc-pick-kind">{taskKind(t)}</span>
-                  <span className="bgc-pick-title">{taskTitle(t)}</span>
-                  <span className="bgc-pick-time">{fmtElapsed(t.startedAt, t.endedAt ?? nowS)}</span>
-                </button>;
-              })}
-            </div>}
-            <BgTaskConstellation key={`${selectedTask.t.taskId}:${selectedTask.t.startedAt}`} task={selectedTask.t} status={selectedTask.status}
-              sessionId={sessionId} vpsId={vpsId} cwd={cwd} provider={provider} nowS={nowS} killing={killing[selectedTask.t.taskId]} onStop={kill} agentLabels={agentLabels} />
-          </div>}
-          <TaskGroup label="Processes" count={terminals.length}>{terminals.map(renderTerminal)}</TaskGroup>
-          {terminalError && <div className="tm-error">Process list refresh failed: {terminalError}</div>}
-          {ended.length > 0 && <section className="bgc-history">
-            <button type="button" className="bgc-history-toggle" aria-expanded={historyOpen} onClick={() => setHistoryOpen((value) => !value)}>
-              {historyOpen ? '⌄' : '›'} {backgroundWorkText.finished} <span>{ended.length + olderEnded}</span>
-            </button>
-            {historyOpen && <div className="tm-cards">{ended.slice(0, historyLimit).map(renderTask)}
-              {ended.length > historyLimit && <button type="button" className="bgc-more" onClick={() => setHistoryLimit((n) => n + 20)}>{backgroundWorkText.showMore}</button>}
-            </div>}
-          </section>}
-          {runningRows.length + terminals.length + ended.length === 0 && (
-            <p className="tm-empty">Nothing in the background right now.</p>
-          )}
+          <BgFrise rows={view} terminals={terminals} terminalError={terminalError} olderEnded={olderEnded}
+            sessionId={sessionId} vpsId={vpsId} cwd={cwd} provider={provider} nowS={nowS}
+            killing={killing} onStop={kill} terminalKilling={terminalKilling} onStopTerminal={killTerminal}
+            runs={agentRuns} agentLabels={agentLabels} initialSelected={selectedTaskId} />
         </TaskModal>
       )}
     </>

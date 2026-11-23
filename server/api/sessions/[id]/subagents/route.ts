@@ -1,4 +1,4 @@
-import { readWorkflowTranscript } from '@/lib/server/hub/workflowTranscript';
+import { readAgentRunConfigs, readWorkflowTranscript } from '@/lib/server/hub/workflowTranscript';
 import { requireApiSession } from '@/lib/server/session';
 import { callSessionRpc } from '@/lib/server/hub/sessionRpc';
 import { recoverSubagentTranscript } from '@/lib/server/hub/subagentTranscriptCompat';
@@ -7,6 +7,7 @@ import { readSessionInsightSnapshot } from '@/lib/server/hub/sessionInsightSnaps
 
 /** GET /api/sessions/[id]/subagents            → the ids
  *  GET /api/sessions/[id]/subagents?agent=<id> → that one's transcript
+ *  GET /api/sessions/[id]/subagents?configs=<id,…> → their model + effort
  *
  *  A Workflow run showed as "Agent: … — 4m12s — done" and everything the
  *  sub-agent read, searched and concluded was discarded. The transcripts were
@@ -16,6 +17,8 @@ export async function GET(req: Request, { params }: { params: Promise<{ id: stri
   if (auth instanceof Response) return auth;
   const { id } = await params;
   const query = new URL(req.url).searchParams;
+  const configs = query.get('configs');
+  if (configs != null) return Response.json(await readAgentRunConfigs(id, configs.split(',').slice(0, 50)));
   const task = query.get('task');
   if (task || (query.get('activity') === '1' && query.get('agent'))) {
     const rawBefore = query.get('before'), rawAfter = query.get('after');

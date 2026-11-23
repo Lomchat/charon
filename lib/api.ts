@@ -10,7 +10,7 @@ import type { CustomEndpoint, EndpointState } from '@/lib/customEndpoints';
 
 import { PROVIDERS, type SessionProvider } from '@/lib/sessionCapabilities';
 import type {
-  WorkflowOutputQuery, WorkflowOutputResponse, WorkflowAgentsResponse,
+  WorkflowOutputQuery, WorkflowOutputResponse, WorkflowAgentsResponse, AgentRunConfigsResponse,
   EndpointProbeBody, EndpointProbeResponse, EndpointSaveBody, SessionEndpointBody,
   EndpointBatchBody, EndpointBatchResponse,
   Vps, VpsFolder, VpsPath, AgentSession, PermissionMode, ShellInfo,
@@ -211,6 +211,8 @@ async function readSearchStream(path: string, body: FsSearchQuery, opts: {
 export const api = {
   getWorkflowAgents: (id: string, task: string, signal?: AbortSignal) =>
     send<WorkflowAgentsResponse>('GET', `/api/sessions/${id}/subagents?${new URLSearchParams({ task })}`, undefined, { signal }),
+  getAgentRunConfigs: (id: string, ids: string[], signal?: AbortSignal) =>
+    send<AgentRunConfigsResponse>('GET', `/api/sessions/${id}/subagents?${new URLSearchParams({ configs: ids.join(',') })}`, undefined, { signal }),
   getWorkflowOutput: (id: string, query: WorkflowOutputQuery, signal?: AbortSignal) => {
     const params = new URLSearchParams();
     for (const [key, value] of Object.entries(query)) if (value != null) params.set(key, String(value));

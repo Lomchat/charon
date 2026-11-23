@@ -131,6 +131,55 @@ export function workflowAgentsFromJournal(raw: string, times?: WorkflowAgentTime
   }).slice(0, 200);
 }
 
+/** What an agent ACTUALLY runs on. Not its `.meta.json`: there `model` is the
+ * request (an alias, `inherit`) and `pickedEffortModel` the PARENT's model. */
+export type AgentRunConfig = { model: string; effort: string | null };
+
+/** The newest assistant record among complete lines (the CLI stamps
+ * `message.model` and a top-level `effort` on each), identity-checked. */
+export function agentRunConfigFromTail(bytes: Buffer, sessionId: string, agentId: string): AgentRunConfig | null {
+  const text = bytes.toString('utf8');
+  for (let end = text.length; end > 0;) {
+    const start = text.lastIndexOf('\n', end - 1) + 1;
+    const line = text.slice(start, end);
+    end = start - 1;
+    if (!line.includes('"type":"assistant"')) continue;
+    let r: any; try { r = JSON.parse(line); } catch { continue; }
+    if (r?.type !== 'assistant' || r.sessionId !== sessionId || r.agentId !== agentId) continue;
+    const model = r.message?.model;
+    if (typeof model !== 'string' || !model || model === '<synthetic>') continue;
+    return { model: model.slice(0, 120), effort: typeof r.effort === 'string' && r.effort ? r.effort.slice(0, 40) : null };
+  }
+  return null;
+}
+
+// Found configs only, bounded; a fallback model may replace one, hence the TTL.
+const runConfigs = new Map<string, { until: number; value: AgentRunConfig }>();
+async function agentRunConfig(read: Reader, root: string, path: string, sessionId: string, agentId: string, scope: string) {
+  const key = `${scope}:${root}/${path}`;
+  const hit = runConfigs.get(key);
+  if (hit && hit.until > Date.now()) return hit.value;
+  let value: AgentRunConfig | null = null;
+  // 64 KiB of tail holds the last assistant record of nearly every transcript.
+  for (const length of [64 * 1024, 256 * 1024]) {
+    const range = await read({ root, path, offset: -length, length }).catch(() => null);
+    if (!range?.ok || typeof range.data !== 'string') break;
+    value = agentRunConfigFromTail(Buffer.from(range.data, 'base64'), sessionId, agentId);
+    if (value || range.offset === 0) break;
+  }
+  if (value) {
+    runConfigs.delete(key); runConfigs.set(key, { until: Date.now() + 30 * 60_000, value });
+    while (runConfigs.size > 2000) runConfigs.delete(runConfigs.keys().next().value!);
+  }
+  return value;
+}
+async function eachLimited<T>(items: T[], limit: number, run: (item: T) => Promise<void>) {
+  let next = 0;
+  await Promise.all(Array.from({ length: Math.min(limit, items.length) }, async () => {
+    while (next < items.length) await run(items[next++]);
+  }));
+}
+
 export type TranscriptCursor = { after?: number; fileId?: string; cursor?: string; nativeAgent?: string; workflowAgent?: string };
 class TranscriptReset extends Error { readonly reason = 'reset'; }
 const digest = (bytes: Buffer) => createHash('sha256').update(bytes).digest('hex').slice(0, 24);
@@ -205,9 +254,12 @@ async function transcriptInfo(read: Reader, root: string, path: string, sessionI
       const meta = await read({ root, path: path.replace(/\.jsonl$/, '.meta.json'), offset: 0, length: 16384 });
       if (meta.ok && meta.size <= 16384) {
         const m = JSON.parse(Buffer.from(meta.data, 'base64').toString('utf8'));
-        info.model = typeof m.pickedEffortModel === 'string' ? m.pickedEffortModel : typeof m.model === 'string' ? m.model : undefined;
+        // The request, until the transcript says what actually runs.
+        info.model = typeof m.model === 'string' && m.model !== 'inherit' ? m.model : undefined;
         info.phase = typeof m.workflowPhase === 'string' ? m.workflowPhase : undefined;
       }
+      const run = await agentRunConfig(read, root, path, sessionId, agentId, scope);
+      if (run) { info.model = run.model; info.effort = run.effort ?? undefined; }
       const head = await read({ root, path, offset: 0, length: 65536 });
       if (head.ok) {
         for (const line of Buffer.from(head.data, 'base64').toString('utf8').split('\n')) {
@@ -230,6 +282,32 @@ async function transcriptInfo(read: Reader, root: string, path: string, sessionI
   });
 }
 
+/** A Claude session's sub-agent folder on its VPS, from the DB row alone. */
+function subagentFolder(sessionId: string) {
+  const [row] = db.select().from(agentSessions).where(eq(agentSessions.id, sessionId)).all();
+  if (!row || row.kind !== 'claude' || !row.nativeSessionId || !/^[a-f0-9-]+$/i.test(row.nativeSessionId)) return null;
+  const profile = accountProfileId(row.providerConfig);
+  const project = row.cwd?.replace(/[^a-zA-Z0-9]/g, '-');
+  if (!project || project.length > 200 || (profile !== 'default' && !/^[a-f0-9]{16}$/.test(profile))) return null;
+  const home = profile === 'default' ? '~/.claude' : `~/.charon/accounts/claude/${profile}`;
+  const sessionRoot = `${home}/projects/${project}/${row.nativeSessionId}/subagents`;
+  const client = getAgentClientForVpsId(row.vpsId);
+  const read: Reader = (params) => client.call('fs_read_range', params);
+  return { nativeSessionId: row.nativeSessionId, sessionRoot, client, read, scope: `${row.vpsId}:${sessionRoot}` };
+}
+
+/** Model + effort of the session's own (non-workflow) sub-agents, by id. */
+export async function readAgentRunConfigs(sessionId: string, ids: string[]) {
+  const folder = subagentFolder(sessionId);
+  if (!folder) return { ok: false as const, error: 'No saved sub-agent transcripts for this session.' };
+  const configs: Record<string, AgentRunConfig> = {};
+  await eachLimited([...new Set(ids)].filter(id => safeId.test(id)).slice(0, 50), 4, async (id) => {
+    const value = await agentRunConfig(folder.read, folder.sessionRoot, `agent-${id}.jsonl`, folder.nativeSessionId, id, folder.scope);
+    if (value) configs[id] = value;
+  });
+  return { ok: true as const, configs };
+}
+
 export async function readWorkflowTranscript(sessionId: string, taskId: string, label: string, phase: string,
   before?: number, expectedAgent?: string, options: TranscriptCursor = {}) {
   const unavailable = { ok: false, reason: 'unavailable', error: options.nativeAgent
@@ -237,16 +315,9 @@ export async function readWorkflowTranscript(sessionId: string, taskId: string, 
     : 'This workflow node could not be linked to a saved transcript. Preview only.' };
   if ((!options.nativeAgent && !safeId.test(taskId)) || (options.nativeAgent && !safeId.test(options.nativeAgent))
     || (options.workflowAgent && !safeId.test(options.workflowAgent)) || label.length > 500 || phase.length > 500) return unavailable;
-  const [row] = db.select().from(agentSessions).where(eq(agentSessions.id, sessionId)).all();
-  if (!row || row.kind !== 'claude' || !row.nativeSessionId || !/^[a-f0-9-]+$/i.test(row.nativeSessionId)) return unavailable;
-  const profile = accountProfileId(row.providerConfig);
-  const project = row.cwd?.replace(/[^a-zA-Z0-9]/g, '-');
-  if (!project || project.length > 200 || (profile !== 'default' && !/^[a-f0-9]{16}$/.test(profile))) return unavailable;
-  const home = profile === 'default' ? '~/.claude' : `~/.charon/accounts/claude/${profile}`;
-  const sessionRoot = `${home}/projects/${project}/${row.nativeSessionId}/subagents`;
-  const client = getAgentClientForVpsId(row.vpsId);
-  const read: Reader = (params) => client.call('fs_read_range', params);
-  const scope = `${row.vpsId}:${sessionRoot}`;
+  const folder = subagentFolder(sessionId);
+  if (!folder) return unavailable;
+  const { nativeSessionId, sessionRoot, client, read, scope } = folder;
   try {
     let root = sessionRoot, path: string, agentId: string;
     if (options.nativeAgent) {
@@ -277,12 +348,18 @@ export async function readWorkflowTranscript(sessionId: string, taskId: string, 
       });
       if (rawJournal == null) return unavailable;
       if (!label && !options.workflowAgent) {
-        // One listing of the run folder times every node (no per-agent read).
+        // One listing of the run folder times every node; a transcript tail
+        // per node (cached once found) says its model and effort.
         const times = await cached(`${scope}:times:${run}`, 10_000, async () => {
           const listed = await client.call<any>('fs_list', { root, path: '', with_git: false });
           return listed?.ok && Array.isArray(listed.entries) ? workflowAgentTimes(listed.entries) : null;
         }).catch(() => null);
-        return { ok: true, agents: workflowAgentsFromJournal(rawJournal, times ?? undefined) };
+        const agents = workflowAgentsFromJournal(rawJournal, times ?? undefined);
+        await eachLimited(agents.filter(a => a.agentId && (!times || a.lastActivityAt != null)), 4, async (a) => {
+          const config = await agentRunConfig(read, root, `agent-${a.agentId}.jsonl`, nativeSessionId, a.agentId!, scope);
+          if (config) { a.model = config.model; a.effort = config.effort; }
+        });
+        return { ok: true, agents };
       }
       const resolved = options.workflowAgent
         ? (workflowAgentsFromJournal(rawJournal).some(a => a.agentId === options.workflowAgent) ? options.workflowAgent : null)
@@ -291,8 +368,8 @@ export async function readWorkflowTranscript(sessionId: string, taskId: string, 
       agentId = resolved; path = `agent-${agentId}.jsonl`;
     }
     if (expectedAgent && expectedAgent !== agentId) throw new TranscriptReset('The node now points to a different agent. Reloading activity.');
-    const page = await readWorkflowTranscriptPage(read, root, path, row.nativeSessionId, agentId, before, options);
-    const info = before == null && options.after == null ? await transcriptInfo(read, root, path, row.nativeSessionId, agentId, scope) : undefined;
+    const page = await readWorkflowTranscriptPage(read, root, path, nativeSessionId, agentId, before, options);
+    const info = before == null && options.after == null ? await transcriptInfo(read, root, path, nativeSessionId, agentId, scope) : undefined;
     return { ...page, info };
   } catch (err) {
     return { ok: false, reason: err instanceof TranscriptReset ? 'reset' : 'unavailable', error: err instanceof Error ? err.message : unavailable.error };

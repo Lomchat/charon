@@ -1347,6 +1347,8 @@ export type SessionBackgroundTaskAgent = {
   label: string | null;
   state: string | null;
   model: string | null;
+  /** Saved nodes only: read from the agent's transcript, like their `model`. */
+  effort?: string | null;
   phaseTitle: string | null;
   tokens: number | null;
   toolCalls: number | null;
@@ -1936,3 +1938,8 @@ export type WorkflowOutputResponse =
 export type WorkflowAgentsResponse =
   | { ok: true; agents: SessionBackgroundTaskAgent[] }
   | { ok: false; error: string; reason?: string };
+
+/** `GET …/subagents?configs=<id,…>`: what each background agent runs on. */
+export type AgentRunConfigsResponse =
+  | { ok: true; configs: Record<string, { model: string; effort: string | null }> }
+  | { ok: false; error: string };

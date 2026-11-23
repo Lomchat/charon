@@ -27,6 +27,15 @@ const SLOW_FACTOR = 2;
 const SLOW_MIN_MS = 20 * 60_000;
 const TICK_STEPS_MIN = [1, 2, 5, 10, 15, 30, 60, 120, 180, 360, 720, 1440];
 
+/** Axis ticks on local round times (…:00, …:15), at most `max` of them. */
+export function localTicks(t0: number, t1: number, max = 8): number[] {
+  const step = (TICK_STEPS_MIN.find((m) => (t1 - t0) / (m * 60_000) <= max) ?? 1440) * 60_000;
+  const offset = new Date(t0).getTimezoneOffset() * 60_000;
+  const ticks: number[] = [];
+  for (let t = Math.ceil((t0 - offset) / step) * step + offset; t < t1; t += step) ticks.push(t);
+  return ticks;
+}
+
 /** One lane per role: a label without its round marks (`r2:judge` → `judge`,
  *  `fix-2` → `fix`), so successive rounds line up. */
 export function workflowRole(label: string): string {
@@ -106,11 +115,7 @@ export function workflowTimeline(
     p.status = st.includes('running') ? 'running' : st.includes('failed') ? 'failed' : st.includes('unknown') ? 'unknown' : 'done';
   }
 
-  const span = t1 - t0;
-  const step = (TICK_STEPS_MIN.find((m) => span / (m * 60_000) <= 8) ?? 1440) * 60_000;
-  const offset = new Date(t0).getTimezoneOffset() * 60_000;     // ticks on local round times
-  const ticks: number[] = [];
-  for (let t = Math.ceil((t0 - offset) / step) * step + offset; t < t1; t += step) ticks.push(t);
+  const ticks = localTicks(t0, t1);
 
   let slow: WorkflowTimeline['slow'] = null;
   for (const a of placed) {

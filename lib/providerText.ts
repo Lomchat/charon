@@ -259,7 +259,7 @@ export const backgroundWorkText = {
   timeLimit: 'time limit',
   timeLimitHint: 'Claude Code stopped this command at its background time limit (30 min by default, 2 h at most in a Charon session). Use a Charon terminal for a server that must keep running.',
   activity: 'Activity', agentDetails: 'Agent details', outputResult: 'Output / result', savedActivity: 'Saved activity',
-  mission: 'Mission', workflowMission: 'Workflow mission', missionExcerpt: 'Mission excerpt', model: 'Model', phase: 'Phase',
+  mission: 'Mission', workflowMission: 'Workflow mission', missionExcerpt: 'Mission excerpt', model: 'Model', effort: 'Effort', phase: 'Phase',
   lastActivity: 'Last activity', action: 'action', file: 'file', error: 'error', actions: 'actions', files: 'files', errors: 'errors', loadedHistory: 'Loaded history', partialHistory: 'Loaded portion of history',
   fileModified: 'Modified', fileRead: 'Read', filePending: 'Result not loaded', noFiles: 'No file operations in the loaded history.',
   earlierActivity: 'Earlier activity ↑', noActivity: 'No tool activity in the loaded history.', retry: 'Retry',
@@ -294,7 +294,7 @@ export const backgroundWorkText = {
   noCommandOutput: 'This command has not reported its output file yet.',
   noCommandOutputEnded: 'This command reported no output file.',
   agent: 'Agent', started: 'Started', ended: 'Ended', took: 'Took', taskId: 'Task ID',
-  // Workflow frise (BgWorkflowView)
+  // Workflow lanes and details (BgFrise)
   wfStartedAt: 'started', wfRunningFor: 'running for', wfTook: 'took', wfAgentsDone: 'agents done',
   wfLastActivity: 'last activity', wfNow: 'now', wfReading: 'Reading the workflow journal…',
   wfDone: 'done', wfNegative: 'answered no', wfFailed: 'failed', wfRunning: 'running', wfUnknown: 'no result', wfWave: 'started together',
@@ -302,4 +302,11 @@ export const backgroundWorkText = {
     `${label} has been running for ${elapsed} — this step took ${usual} before. Last activity ${ago}.`,
   wfAgo: (d: string) => `${d} ago`,
   wfPickAgent: 'Select a bar to read that agent.',
+  // One frise for all background work (BgFrise)
+  process: 'Process', cpu: 'CPU', memory: 'Memory', pid: 'PID', folder: 'Folder',
+  earlier: (n: number) => `${n} earlier`, showEarlier: 'show', olderNotKept: (n: number) => `${n} older, not kept`,
+  ranges: { auto: 'Auto', '1h': '1 h', '6h': '6 h', all: 'All' },
+  lostHint: 'The session restarted while this ran: its outcome is unknown.',
+  noPerAgentStop: 'no per-agent stop', nothing: 'Nothing in the background right now.',
+  stopped: 'stopped', lost: 'lost', untimed: 'no times yet',
 };

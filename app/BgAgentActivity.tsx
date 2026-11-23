@@ -4,6 +4,7 @@ import { backgroundWorkText as text } from '@/lib/providerText';
 import { summarizeAgentActivity, type AgentActivity, type AgentToolActivity } from '@/lib/subagentActivity';
 import { prettyOutputJson } from './backgroundOutput';
 import { useWorkflowOutput } from './useWorkflowOutput';
+import { shortModel } from './resumeHistory';
 
 function time(value: string | null | undefined) {
   return value && Number.isFinite(Date.parse(value)) ? new Date(value).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' }) : '—';
@@ -130,7 +131,8 @@ function BgAgentActivity({ sessionId, task, label, phase, nativeAgent, workflowA
         <pre>{missionText}{data.info.missionTruncated ? `\n${text.missionExcerpt}` : ''}</pre>
       </details>}
       <div className="bga-facts">
-        {(summary.model || data.info.model) && <span><small>{text.model}</small>{summary.model || data.info.model}</span>}
+        {(summary.model || data.info.model) && <span><small>{text.model}</small>{shortModel(summary.model || data.info.model!)}</span>}
+        {(summary.effort || data.info.effort) && <span><small>{text.effort}</small>{summary.effort || data.info.effort}</span>}
         {(data.info.phase || phase) && <span><small>{text.phase}</small>{data.info.phase || phase}</span>}
         <span><small>{text.lastActivity}</small><time title={summary.last || undefined}>{time(summary.last)}</time></span>
       </div>

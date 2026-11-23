@@ -4,9 +4,9 @@ export type AgentActivity = {
   id: string; kind: 'tool' | 'tool_result' | 'text' | 'result'; at: string | null;
   toolId?: string; name?: string; target?: string; detail?: string;
   file?: string; operation?: 'read' | 'write' | 'search'; error?: boolean;
-  content?: string; model?: string;
+  content?: string; model?: string; effort?: string;
 };
-export type AgentTranscriptInfo = { mission?: string; model?: string; phase?: string; startedAt?: string; missionTruncated?: boolean };
+export type AgentTranscriptInfo = { mission?: string; model?: string; effort?: string; phase?: string; startedAt?: string; missionTruncated?: boolean };
 
 function textContent(value: unknown): string {
   if (typeof value === 'string') return value;
@@ -19,7 +19,8 @@ function field(input: any, ...keys: string[]): string | undefined {
 export function projectAgentRecord(record: any, offset: number): AgentActivity[] {
   if (!['assistant', 'user'].includes(record?.type)) return [];
   const at = typeof record.timestamp === 'string' && Number.isFinite(Date.parse(record.timestamp)) ? record.timestamp : null;
-  const model = typeof record.message?.model === 'string' ? record.message.model : undefined;
+  const model = typeof record.message?.model === 'string' && record.message.model !== '<synthetic>' ? record.message.model : undefined;
+  const effort = model && typeof record.effort === 'string' ? record.effort : undefined;
   const raw = record.message?.content;
   const blocks = typeof raw === 'string' ? [{ type: 'text', text: raw }] : Array.isArray(raw) ? raw : [];
   return blocks.flatMap((b: any, i: number): AgentActivity[] => {
@@ -28,9 +29,9 @@ export function projectAgentRecord(record: any, offset: number): AgentActivity[]
       return [{ id, kind: 'tool_result', at, toolId: b.tool_use_id, error: b.is_error === true, content: textContent(b.content) }];
     }
     if (record.type !== 'assistant') return [];
-    if (b?.type === 'text' && typeof b.text === 'string') return [{ id, kind: 'text', at, content: b.text, model }];
+    if (b?.type === 'text' && typeof b.text === 'string') return [{ id, kind: 'text', at, content: b.text, model, effort }];
     if (b?.type !== 'tool_use' || typeof b.name !== 'string') return [];
-    if (b.name === 'StructuredOutput') return b.input == null ? [] : [{ id, kind: 'result', at, content: JSON.stringify(b.input), model }];
+    if (b.name === 'StructuredOutput') return b.input == null ? [] : [{ id, kind: 'result', at, content: JSON.stringify(b.input), model, effort }];
     const input = b.input;
     const file = field(input, 'file_path', 'path', 'notebook_path');
     let target: string | undefined, detail: string | undefined, operation: AgentActivity['operation'];
@@ -65,7 +66,7 @@ export function projectAgentRecord(record: any, offset: number): AgentActivity[]
       target = field(input, 'description', 'command', 'cmd', 'file_path', 'path', 'pattern', 'query', 'url', 'task_id', 'target');
       if (Object.keys(safe).length) detail = JSON.stringify(safe, null, 2);
     }
-    return [{ id, kind: 'tool', at, name: b.name, toolId: typeof b.id === 'string' ? b.id : id, target, detail, file, operation, model }];
+    return [{ id, kind: 'tool', at, name: b.name, toolId: typeof b.id === 'string' ? b.id : id, target, detail, file, operation, model, effort }];
   });
 }
 
@@ -86,7 +87,9 @@ export function summarizeAgentActivity(entries: AgentActivity[]) {
     files.set(f.path, f);
   }
   const last = entries.reduce<string | null>((value, e) => e.at && (!value || Date.parse(e.at) > Date.parse(value)) ? e.at : value, null);
+  // Model and effort travel together: the newest record that says the model.
+  const newest = entries.findLast(e => e.model);
   return { calls, orphanResults, files: [...files.values()], errors: calls.filter(c => c.result?.error).length + orphanResults.filter(r => r.error).length,
-    last, model: [...entries].reverse().find(e => e.model)?.model,
+    last, model: newest?.model, effort: newest?.effort,
     output: entries.filter(e => e.kind === 'text' || e.kind === 'result') };
 }
