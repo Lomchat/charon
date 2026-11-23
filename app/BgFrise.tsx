@@ -163,6 +163,9 @@ function BgFrise(props: Props) {
     return () => observer.disconnect();
   }, []);
   const ticks = localTicks(t0, t1, Math.max(2, Math.floor(trackPx / 110)));
+  // A centred clock label near the end would stick out past the track (and
+  // sits under the end label anyway): only its grid line is drawn.
+  const tickLabels = ticks.filter((t) => (pct(t) / 100) * trackPx <= trackPx - 56);
   const statuses = new Set<FriseStatus>();
   let hasWaves = false;
   const grid = <>
@@ -173,8 +176,10 @@ function BgFrise(props: Props) {
     statuses.add(st);
     const stop = end ?? nowMs;
     const wide = ((pct(stop) - pct(start)) / 100) * trackPx >= 52;
+    // Never past the track's right edge: a bar narrower than its 6px minimum
+    // (one that just started at "now") is pulled left to fit.
     return <button type="button" key={key} className={`bgf-bar ${st}${selected === key ? ' selected' : ''}`}
-      style={{ left: x(start), width: `calc(${x(stop)} - ${x(start)})` }} title={tip} aria-label={tip} aria-pressed={selected === key}
+      style={{ left: `min(${x(start)}, 100% - 6px)`, width: `max(6px, ${x(stop)} - ${x(start)})` }} title={tip} aria-label={tip} aria-pressed={selected === key}
       onClick={(e) => { e.stopPropagation(); setSelected(key); }}>{wide ? label ?? short(stop - start) : ''}</button>;
   };
 
@@ -219,7 +224,7 @@ function BgFrise(props: Props) {
       if (tl.waves.length) {
         hasWaves = true;
         lanes.push(<div key={`${item.key}:marks`} className="bgf-row bgf-sub bgf-marks"><span /><div className="bgf-track">
-          {tl.waves.map((w) => <span key={w.at} className="bgf-wave" style={{ left: x(w.at) }} title={`${w.size} ${text.wfWave} · ${clock(w.at)}`}>{w.label}</span>)}
+          {tl.waves.map((w) => <span key={w.at} className="bgf-wave" style={{ left: x(w.at), maxWidth: `calc(100% - ${x(w.at)})` }} title={`${w.size} ${text.wfWave} · ${clock(w.at)}`}>{w.label}</span>)}
         </div></div>);
       }
       const waveLines = tl.waves.map((w) => <i key={`w${w.at}`} className="bgf-wave-line" style={{ left: x(w.at) }} />);
@@ -279,7 +284,7 @@ function BgFrise(props: Props) {
         {(['auto', '1h', '6h', 'all'] as const).map((r) => <button type="button" key={r} aria-pressed={range === r} onClick={() => setRange(r)}>{text.ranges[r]}</button>)}
       </div></div>
       <div className="bgf-row bgf-axis"><span /><div className="bgf-track" ref={track}>
-        {ticks.map((t) => <span key={t} style={{ left: x(t) }}>{clock(t)}</span>)}
+        {tickLabels.map((t) => <span key={t} style={{ left: x(t) }}>{clock(t)}</span>)}
         <span className="bgf-axis-end">{win.live && t1 === nowMs ? text.wfNow : clock(t1)}</span>
       </div></div>
       <div className="bgf-lanes" ref={lanesRef}>{!items.length && <p className="bgf-empty">{text.nothing}</p>}{lanes}</div>

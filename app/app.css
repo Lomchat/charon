@@ -10566,7 +10566,8 @@ button.dv-folder-select { max-width: 170px; padding: 4px 7px; font-size: 11px; }
   --bgf-lane: 340px;
   display: flex; flex-direction: column; min-height: 0;
 }
-.bgf-chart { flex: none; padding: 8px 22px 12px; border-bottom: 1px solid var(--border); background: var(--bg); }
+/* The chart always fits the modal's width: nothing in it scrolls sideways. */
+.bgf-chart { flex: none; min-width: 0; padding: 8px 22px 12px; overflow-x: clip; overflow-wrap: anywhere; border-bottom: 1px solid var(--border); background: var(--bg); }
 .bgf-tools { display: flex; justify-content: flex-end; margin-bottom: 2px; }
 .bgf-range { display: inline-flex; border: 1px solid var(--border); border-radius: var(--radius-md); overflow: hidden; }
 .bgf-range button { padding: 2px 10px; font: 10.5px var(--mono); color: var(--text-muted); }
@@ -10577,7 +10578,7 @@ button.dv-folder-select { max-width: 170px; padding: 4px 7px; font-size: 11px; }
 .bgf-axis { height: 20px; font: 10px var(--mono); color: var(--text-muted); }
 .bgf-axis .bgf-track > span { position: absolute; top: 3px; transform: translateX(-50%); white-space: nowrap; }
 .bgf-axis .bgf-track > .bgf-axis-end { left: 100%; transform: translateX(-100%); padding-left: 6px; background: var(--bg); font-weight: 600; color: var(--accent-strong); }
-.bgf-lanes { max-height: min(340px, 40dvh); overflow-y: auto; overscroll-behavior: contain; }
+.bgf-lanes { max-height: min(340px, 40dvh); overflow: hidden auto; overscroll-behavior: contain; }
 .bgf-lane { height: 30px; border-top: 1px solid color-mix(in srgb, var(--border) 55%, transparent); cursor: pointer; }
 .bgf-lane:hover { background: color-mix(in srgb, var(--tint) 3%, transparent); }
 .bgf-sub:not(.selected) { background: color-mix(in srgb, var(--violet) 4%, transparent); }
@@ -10590,6 +10591,7 @@ button.dv-folder-select { max-width: 170px; padding: 4px 7px; font-size: 11px; }
 .bgf-caret { flex: none; width: 14px; padding: 0; font-size: 11px; color: var(--text-muted); }
 .bgf-kind { flex: none; display: inline-flex; width: 14px; height: 14px; color: var(--text-muted); }
 .bgf-kind svg { width: 14px; height: 14px; }
+.bgf-name > .bg-run { flex-shrink: 1; min-width: 0; overflow: hidden; }
 .bgf-kind.agent { color: var(--accent); }
 .bgf-kind.workflow { color: var(--violet); }
 .bgf-kind.process { color: var(--warning); }
@@ -10598,9 +10600,10 @@ button.dv-folder-select { max-width: 170px; padding: 4px 7px; font-size: 11px; }
 .bgf-wave-line { border-left: 1px solid color-mix(in srgb, var(--violet) 40%, transparent); }
 .bgf-now-line { left: 100%; border-left: 2px solid var(--accent); }
 .bgf-marks { height: 16px; }
-.bgf-wave { position: absolute; top: 1px; padding-left: 4px; border-left: 1px solid var(--violet); font: 600 9.5px var(--mono); color: var(--violet); white-space: nowrap; }
+.bgf-wave { position: absolute; top: 1px; padding-left: 4px; overflow: hidden; text-overflow: ellipsis; border-left: 1px solid var(--violet); font: 600 9.5px var(--mono); color: var(--violet); white-space: nowrap; }
 .bgf-bar { position: absolute; top: 6px; height: 18px; min-width: 6px; display: flex; align-items: center; padding: 0 6px; overflow: hidden; white-space: nowrap; border: 1px solid var(--success); border-radius: var(--radius-sm); background: color-mix(in srgb, var(--success) 45%, var(--bg)); font: 10px var(--mono); color: var(--text-strong); }
 .bgf-sub .bgf-bar { top: 5px; height: 16px; }
+.bgf-bar:empty { padding: 0; }
 .bgf-bar.running { border-color: var(--accent); background: repeating-linear-gradient(-45deg, color-mix(in srgb, var(--accent) 40%, var(--bg)) 0 6px, color-mix(in srgb, var(--accent) 22%, var(--bg)) 6px 12px); }
 .bgf-bar.failed { border-color: var(--danger-strong); background: color-mix(in srgb, var(--danger) 60%, var(--bg)); }
 .bgf-bar.negative { border-color: var(--danger); background: color-mix(in srgb, var(--danger) 30%, var(--bg)); }
