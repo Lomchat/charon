@@ -18,6 +18,15 @@ import { flushSync } from 'react-dom';
 const folded = new Map<string, number>();
 const listeners = new Map<string, Set<() => void>>();
 
+// A chat's rows that may not be mounted (the transcript's window, §14.128):
+// Alt+fold reaches them too, with a line count from their text.
+const scopes = new WeakMap<Element, () => ReadonlyArray<readonly [key: string, lines: number]>>();
+
+/** Register (or drop, `rows` null) the loaded rows of chat column `chat`. */
+export function setFoldScope(chat: Element, rows: (() => ReadonlyArray<readonly [string, number]>) | null): void {
+  if (rows) scopes.set(chat, rows); else scopes.delete(chat);
+}
+
 function notify(key: string) {
   listeners.get(key)?.forEach((l) => l());
 }
@@ -63,6 +72,8 @@ function toggle(bubble: HTMLElement, all: boolean) {
   const chat = bubble.closest<HTMLElement>('.app-chat');
   const targets = all && chat ? Array.from(chat.querySelectorAll<HTMLElement>('[data-fold-key]')) : [bubble];
   const sizes = targets.map((el) => (fold && !folded.has(el.dataset.foldKey!) ? bodyLines(el) : 0));
+  const mounted = new Set(targets.map((el) => el.dataset.foldKey!));
+  const unmounted = all && chat ? (scopes.get(chat)?.() ?? []).filter(([k]) => !mounted.has(k)) : [];
   const top = bubble.getBoundingClientRect().top;
   flushSync(() => {
     targets.forEach((el, i) => {
@@ -71,6 +82,11 @@ function toggle(bubble: HTMLElement, all: boolean) {
       if (fold) folded.set(k, sizes[i]); else folded.delete(k);
       notify(k);
     });
+    for (const [k, lines] of unmounted) {
+      if (fold === folded.has(k)) continue;
+      if (fold) folded.set(k, lines); else folded.delete(k);
+      notify(k);
+    }
   });
   if (!chat) return;
   // Folding: the line stays where the eye is, in place or at the top of the

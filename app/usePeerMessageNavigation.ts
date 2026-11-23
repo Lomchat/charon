@@ -15,14 +15,19 @@ export function usePeerMessageNavigation(
     messages: Msg[]; hasMore: boolean; isLoadingMore: boolean; historyReady: boolean;
     loadMoreHistory: () => Promise<void>; setHistoryHold: (hold: boolean) => void;
   },
-  { targetAttribute = 'data-peer-message-id', flashClass = 'peer-request-flash', focus = false }: {
+  { targetAttribute = 'data-peer-message-id', flashClass = 'peer-request-flash', focus = false, locate, reveal }: {
     targetAttribute?: string; flashClass?: string; focus?: boolean;
+    /** The transcript row (its key) that draws target `id`, if loaded. */
+    locate?: (id: string) => string | null;
+    /** Mount that row (the transcript's window, chatWindow.ts): only the
+     *  rows near the viewport are in the DOM. */
+    reveal?: (rowKey: string) => boolean;
   } = {},
 ) {
   const findTarget = useCallback((container: HTMLElement, id: string) =>
     Array.from(container.querySelectorAll<HTMLElement>(`[${targetAttribute}]`))
       .find((element) => element.getAttribute(targetAttribute) === id) ?? null, [targetAttribute]);
-  const [pending, setPending] = useState<{ id: string } | null>(null);
+  const [pending, setPending] = useState<{ id: string; revealed?: number } | null>(null);
   const [isJumping, setIsJumping] = useState(false);
   const attemptedWindow = useRef<string | null>(null);
   const hovered = useRef<HTMLElement | null>(null);
@@ -67,6 +72,14 @@ export function usePeerMessageNavigation(
     const container = root.current;
     const target = findTarget(container, pending.id);
     if (!target) {
+      // Loaded but not mounted: mount it, then look again (a fresh object
+      // re-runs this effect once the window rendered it).
+      const row = locate?.(pending.id);
+      if (row && reveal && (pending.revealed ?? 0) < 2 && reveal(row)) {
+        const tries = (pending.revealed ?? 0) + 1;
+        requestAnimationFrame(() => setPending((p) => (p && p.id === pending.id ? { id: p.id, revealed: tries } : p)));
+        return;
+      }
       if (isLoadingMore) return;
       const windowId = messages[0]?.id ?? '';
       // A failed/empty page must not turn a click into an infinite fetch loop.
@@ -106,7 +119,7 @@ export function usePeerMessageNavigation(
       }
     };
     animation.current = requestAnimationFrame(step);
-  }, [pending, messages, hasMore, isLoadingMore, historyReady, loadMoreHistory, root, clearJump, findTarget, flashClass, focus]);
+  }, [pending, messages, hasMore, isLoadingMore, historyReady, loadMoreHistory, root, clearJump, findTarget, flashClass, focus, locate, reveal]);
 
   useEffect(() => () => { clearHover(); clearJump(); }, [clearHover, clearJump]);
   return { hoverRequest, jumpToRequest, isJumping };

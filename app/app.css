@@ -2288,6 +2288,13 @@ html[data-density='small'] .cs-sub-fold { font-size: 8.5px; }
   from { transform: translateY(-8px) scale(0.95); opacity: 0; }
   to   { transform: none; opacity: 1; }
 }
+/* The transcript's mounted window (app/chatWindow.ts, §14.128): one wrapper
+   per row, laid out like the column itself so a bubble inside keeps its flex
+   item behaviour (align-self, blockification); a row that draws nothing is
+   no item at all (no gap). The two spacers stand for the unmounted rows. */
+.app-chat > .vrow { display: flex; flex-direction: column; gap: inherit; flex: none; min-width: 0; }
+.app-chat > .vrow:empty { display: none; }
+.app-chat > .vspace { flex: none; }
 .app-chat *::selection { background: color-mix(in srgb, var(--accent) 35%, transparent); color: var(--text); }
 
 /* History loading placeholder — shown when we haven't yet

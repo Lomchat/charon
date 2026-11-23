@@ -16,11 +16,11 @@ import { IconArrowRepeat, IconGear, IconPause, IconPlay, IconStop, IconRewind, I
 import { goalIsLive, shownGoal } from '@/lib/sessionGoal';
 import { sameModel } from '@/lib/strictModel';
 import type { SessionRecap } from '@/lib/sessionRecap';
-import { FoldEdge, foldRootProps, useBubbleFold } from './bubbleFold';
+import { FoldEdge, foldRootProps, setFoldScope, useBubbleFold } from './bubbleFold';
 import { coldResumeShare, fmtTokens as fmtDriverTokens } from '@/lib/usageDrivers';
 import type { InsightUsage } from './SessionInsight';
 import type { TurnLedger } from '@/lib/promptCache';
-import { Fragment, memo, useCallback, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore, type Ref } from 'react';
+import { Fragment, memo, useCallback, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore, type Ref, type RefObject } from 'react';
 import type { Vps } from '@/lib/db/schema';
 import { addOverlay, getSummary, subscribeSummaries } from './sync/summaryStore';
 import type { SessionListItem, AgentKind, SessionAttachment, FastModeVerdict } from '@/lib/types/api';
@@ -81,7 +81,7 @@ import {
   extendWithOlder as extendCacheWithOlder,
 } from './sessionCache';
 import { useInputDraft } from './inputDraftStore';
-import { useStableCallback, useStableOptionalCallback, useStableValue, shallowEqualRows } from './useStable';
+import { useLatest, useStableCallback, useStableOptionalCallback, useStableValue, shallowEqualRows } from './useStable';
 import { useUsage } from './usageStore';
 import { COMPOSER_MAX_VIEWPORT_SHARE, DEFAULT_COMPOSER_SIZE, revealComposer, useComposerSize, type ComposerSize } from './composerSize';
 import { formatQuote, insertQuoteBlock } from './chatQuote';
@@ -105,6 +105,8 @@ import { peerAssistantReplies, peerSessionTarget } from './peerMessageLinks';
 import { attentionForRow } from '@/lib/sessionAttention';
 import { usePeerMessageNavigation } from './usePeerMessageNavigation';
 import { outcome } from './outcome';
+import { useChatWindow, type ChatWindowController } from './chatWindow';
+import { parseAsyncQuestion } from '@/lib/asyncQuestions';
 
 // Renders one active session. Stream state lives in useSessionStream;
 // global navigation, modals and polling stay in HubPanel.
@@ -708,13 +710,22 @@ export default function SessionView({
   }, [isSyncing]);
 
   const chatBodyRef = useRef<HTMLDivElement | null>(null);
+  // The transcript's mounted window (chatWindow.ts): its navigation.
+  const chatWindowRef = useRef<ChatWindowController | null>(null);
   const peerReplies = useMemo(() => peerAssistantReplies(messages), [messages]);
+  // A target row may be loaded but not mounted (the window): found by data,
+  // then mounted before the DOM lookup.
+  const revealRow = useCallback((key: string) => chatWindowRef.current?.scrollToKey(key) ?? false, []);
+  const locatePeerRow = useCallback((id: string) => messages
+    .find((m) => m.messageId === id || (m.role === 'external' && m.id === id))?.id ?? null, [messages]);
+  const locateQuestionRow = useCallback((id: string) => messages
+    .find((m) => m.role === 'async_question' && parseAsyncQuestion(m.content)?.id === id)?.id ?? null, [messages]);
   const { hoverRequest, jumpToRequest, isJumping: isPeerJumping } = usePeerMessageNavigation(chatBodyRef, {
     messages, hasMore, isLoadingMore, historyReady, loadMoreHistory, setHistoryHold,
-  });
+  }, { locate: locatePeerRow, reveal: revealRow });
   const { jumpToRequest: jumpToQuestion, isJumping: isQuestionJumping } = usePeerMessageNavigation(chatBodyRef, {
     messages, hasMore, isLoadingMore, historyReady, loadMoreHistory, setHistoryHold,
-  }, { targetAttribute: 'data-question-id', flashClass: 'question-flash', focus: true });
+  }, { targetAttribute: 'data-question-id', flashClass: 'question-flash', focus: true, locate: locateQuestionRow, reveal: revealRow });
   // The live assistant text: its own `__streaming` bubble, or the persisted
   // row an `assistant_reopened` extends (drawn in place, no second bubble).
   const liveMessage = useMemo(
@@ -1050,7 +1061,9 @@ export default function SessionView({
     // here). Show only when that bubble is an assistant one AND its top sits
     // >4px above the visible top (start of the message out of view). Cheap:
     // querySelector stops at the first match, which is near the DOM start.
-    const newest = el.querySelector<HTMLElement>('[data-msg-role]');
+    // Only while the newest rows are mounted (the window, chatWindow.ts):
+    // further up, the first [data-msg-role] is not the newest bubble.
+    const newest = chatWindowRef.current?.atNewest() === false ? null : el.querySelector<HTMLElement>('[data-msg-role]');
     let jumpable = false;
     if (newest && newest.dataset.msgRole === 'assistant') {
       const gap = el.getBoundingClientRect().top - newest.getBoundingClientRect().top;
@@ -1106,12 +1119,29 @@ export default function SessionView({
   // Roles come from Message.tsx's `data-msg-role` — only the rendered chat
   // bubbles carry it (tool/thinking cards don't), which is exactly the set
   // worth stopping on.
+  const roleByRowId = useMemo(() => new Map(visibleRenderable.map(({ msg }) => [msg.id, msg.role] as const)), [visibleRenderable]);
+  // Alt+fold reaches the rows the window has not mounted (bubbleFold.tsx).
+  const foldRows = useLatest(visibleRenderable);
+  useEffect(() => {
+    const el = chatBodyRef.current;
+    if (!el) return;
+    setFoldScope(el, () => foldRows.current
+      .filter(({ msg }) => msg.role !== 'event' && msg.role !== 'edit_snapshot')
+      .map(({ msg }) => [msg.id, Math.max(1, msg.content.split('\n').length)] as const));
+    return () => setFoldScope(el, null);
+  }, [foldRows]);
   const scrollUpToRole = useCallback((role: 'user' | 'assistant') => {
     const el = chatBodyRef.current;
     if (!el) return;
-    const target = chatBubbleAbove(el, role);
-    if (target) {
-      target.scrollIntoView({ block: 'start', behavior: 'smooth' });
+    // The window knows the rows that are not mounted (chatWindow.ts); without
+    // it (never mounted yet), the DOM is the transcript.
+    const win = chatWindowRef.current;
+    const key = win ? win.findAbove((k) => roleByRowId.get(k) === role) : null;
+    const mounted = key ? win!.rowElement(key) : win ? null : chatBubbleAbove(el, role);
+    if (mounted) {
+      mounted.scrollIntoView({ block: 'start', behavior: 'smooth' });
+    } else if (key) {
+      win!.scrollToKey(key);
     } else if (hasMore && !isLoadingMore) {
       // No more message of that role above, but there's still history left:
       // paginate. Once the older messages are loaded, the user can click
@@ -1120,10 +1150,12 @@ export default function SessionView({
     } else {
       // Visual top reached: align the last DOM child (= visually at the
       // very top in column-reverse) with the top of the container.
+      const oldest = visibleRenderable[0]?.msg.id;
+      if (win && oldest && !win.rowElement(oldest)) { win.scrollToKey(oldest); return; }
       const last = el.lastElementChild as HTMLElement | null;
       if (last) last.scrollIntoView({ block: 'start', behavior: 'smooth' });
     }
-  }, [hasMore, isLoadingMore, loadMoreHistory]);
+  }, [hasMore, isLoadingMore, loadMoreHistory, roleByRowId, visibleRenderable]);
   const onScrollUpUserClick = useCallback(() => scrollUpToRole('user'), [scrollUpToRole]);
   const onScrollUpAgentClick = useCallback(() => scrollUpToRole('assistant'), [scrollUpToRole]);
 
@@ -1403,6 +1435,7 @@ export default function SessionView({
                     peerReplyTo={peerReplies.streamingReplyTo} onPeerRequestHover={hoverRequest} onPeerRequestJump={jumpToRequest} />
                 )}
                 <MessageHistory
+                  scrollerRef={chatBodyRef} windowRef={chatWindowRef}
                   siblings={siblings} onOpenPeerSession={onOpenSession}
                   onPeerRequestHover={hoverRequest} onPeerRequestJump={jumpToRequest}
                   peerReplyToById={peerReplies.replyToById}
@@ -1726,9 +1759,13 @@ const MessageHistory = memo(function MessageHistory({
   renderable, kind, vpsId, cwd, onReauth, authMsgId, continuableMsgId, schedulableMsgId, onContinue, onScheduleResume, onCancelScheduledResume, turnInFlight,
   limitMsgId, currentAccount, onContinueWithAccount, finishMsgId, finishCue,
   siblings, onOpenPeerSession, onPeerRequestHover, onPeerRequestJump, peerReplyToById,
-  liveRow, substitute, selectedModel,
+  liveRow, substitute, selectedModel, scrollerRef, windowRef,
 }: {
   renderable: { msg: Msg; attached?: Msg }[];
+  /** The chat column (the window's scroller) and the window's controller
+   *  (chatWindow.ts): only the rows near the viewport are mounted. */
+  scrollerRef: RefObject<HTMLDivElement | null>;
+  windowRef: { current: ChatWindowController | null };
   // A persisted row the live text is extending (`assistant_reopened`): drawn
   // in its place with the buffer appended, as a streaming bubble.
   liveRow?: Msg | null;
@@ -1767,12 +1804,19 @@ const MessageHistory = memo(function MessageHistory({
   onPeerRequestJump: (messageId: string) => void;
   peerReplyToById: ReadonlyMap<string, string>;
 }) {
-  return [...renderable].reverse().map(({ msg, attached }) => {
-    if (msg.role === 'async_question') return <AsyncQuestionBubble key={msg.id} message={msg} vpsId={vpsId} cwd={cwd} />;
+  // Newest first: the column is reversed (DOM start = visual bottom).
+  const order = useMemo(() => [...renderable].reverse(), [renderable]);
+  const keys = useMemo(() => order.map((e) => e.msg.id), [order]);
+  const estimate = useCallback((i: number) => estimateRowHeight(order[i]!.msg), [order]);
+  const { start, end, bottomSpace, topSpace } = useChatWindow({ keys, estimate, scrollerRef, controllerRef: windowRef });
+  const rows = order.slice(start, end).map(({ msg, attached }) => {
+    // One wrapper per row: the window measures it (`.vrow:empty` = a row
+    // that draws nothing, no height and no gap).
+    if (msg.role === 'async_question') return <div key={msg.id} className="vrow" data-vkey={msg.id}><AsyncQuestionBubble message={msg} vpsId={vpsId} cwd={cwd} /></div>;
     const live = liveRow && liveRow.id === msg.id ? liveRow : null;
     const m = live ?? msg;
-    return <Message
-      key={msg.id} m={m} streaming={!!live}
+    return <div key={msg.id} className="vrow" data-vkey={msg.id}><Message
+      m={m} streaming={!!live}
       attachedResult={attached} kind={kind}
       substitutedFor={substitute && m.model === substitute ? selectedModel : null}
       vpsId={vpsId} cwd={cwd}
@@ -1787,9 +1831,28 @@ const MessageHistory = memo(function MessageHistory({
       onPeerRequestHover={onPeerRequestHover} onPeerRequestJump={onPeerRequestJump}
       peerReplyTo={peerReplyToById.get(msg.id)}
       finishCue={msg.id === finishMsgId ? finishCue : null}
-    />;
+    /></div>;
   });
+  return (
+    <>
+      {bottomSpace > 0 && <div className="vspace" style={{ height: bottomSpace }} aria-hidden="true" />}
+      {rows}
+      {topSpace > 0 && <div className="vspace" style={{ height: topSpace }} aria-hidden="true" />}
+    </>
+  );
 });
+
+/** A row's height before it was ever drawn (the window's spacers): a bubble
+ *  grows with its text, a card starts folded, a side-channel row draws
+ *  nothing. Only a guess — a row is measured the first time it is mounted. */
+function estimateRowHeight(m: Msg): number {
+  switch (m.role) {
+    case 'event': case 'edit_snapshot': return 0;
+    case 'user': case 'external': case 'assistant': case 'side': case 'error':
+      return Math.min(1600, 48 + Math.ceil(m.content.length / 90) * 21);
+    default: return 46;
+  }
+}
 
 // Isolated input bar. It owns the textarea `input` state (via useInputDraft)
 // so that typing only re-renders THIS small component — never the parent
