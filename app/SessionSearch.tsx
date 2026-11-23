@@ -1,8 +1,9 @@
 'use client';
 // The session header's magnifier (Alt+F): this session's rows matching the
 // text, newest first (GET /api/sessions/[id]/search, a worker-thread FTS on
-// the hub). Enter jumps to the selected hit and moves to the next one,
-// Shift+Enter back; ↑/↓ move; Esc closes. The transcript mounts only the rows
+// the hub). A jump folds the list into the bar (`4/77 ‹ ›`) so the transcript
+// shows: Enter / › go on (older), Shift+Enter / ‹ back (newer); ↑/↓ or a
+// click in the box open the list again; Esc closes. The transcript mounts only the rows
 // near the viewport (chatWindow.ts), so the browser's own Ctrl+F cannot reach
 // the rest: this does, through SessionView's jump (a window around the row
 // when it is not loaded).
@@ -48,6 +49,10 @@ export default memo(function SessionSearch({ sessionId, view, focusSignal, onJum
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [sel, setSel] = useState(0);
+  // The hit shown in the transcript (null: none yet) and whether the list
+  // is unfolded (a jump folds it, so the transcript shows).
+  const [cur, setCur] = useState<number | null>(null);
+  const [listOpen, setListOpen] = useState(true);
   const inputRef = useRef<HTMLInputElement>(null);
   const listRef = useRef<HTMLUListElement>(null);
 
@@ -70,7 +75,7 @@ export default memo(function SessionSearch({ sessionId, view, focusSignal, onJum
     setBusy(true);
     const t = setTimeout(() => {
       api.searchSessionTranscript(sessionId, text, view, ac.signal).then((r) => {
-        setRes(r); setSel(0); setError(null); setBusy(false);
+        setRes(r); setSel(0); setCur(null); setListOpen(true); setError(null); setBusy(false);
       }, (e: unknown) => {
         if (ac.signal.aborted) return;
         setError(e instanceof Error ? e.message : String(e)); setBusy(false);
@@ -82,26 +87,39 @@ export default memo(function SessionSearch({ sessionId, view, focusSignal, onJum
   const terms = useMemo(() => q.match(/[\p{L}\p{N}_]+/gu) ?? [], [q]);
   const hits = res?.results ?? [];
 
+  // The list scrolls itself, never the panel (overflow: clip, app.css).
   useEffect(() => {
-    listRef.current?.querySelector('.ssearch-hit.on')?.scrollIntoView({ block: 'nearest' });
-  }, [sel]);
+    const list = listRef.current;
+    const on = list?.querySelector<HTMLElement>('.ssearch-hit.on');
+    if (!list || !on) return;
+    const top = on.offsetTop - list.offsetTop;
+    if (top < list.scrollTop) list.scrollTop = top;
+    else if (top + on.offsetHeight > list.scrollTop + list.clientHeight) list.scrollTop = top + on.offsetHeight - list.clientHeight;
+  }, [sel, listOpen]);
 
   function go(i: number) {
     const hit = hits[i];
     if (!hit) return;
     setSel(i);
+    setCur(i);
+    setListOpen(false);
     onJump(hit, terms);
+  }
+  /** One step from the hit shown (older = down the list), or the first. */
+  function step(older: boolean) {
+    if (!hits.length) return;
+    if (cur == null) { go(sel); return; }
+    go(older ? Math.min(hits.length - 1, cur + 1) : Math.max(0, cur - 1));
   }
   function onKey(e: KeyboardEvent<HTMLInputElement>) {
     if (!hits.length) return;
-    if (e.key === 'ArrowDown') { e.preventDefault(); setSel((s) => Math.min(hits.length - 1, s + 1)); }
-    else if (e.key === 'ArrowUp') { e.preventDefault(); setSel((s) => Math.max(0, s - 1)); }
-    else if (e.key === 'Enter') {
+    if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
       e.preventDefault();
-      // Enter shows the selected hit, then the next press goes on (older);
-      // Shift+Enter walks back (newer).
-      go(sel);
-      setSel((s) => (e.shiftKey ? Math.max(0, s - 1) : Math.min(hits.length - 1, s + 1)));
+      if (!listOpen) { setListOpen(true); return; }
+      setSel((s) => (e.key === 'ArrowDown' ? Math.min(hits.length - 1, s + 1) : Math.max(0, s - 1)));
+    } else if (e.key === 'Enter') {
+      e.preventDefault();
+      if (listOpen && sel !== cur) go(sel); else step(!e.shiftKey);
     }
   }
 
@@ -112,15 +130,22 @@ export default memo(function SessionSearch({ sessionId, view, focusSignal, onJum
         <IconSearch />
         <input
           ref={inputRef} type="text" value={q} spellCheck={false}
-          onChange={(e) => setQ(e.target.value)} onKeyDown={onKey}
+          onChange={(e) => { setQ(e.target.value); setListOpen(true); }} onKeyDown={onKey}
+          onClick={() => setListOpen(true)}
           placeholder="search this session" aria-label="Search this session"
         />
         {busy ? <span className="ssearch-count app-history-loading-spinner" aria-hidden="true" />
-          : res && <span className="ssearch-count">{count}{res.mode === 'words' && <em title="these words, in any order">any order</em>}</span>}
+          : res && <span className="ssearch-count">{cur != null ? `${cur + 1}/${count}` : count}{res.mode === 'words' && <em title="these words, in any order">any order</em>}</span>}
+        {hits.length > 0 && <>
+          <button type="button" className="ssearch-step" onClick={() => step(false)} disabled={cur == null || cur === 0}
+            aria-label="Newer hit" title="newer · Shift+Enter">‹</button>
+          <button type="button" className="ssearch-step" onClick={() => step(true)} disabled={cur != null && cur >= hits.length - 1}
+            aria-label="Older hit" title="older · Enter">›</button>
+        </>}
         <button type="button" className="ssearch-close" onClick={onClose} aria-label="Close search" title="Esc">✕</button>
       </div>
       {error && <p className="ssearch-error" role="alert">{error}</p>}
-      {hits.length > 0 && (
+      {hits.length > 0 && listOpen && (
         <ul className="ssearch-list" ref={listRef}>
           {hits.map((h, i) => (
             <li key={h.id}>

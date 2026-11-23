@@ -2306,8 +2306,17 @@ html[data-density='small'] .cs-sub-fold { font-size: 8.5px; }
 .ssearch {
   position: absolute; top: 8px; right: 14px; z-index: 6;
   width: min(420px, calc(100% - 28px)); max-height: min(70%, 520px);
-  display: flex; flex-direction: column; overflow: hidden;
+  display: flex; flex-direction: column; overflow: clip;
 }
+/* .pop-kit pads, spaces and never shrinks its children: the list must. */
+.ssearch.pop-kit { gap: 0; padding: 0; }
+.ssearch.pop-kit > .ssearch-list { flex: 0 1 auto; }
+.ssearch-step {
+  flex: none; padding: 0 6px; border: 0; border-radius: var(--radius-sm);
+  background: transparent; color: var(--text-muted); font-size: 15px; line-height: 1.4; cursor: pointer;
+}
+.ssearch-step:hover:not(:disabled) { color: var(--text); background: var(--bg-high); }
+.ssearch-step:disabled { opacity: .35; cursor: default; }
 .ssearch-bar { display: flex; align-items: center; gap: 8px; padding: 6px 8px; border-bottom: 1px solid var(--border); }
 .ssearch-bar > svg { flex: none; width: 14px; height: 14px; color: var(--text-muted); }
 .ssearch-bar input {

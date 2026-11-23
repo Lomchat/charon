@@ -218,6 +218,8 @@ const SYNC_CUE_DELAY_MS = 400;
  *  the CLI answers it either way. Asleep there is nothing to ask. */
 const ASIDE_STATUSES = new Set(['active', 'thinking', 'background', 'failed']);
 
+/** A search hit lands this far under the chat's top: below the search bar. */
+const SEARCH_BAR_CLEARANCE = 60;
 /** Rows of a window around a search hit (and the pages it grew by). */
 const AROUND_ROWS = 120;
 
@@ -1126,12 +1128,12 @@ export default function SessionView({
     const key = rowFor(shownRows, p.id);
     if (!key) return;
     pendingHitRef.current = null;
-    if (chatWindowRef.current?.scrollToKey(key)) flashHit(key, p.terms);
+    if (chatWindowRef.current?.scrollToKey(key, { margin: SEARCH_BAR_CLEARANCE })) flashHit(key, p.terms);
   }, [shownRows, flashHit]);
   const jumpToHit = useCallback(async (hit: SessionSearchHit, terms: string[]) => {
     const id = rowKey(hit.id);
     const shown = rowFor(shownRows, id);
-    if (shown && chatWindowRef.current?.scrollToKey(shown)) { flashHit(shown, terms); return; }
+    if (shown && chatWindowRef.current?.scrollToKey(shown, { margin: SEARCH_BAR_CLEARANCE })) { flashHit(shown, terms); return; }
     if (detachedRef.current && rowFor(visibleRenderable, id)) {
       // In the live rows after all: back to them, then the jump.
       pendingHitRef.current = { id, terms };

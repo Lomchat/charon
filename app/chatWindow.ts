@@ -35,9 +35,9 @@ const ALIGN_TRIES = 5;
 const ALIGN_MARGIN_PX = 16;
 
 export type ChatWindowController = {
-  /** Mount `key`'s row and put its top under the chat's top edge. False when
-   *  the row is not loaded. */
-  scrollToKey(key: string, opts?: { smooth?: boolean }): boolean;
+  /** Mount `key`'s row and put its top `margin` px (default 16) under the
+   *  chat's top edge. False when the row is not loaded. */
+  scrollToKey(key: string, opts?: { smooth?: boolean; margin?: number }): boolean;
   /** The newest row is mounted (the reader is at or near the live end). */
   atNewest(): boolean;
   /** The newest row (newest first) whose top is above the viewport's top by
@@ -71,7 +71,7 @@ export function useChatWindow(o: {
   // What the layout effect needs from the render, without re-creating it.
   const live = useRef({ keys, estimate, range });
   live.current = { keys, estimate, range };
-  const alignRef = useRef<{ key: string; tries: number; smooth: boolean } | null>(null);
+  const alignRef = useRef<{ key: string; tries: number; smooth: boolean; margin: number } | null>(null);
   const rafRef = useRef<number | null>(null);
   const observed = useRef(new Map<string, Element>()).current;
   const roRef = useRef<ResizeObserver | null>(null);
@@ -160,7 +160,7 @@ export function useChatWindow(o: {
     if (pending) {
       const node = observed.get(pending.key) as HTMLElement | undefined;
       if (node) {
-        const delta = node.getBoundingClientRect().top - (viewTop + ALIGN_MARGIN_PX);
+        const delta = node.getBoundingClientRect().top - (viewTop + pending.margin);
         if (Math.abs(delta) > 1) {
           if (pending.smooth && pending.tries === 0) el.scrollBy({ top: delta, behavior: 'smooth' });
           else el.scrollTop += delta;
@@ -263,7 +263,7 @@ export function useChatWindow(o: {
         const { keys: ks } = live.current;
         const i = ks.indexOf(key);
         if (i < 0) return false;
-        alignRef.current = { key, tries: 0, smooth: !!opts?.smooth && observed.has(key) };
+        alignRef.current = { key, tries: 0, smooth: !!opts?.smooth && observed.has(key), margin: opts?.margin ?? ALIGN_MARGIN_PX };
         const { range: cur } = live.current;
         const s = cur.startKey == null ? 0 : ks.indexOf(cur.startKey);
         const e = cur.endKey == null ? s + 1 : ks.indexOf(cur.endKey) + 1;
