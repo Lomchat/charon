@@ -97,7 +97,7 @@ import {
 import { IconPaperclip, IconSend, IconUpload } from './icons';
 import { chatBubbleAbove } from './chatScroll';
 import { shouldShowChatRole, transcriptViewFor } from './chatVisibility';
-import { canCompactSession } from './sessionInsightState';
+import { canCompactSession, contextUsagePercentage } from './sessionInsightState';
 import { useSessionContext } from './useSessionContext';
 import HeaderContextGauge from './HeaderContextGauge';
 import { ContextWindowContext, useSessionCacheReading } from './PromptCacheMarks';
@@ -350,6 +350,16 @@ export default function SessionView({
   // Phone header (≤820px): ONE folded row until ▾ unfolds the cwd, repo,
   // usage, context and the other actions. Desktop CSS ignores the class.
   const [barExpanded, setBarExpanded] = useState(false);
+  // Desktop header (>820px): folded to one summary line until ▾ (✕ folds it
+  // back). Remembered per browser for every session; the phone ignores it.
+  const [headerFolded, setHeaderFolded] = useState(false);
+  useEffect(() => {
+    try { setHeaderFolded(localStorage.getItem(HEADER_FOLD_KEY) === '1'); } catch {}
+  }, []);
+  const foldHeader = useCallback((folded: boolean) => {
+    setHeaderFolded(folded);
+    try { localStorage.setItem(HEADER_FOLD_KEY, folded ? '1' : '0'); } catch {}
+  }, []);
   const stream = useSessionStream(sessionId, {
     cache: sharedCacheRef,
     onKilled,
@@ -433,6 +443,8 @@ export default function SessionView({
   }, [messages, bgTasks, effort, ultracode, selected.promptCache?.ttlS]);
   // The model's window, for the turn ledgers' "context N%" (PromptCacheMarks).
   const contextWindowTokens = Number(sessionContext?.max_tokens) > 0 ? Number(sessionContext?.max_tokens) : null;
+  // The folded desktop header's account figure (the runtime panel reads its own).
+  const headerUsage = useUsage(vpsId, sessionKind, usageProfile);
 
   // The git refresh on a finished turn lives in gitStore's summary watcher:
   // it fires for EVERY session, not only the one on screen.
@@ -1395,7 +1407,21 @@ export default function SessionView({
       {sessionSettingsOpen && <SessionSettingsModal session={selected} onClose={closeSessionSettings} />}
       <main className={`app-main${compact ? ' is-compact' : ''}`}
         onPointerDownCapture={readOnAction} onKeyDownCapture={readOnAction} onWheelCapture={readOnAction}>
-        <div className={`app-bar${barExpanded || compact ? ' is-expanded' : ''}`}>
+        <div className={`app-bar${barExpanded || compact ? ' is-expanded' : ''}${headerFolded && !compact ? ' is-folded' : ''}`}>
+          {headerFolded && !compact && (
+            <div className="session-header-folded">
+              <span className="shf-line">
+                {foldedHeaderParts({
+                  model: model || effectiveModel, contextWindow: contextWindowTokens,
+                  context: contextUsagePercentage(sessionContext),
+                  sevenDay: endpoint.active ? null : headerUsage?.sevenDay?.utilization ?? null,
+                  effort: hasEffortAxis(sessionKind) ? effort : undefined,
+                }).join('  |  ')}
+              </span>
+              <button type="button" className="shf-toggle" onClick={() => foldHeader(false)}
+                aria-label="Show the session header" title="Show the session header">▾</button>
+            </div>
+          )}
           <div className="session-header-layout">
           {/* Session identity: title, then cwd. The path is the fastest
               "where am I?" cue when several sessions share a name (or have
@@ -1520,6 +1546,8 @@ export default function SessionView({
               <button type="button" className={`session-action${searchOpen ? ' is-on' : ''}`} aria-pressed={searchOpen}
                 onClick={() => { if (searchOpen) closeSearch(); else { setSearchOpen(true); setSearchFocus((n) => n + 1); } }}
                 aria-label="Search this session" title="search · Alt+F"><IconSearch /></button>
+              <button type="button" className="session-action session-header-fold" onClick={() => foldHeader(true)}
+                aria-label="Hide the session header" title="Hide the session header">✕</button>
               <button type="button" className="session-action session-settings-button" onClick={() => setSessionSettingsOpen(true)} aria-label="Session settings" title="Session settings"><IconGear /></button>
             </div>
           </div>
@@ -3004,6 +3032,27 @@ function fmtElapsed(s: number): string {
 function fmtTokens(n: number): string {
   if (n < 1000) return String(n);
   return (n / 1000).toFixed(n < 10000 ? 1 : 0) + 'k';
+}
+
+const HEADER_FOLD_KEY = 'charon.sessionHeader.folded';
+
+/** The folded desktop header: `🤖 model | 🧠 ctx 9% | 📊 7d 1% | ⚡ medium`.
+ *  A figure nobody has yet is left out rather than shown as a dash. An effort
+ *  stored as a parameter set (§14.103) shows its `effort=` knob. */
+export function foldedHeaderParts({ model, contextWindow, context, sevenDay, effort }: {
+  model: string | null; contextWindow: number | null; context: number | null; sevenDay: number | null;
+  /** `undefined`: this backend has no effort axis at all. */
+  effort: string | null | undefined;
+}): string[] {
+  const knob = effort?.includes('=') ? new URLSearchParams(effort).get('effort') : effort;
+  // A 1M window the id does not spell (the default alias resolves to it).
+  const wide = model && !model.includes('[1m]') && (contextWindow ?? 0) >= 1_000_000 ? `${model}[1m]` : model;
+  return [
+    `🤖 ${wide || 'default'}`,
+    context != null ? `🧠 ctx ${Math.round(context)}%` : null,
+    sevenDay != null ? `📊 7d ${Math.round(sevenDay)}%` : null,
+    effort !== undefined ? `⚡ ${knob || 'default'}` : null,
+  ].filter((p): p is string => p !== null);
 }
 
 // The model the provider answered with INSTEAD of the selected one, or null.

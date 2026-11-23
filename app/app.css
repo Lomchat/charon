@@ -11199,3 +11199,23 @@ button.rcal-ev:focus-visible { outline: 1px solid var(--accent); outline-offset:
     overflow: visible; overscroll-behavior: auto; box-shadow: none;
   }
 }
+
+/* Desktop: the session header folds to one summary line (SessionView §
+   headerFolded) — ✕ in the actions folds it, ▾ unfolds it. The phone keeps
+   its own fold (barExpanded) and never shows these two. */
+.session-header-folded, .app-bar .session-header-fold { display: none; }
+@media (min-width: 821px) {
+  .app-bar .session-header-fold { display: grid; font-size: 13px; line-height: 1; color: var(--text-muted); }
+  .app-bar.is-folded { padding-top: 4px; padding-bottom: 4px; }
+  .app-bar.is-folded .session-header-layout { display: none; }
+  .app-bar.is-folded .session-header-folded {
+    display: flex; align-items: center; gap: 10px; min-width: 0;
+    font: 12px/1.4 var(--mono); color: var(--text-muted);
+  }
+  .shf-line { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: pre; }
+  .shf-toggle {
+    flex: none; display: grid; place-items: center; width: 26px; height: 26px; padding: 0;
+    border: 0; border-radius: var(--radius-md); background: none; color: var(--text-muted); font-size: 13px;
+  }
+  .shf-toggle:hover { background: color-mix(in srgb, var(--accent) 12%, transparent); color: var(--text); }
+}
