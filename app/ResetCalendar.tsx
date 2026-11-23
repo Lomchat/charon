@@ -2,9 +2,10 @@
 // The calendar (§14.126): a header button opening a month of every
 // account's dated facts, one colour per account — a ring where a weekly
 // limit refills, a filled dot where a banked reset expires unused — and the
-// routines' runs (a neutral diamond, §14.120). Below: the picked day, then
-// one row per account (next refill, banked resets → the resets modal). Only
-// what the providers said and the routines' own schedules; nothing guessed.
+// routines' runs (a neutral diamond, §14.120). Below: the picked day (none
+// on open), then one row per account (next refill, banked resets → the
+// resets modal). Only what the providers said and the routines' own
+// schedules; nothing guessed.
 import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from 'react';
 import { PROVIDERS, type SessionProvider } from '@/lib/sessionCapabilities';
 import { providerName } from '@/lib/providerText';
@@ -59,8 +60,6 @@ export default function ResetCalendar({ enabled, onOpen, onOpenRoutine }: {
   const [picked, setPicked] = useState<string | null>(null);
   // null = never read; kept between openings (a stale list beats a blank).
   const [routines, setRoutines] = useState<RoutineView[] | null>(null);
-  // Opening picks the next thing's day once the routines are known.
-  const pickPending = useRef(false);
   const wrapRef = useRef<HTMLDivElement>(null);
   const id = useRef({}).current;
 
@@ -120,21 +119,11 @@ export default function ResetCalendar({ enabled, onOpen, onOpenRoutine }: {
     const d = new Date(); const t = Date.now();
     setNow(t);
     setView({ y: d.getFullYear(), m: d.getMonth() });
+    // Opens with no day picked: the user picks one.
     setPicked(null);
-    pickPending.current = true;
     setOpen(true);
     onOpen?.();
   }
-  // Open on what comes next: the soonest thing's day, when it is this month.
-  useEffect(() => {
-    if (!open || !pickPending.current || routines == null) return;
-    pickPending.current = false;
-    let next: number | null = null;
-    for (const list of byDay.values()) for (const it of list) if (it.at > now && (next == null || it.at < next)) next = it.at;
-    const d = new Date(now);
-    const sameMonth = next != null && new Date(next).getMonth() === d.getMonth() && new Date(next).getFullYear() === d.getFullYear();
-    setPicked(sameMonth ? dayKey(next!) : null);
-  }, [open, routines, byDay, now]);
   function shift(by: number) {
     setView(({ y, m }) => { const d = new Date(y, m + by, 1); return { y: d.getFullYear(), m: d.getMonth() }; });
   }
