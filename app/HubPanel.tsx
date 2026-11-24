@@ -224,7 +224,7 @@ export default function HubPanel({ vpsList: initialVpsList, vpsFolders: initialF
   const ssrSummaries = (initialSummaries ?? initialSessions) as SessionSummary[];
   initSyncPosition(initialSync ?? null);
   hydrateSummaries(ssrSummaries, initialSync ?? null);
-  const { tabs: workspaceTabs, dirty: dirtyIds, loaded: workspaceTabsLoaded } = useTabs(initialTabs);
+  const { tabs: workspaceTabs, dirty: dirtyIds, loaded: workspaceTabsLoaded, fellBack: tabFocusFellBack } = useTabs(initialTabs);
   // Focus is a browser preference, not part of the shared workspace layout.
   // Restore after hydration so desktop/mobile never steer each other and the
   // first server/client render still agrees.
@@ -2277,6 +2277,7 @@ export default function HubPanel({ vpsList: initialVpsList, vpsFolders: initialF
         selectedShellId={selectedShellId}
         selectedInstallId={selectedInstallId}
         openTabRef={activeTab?.ref ?? null}
+        selectionFellBack={!!tabFocusFellBack}
         activeWorkspace={activeTab ? { vpsId: activeTab.vpsId, path: activeTab.path } : null}
         onSelect={selectSession}
         onSelectShell={selectShell}

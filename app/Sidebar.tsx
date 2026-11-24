@@ -241,6 +241,10 @@ type Props = {
    *  as when nothing is open — and the two answers differ for the selection
    *  (`sidebarSessionSelection.ts`). */
   openTabRef?: string | null;
+  /** The open tab was not chosen: the one before it vanished (its session
+   *  deleted, its tab closed elsewhere) and focus fell back (tabStore). The
+   *  list stays where it is — no scroll, no unfolding. */
+  selectionFellBack?: boolean;
   /** The active tab-row group. Every session/shell at this exact VPS + path
    *  receives the workspace ring, independently of which entity is open. */
   activeWorkspace?: WorkspaceScope | null;
@@ -336,6 +340,7 @@ export default function Sidebar({
   selectedId,
   selectedShellId, selectedInstallId,
   openTabRef = null,
+  selectionFellBack = false,
   activeWorkspace = null,
   toolbarSlot, noticeSlot, isEntityShown,
   onSelect, onSelectShell, onSelectInstall, onReorderSessions,
@@ -463,10 +468,13 @@ export default function Sidebar({
 
   // Deliberately run on navigation, not on collapse state: the user may hide
   // the currently open session until they navigate to another row. The
-  // folders and their toggle are read as they are then.
+  // folders and their toggle are read as they are then. A fallback is no
+  // navigation (deleting the open session from here must not move the list).
   const foldersNow = useLatest(vpsFolders);
   const toggleFolderNow = useLatest(onToggleFolderCollapsed);
+  const fellBackNow = useLatest(selectionFellBack);
   useEffect(() => {
+    if (fellBackNow.current) { pendingReveal.current = null; return; }
     pendingReveal.current = activeTabId ? { id: activeTabId, until: Date.now() + REVEAL_TTL_MS } : null;
     if (!parentVpsId) return;
     setVpsCollapsed(parentVpsId, false);
@@ -475,7 +483,7 @@ export default function Sidebar({
       const f = foldersNow.current.find((ff) => ff.id === parentFolderId);
       if (f && f.collapsed === 1) toggleFolderNow.current?.(parentFolderId, false);
     }
-  }, [activeTabId, parentVpsId, parentFolderId, parentPathKey, setVpsCollapsed, setPathCollapsed, foldersNow, toggleFolderNow]);
+  }, [activeTabId, parentVpsId, parentFolderId, parentPathKey, setVpsCollapsed, setPathCollapsed, foldersNow, toggleFolderNow, fellBackNow]);
 
   useEffect(() => {
     // Ancestor expansion can arrive in a later render (folder state is remote).

@@ -33,6 +33,10 @@ type State = {
    *  in `tabs`, so if it lived outside, marking a buffer dirty would mutate a
    *  Set nobody re-reads and the badge would never appear. */
   dirty: ReadonlySet<string>;
+  /** The active tab was not chosen here: the one this browser was viewing
+   *  left the shared layout (its session deleted, closed elsewhere) and focus
+   *  fell back. The sidebar reveals only a CHOSEN tab. */
+  fellBack?: boolean;
 };
 
 const g = globalThis as unknown as {
@@ -129,6 +133,7 @@ function persistActiveId(activeId: string | null) {
 function setTabs(tabs: TabDTO[], requestedActiveId?: string | null) {
   const ids = new Set(tabs.map((t) => t.id));
   let activeId = requestedActiveId === undefined ? state.activeId : requestedActiveId;
+  let fellBack = requestedActiveId === undefined ? !!state.fellBack : false;
   // A shared layout change may close/evict the tab this browser was viewing.
   // Fall back to THIS browser's previous tab; never adopt the sender's active.
   if (activeId && !ids.has(activeId)) {
@@ -138,6 +143,7 @@ function setTabs(tabs: TabDTO[], requestedActiveId?: string | null) {
       : tabs;
     activeId = closing ? chooseNextFocusAfterClosing(context, mru, closing) : null;
     if (activeId && !ids.has(activeId)) activeId = null;
+    fellBack = activeId != null;
   }
   const focusedTabs = projectLocalTabFocus(tabs, activeId);
   // Drop dirty marks for tabs that no longer exist, or the badge outlives its
@@ -158,8 +164,8 @@ function setTabs(tabs: TabDTO[], requestedActiveId?: string | null) {
       && tab.vpsPos === prev.vpsPos && tab.groupPos === prev.groupPos;
   });
   const sameDirty = dirty.size === state.dirty.size && [...dirty].every((id) => state.dirty.has(id));
-  if (sameTabs && sameDirty && activeId === state.activeId) return;
-  commit({ tabs: focusedTabs, loaded: true, activeId, dirty });
+  if (sameTabs && sameDirty && activeId === state.activeId && fellBack === !!state.fellBack) return;
+  commit({ tabs: focusedTabs, loaded: true, activeId, dirty, fellBack });
 }
 
 function initialTabState(tabs: TabDTO[]): State {
