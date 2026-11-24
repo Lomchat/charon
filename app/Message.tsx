@@ -26,6 +26,7 @@ import { rehypeTrimBlockEdges } from './rehypeTrimBlockEdges';
 import { openTab as openWorkspaceTab } from './tabStore';
 import { revealLine, revealView } from './revealLine';
 import { peerRequestTarget } from './peerMessageLinks';
+import type { PeerPending } from '@/lib/peerPending';
 import { splitQuotedLines } from './chatQuote';
 import { FoldEdge, FoldLine, foldRootProps, foldText, useBubbleFold } from './bubbleFold';
 
@@ -229,7 +230,9 @@ function Message({ m, vpsId, cwd, streaming = false, attachedResult, kind = 'cla
         {isPeerStatus && peerStatusLabel && (
           requestId
             ? <PeerRequestLink requestId={requestId} onHover={onPeerRequestHover} onJump={onPeerRequestJump} />
-            : <span className={`peer-state ${m.peerStatus}`}>{peerStatusLabel}</span>
+            : m.peerStatus === 'processing' && m.peerPending
+              ? <PeerHeldState pending={m.peerPending} />
+              : <span className={`peer-state ${m.peerStatus}`}>{peerStatusLabel}</span>
         )}
         {(isExternal || isAssistant) && requestId && (
           <PeerRequestLink requestId={requestId} onHover={onPeerRequestHover} onJump={onPeerRequestJump} />
@@ -313,6 +316,24 @@ function PeerSessionLink({ sessionId, onOpen, title, children, className = 'from
       event.preventDefault();
       onOpen(sessionId);
     }}>{children}</a>;
+}
+
+/** Held (§14.93): the recipient's turn is over, what it started still runs —
+ *  the answer comes once it ends. */
+function PeerHeldState({ pending }: { pending: PeerPending }) {
+  const bg = pending.backgroundTasks ?? 0;
+  const facts = [
+    bg ? `${bg} background task${bg === 1 ? '' : 's'}` : null,
+    pending.waitingOn?.length ? `Waiting on ${pending.waitingOn.join(', ')}` : null,
+    pending.subSessionsStarting ? `${pending.subSessionsStarting} sub-session${pending.subSessionsStarting === 1 ? '' : 's'} starting` : null,
+  ].filter((f): f is string => !!f);
+  return (
+    <span className="peer-state held" title={`Answer once done\n${facts.join('\n')}`}>
+      {bg ? 'background' : 'waiting'}
+      {bg > 0 && <span className="peer-held-n">{bg}</span>}
+      {pending.waitingOn?.map((h) => <span key={h} className="peer-held-h">{h}</span>)}
+    </span>
+  );
 }
 
 function PeerRequestLink({ requestId, onHover, onJump }: {

@@ -3128,6 +3128,9 @@ html[data-density='small'] .cs-sub-fold { font-size: 8.5px; }
 .peer-state { margin-left: .2rem; font-size: 10px; letter-spacing: .04em; text-transform: uppercase; color: var(--text-muted); }
 .peer-state.replied { color: var(--success); }
 .peer-state.failed, .peer-state.timed_out { color: var(--danger-strong); }
+.peer-state.held { display: inline-flex; align-items: center; gap: .3rem; color: var(--violet); }
+.peer-held-n, .peer-held-h { padding: 0 .3rem; border-radius: var(--radius-sm); text-transform: none;
+  background: color-mix(in srgb, var(--violet) 14%, transparent); }
 .peer-error { margin-top: 7px; color: var(--danger-soft); font-size: 11px; }
 /* Sender chip — same slot and weight as the model chip on an assistant
    bubble, because it answers the same question: who produced this. */

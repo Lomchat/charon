@@ -33,8 +33,9 @@ PEER_MODEL_INSTRUCTIONS = (
     "sub-session, for work they can open and follow in Charon, or for another "
     "provider than yours (Claude, Codex, Cursor). A bare \"agent\", \"subagent\" or "
     "\"in parallel\" means your native subagent tool; ordinary coding tasks need "
-    "neither. Its final answer arrives later as a <charon-peer-reply>: end your turn, "
-    "never poll."
+    "neither. Its final answer arrives later as a <charon-peer-reply>, once its "
+    "background work and its own sub-sessions are done (a failure arrives the same "
+    "way): end your turn, never poll."
 )
 
 
@@ -44,10 +45,11 @@ def sub_session_instructions(parent_handle: Any) -> str | None:
         return None
     return (
         f"You are a Charon sub-session spawned by @{parent_handle}. Its tasks arrive "
-        "as <charon-peer-message>; the final answer of each turn is returned to it "
-        "automatically. You cannot message it while answering its request, so put "
-        "questions and blockers in your final answer. Do the work yourself: start no "
-        "sub-session unless your task asks for one."
+        "as <charon-peer-message>; your final answer is returned to it automatically, "
+        "once nothing you started is still running: stop what you no longer need "
+        "(servers, watchers) before you finish. You cannot message it while answering "
+        "its request, so put questions and blockers in your final answer. Do the work "
+        "yourself: start no sub-session unless your task asks for one."
     )
 _INSTRUCTIONS = PEER_MODEL_INSTRUCTIONS
 
@@ -74,7 +76,8 @@ _TOOLS = [
             "List Charon sessions on this VPS, including their stable @handle, "
             "provider and whether they can currently receive a message. "
             "parent_handle names the session that spawned a row; is_child marks "
-            "your own sub-sessions."
+            "your own sub-sessions. activity: working (a turn runs), background "
+            "(background_tasks still run), waiting (on waiting_on sessions) or idle."
         ),
         "inputSchema": {"type": "object", "properties": {}, "additionalProperties": False},
         "annotations": {"readOnlyHint": True, "destructiveHint": False, "idempotentHint": True},
@@ -116,7 +119,8 @@ _TOOLS = [
             "native subagent tool: use it only when the user asks for a Charon session or "
             "sub-session, something they can follow in Charon, or another provider. "
             "Returns its @handle at once; its final answer arrives later as a "
-            "<charon-peer-reply>, so end your turn instead of polling. Never more "
+            "<charon-peer-reply>, once its background work and its own sub-sessions are "
+            "done (a failure too), so end your turn instead of polling. Never more "
             "permissions than this session."
         ),
         "inputSchema": {
@@ -142,7 +146,11 @@ _TOOLS = [
     },
     {
         "name": "interrupt_sub_session",
-        "description": "Stop the current turn of one of YOUR sub-sessions (soft interrupt).",
+        "description": (
+            "Stop the current turn of one of YOUR sub-sessions (soft interrupt). If its "
+            "turn is over but its answer still waits on its background work, stop "
+            "waiting: its latest answer comes back now."
+        ),
         "inputSchema": {
             "type": "object",
             "properties": {"handle": {"type": "string", "description": "Sub-session handle, e.g. api or @api"}},
@@ -172,7 +180,8 @@ _TOOLS = [
         "description": (
             "Get the authoritative state of one sent or received peer message: "
             "accepted, processing, replied, delivered (read; no reply expected), "
-            "failed or timed_out."
+            "failed or timed_out. held: the target's turn is over but `pending` "
+            "work it started still runs; `draft` is its latest answer so far."
         ),
         "inputSchema": {
             "type": "object",

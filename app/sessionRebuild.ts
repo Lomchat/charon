@@ -23,6 +23,7 @@ import { appendThinkingMessage, closeThinkingMessage } from './thinkingMessages'
 import { parseAsyncQuestion, resolveAsyncQuestionMessages } from '@/lib/asyncQuestions';
 import { scheduledFireContent } from '@/lib/scheduledTasks';
 import { providerNoticeContent } from '@/lib/providerNotice';
+import { asPeerPending } from '@/lib/peerPending';
 import { parseTurnLedger } from '@/lib/promptCache';
 
 // Shape of a message as it comes from the `GET /api/sessions/[id]` API.
@@ -210,6 +211,7 @@ export function rebuildStateFromMessages(
             peerTargetSessionId: typeof ev.targetSessionId === 'string' ? ev.targetSessionId : null,
             peerError: typeof ev.error === 'string' ? ev.error : null,
             fromProvider: isSessionProvider(ev.targetProvider) ? ev.targetProvider : null,
+            peerPending: asPeerPending(ev.pending),
           });
         }
       } catch {}

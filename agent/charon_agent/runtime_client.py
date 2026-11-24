@@ -182,6 +182,24 @@ class RemoteSession:
         return self._x.get("compacting") is True
 
     @property
+    def bg_count(self) -> int:
+        """Background tasks the runtime saw start and not end (§14.91)."""
+        n = self._x.get("bg")
+        return n if isinstance(n, int) and n > 0 else 0
+
+    @property
+    def mirrored(self) -> bool:
+        """The runtime has sent this session's state (after a daemon restart
+        it has not, for a moment: its tasks are unknown, not none)."""
+        return bool(self._x)
+
+    @property
+    def bg_ids(self) -> set[str] | None:
+        """Their ids; None from a runtime too old to say."""
+        ids = self._x.get("bg_ids")
+        return {i for i in ids if isinstance(i, str)} if isinstance(ids, list) else None
+
+    @property
     def session_config(self) -> dict[str, Any]:
         value = self._persist.get("provider_config")
         return value if isinstance(value, dict) else {}

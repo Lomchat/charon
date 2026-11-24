@@ -180,6 +180,26 @@ _PEER_RATE_WINDOW_S = 60.0
 _PEER_RATE_MAX = 20
 _PEER_LEDGER_MAX = 200
 _PEER_REPLY_TIMEOUT_S = 10 * 60
+# A target whose turn ended while work it started still runs (background
+# tasks, replies it awaits, a sub-session task on its way) HOLDS the request
+# (§14.93): the reply is the answer given once nothing is left. Settled after
+# a quiet spell (a finished task usually wakes the model first), released
+# with its latest answer at the latest after the cap.
+_PEER_SETTLE_S = 45.0
+_PEER_HOLD_MAX_S = 2 * 3600
+# The reply is a turn's LAST answer, like the hub's final bubble: these
+# events close a text block (lib/assistantBoundaries.ts).
+_PEER_REPLY_BOUNDARIES = frozenset({
+    "tool_use", "thinking", "structured_output", "permission_request", "user_question",
+    "exit_plan_request", "compaction", "plan_update", "external_message", "peer_message_status",
+})
+_PEER_STOPPED_STATUSES = frozenset({"sleeping", "error", "killed"})
+# Streamed or periodic: they say nothing new about a held target's state.
+_PEER_HOLD_QUIET_EVENTS = frozenset({
+    "assistant_text", "thinking", "usage", "generation_progress", "tool_progress",
+    "edit_progress", "plan_progress", "bg_task_progress", "codex_signal",
+    "rate_limit", "endpoint_usage", "tool_activity",
+})
 # Idle: a peer turn of its own starts now.
 _PEER_RECEIVE_STATUSES = frozenset({"active", "failed"})
 # A busy target takes a peer message at once, like a human one (§14.93):
@@ -271,7 +291,18 @@ class Server:
         # calls cannot all pass the limit before any child exists.
         self.spawn_pending: dict[str, int] = {}
         self.spawn_bg_tasks: set[asyncio.Task] = set()
+        # Sub-session tasks still on their way to a child, per parent: the
+        # parent's own held request waits for them.
+        self.spawn_delivering: dict[str, int] = {}
         self.peer_reply_inflight: set[str] = set()
+        # Held requests: per target, the settle check its activity re-arms.
+        self.peer_hold_checks: dict[str, asyncio.Task] = {}
+        # Sessions a peer is deleting (kill_sub_session): what fails because
+        # they are gone wakes no one (the caller knows).
+        self.peer_quiet_ids: set[str] = set()
+        # Background tasks of sessions hosted inline (a runtime mirrors its
+        # own as `x.bg`): the same tracking, `session_ops.track_bg_tasks`.
+        self.inline_bg: dict[str, tuple[set[str], set[str]]] = {}
         # Session runtimes (§14.117): generation → connection.
         self.runtimes: dict[str, RuntimeConn] = {}
         self.generation = "inline"
@@ -347,8 +378,9 @@ class Server:
             reserved = isinstance(target_id, str) \
                 and self.peer_target_active.get(target_id) == message_id
             injection = row.get("reply_injection")
-            if status == "failed" \
-                    or (status == "replied" and injection not in ("pending", "sending")) \
+            if injection in ("pending", "sending"):
+                continue
+            if status in ("failed", "replied") \
                     or (status in ("timed_out", "delivered") and not reserved):
                 removable.append((
                     float(row.get("updated_at") or row.get("created_at") or 0),
@@ -416,6 +448,8 @@ class Server:
             "source_provider", "target_session_id", "target_handle", "target_provider",
             "text", "status", "created_at", "updated_at", "reply", "reply_id",
             "error", "reply_injection", "expects_reply",
+            # Held (§14.93): what the target still waits on, its latest answer.
+            "held", "pending", "draft", "release", "still_running",
         )
         return {key: row[key] for key in keys if key in row}
 
@@ -446,45 +480,77 @@ class Server:
             payload["error"] = row["error"]
         if row.get("reply_id"):
             payload["reply_id"] = row["reply_id"]
+        if row.get("held") and isinstance(row.get("pending"), dict):
+            payload["pending"] = row["pending"]
         self._emit(payload)
 
-    def _arm_peer_timeout(self, message_id: str) -> None:
-        old = self.peer_timeout_tasks.pop(message_id, None)
-        if old is not None and not old.done():
-            old.cancel()
+    def _cancel_peer_timeout(self, message_id: str) -> None:
+        task = self.peer_timeout_tasks.pop(message_id, None)
+        if task is not None and not task.done() and task is not asyncio.current_task():
+            task.cancel()
+
+    def _arm_peer_timeout(self, message_id: str, delay: float | None = None) -> None:
+        """One clock per open request: a held one's cap, else the reply
+        deadline — which gives no verdict while the target's turn runs."""
+        self._cancel_peer_timeout(message_id)
         row = self.peer_messages.get(message_id)
         if row is None or row.get("status") in _PEER_FINAL_STATUSES:
             return
-        created = float(row.get("created_at") or time.time())
-        remaining = max(0.0, _PEER_REPLY_TIMEOUT_S - (time.time() - created))
+        if delay is None:
+            if row.get("held"):
+                start = float(row.get("held_at") or time.time())
+                delay = _PEER_HOLD_MAX_S - (time.time() - start)
+            else:
+                created = float(row.get("created_at") or time.time())
+                delay = _PEER_REPLY_TIMEOUT_S - (time.time() - created)
+        remaining = max(0.0, delay)
 
         async def expire() -> None:
             try:
                 await asyncio.sleep(remaining)
-                current = self.peer_messages.get(message_id)
-                if current is None or current.get("status") in _PEER_FINAL_STATUSES:
-                    return
-                # A notice already read stays `delivered`: the deadline only
-                # frees a target whose turn never closed it.
-                if current.get("status") == "delivered":
-                    current["_expired"] = True
-                else:
-                    current["status"] = "timed_out"
-                current["updated_at"] = time.time()
-                target_id = current.get("target_session_id")
-                target = self.sessions.get(target_id) if isinstance(target_id, str) else None
-                # Keep the reservation while a late/resumed turn is still in
-                # flight so its eventual stop remains correlatable. Once idle,
-                # release it and let a new peer request use the target.
-                if isinstance(target_id, str) and self.peer_target_active.get(target_id) == message_id \
-                        and str(getattr(target, "status", "error")) in _PEER_RECEIVE_STATUSES:
-                    self.peer_target_active.pop(target_id, None)
-                self._emit_peer_status(current)
-                self.schedule_save()
             except asyncio.CancelledError:
-                pass
-            finally:
+                return
+            if self.peer_timeout_tasks.get(message_id) is asyncio.current_task():
                 self.peer_timeout_tasks.pop(message_id, None)
+            current = self.peer_messages.get(message_id)
+            if current is None or current.get("status") in _PEER_FINAL_STATUSES \
+                    or current.get("_completing"):
+                return
+            target_id = current.get("target_session_id")
+            target = self.sessions.get(target_id) if isinstance(target_id, str) else None
+            target_status = str(getattr(target, "status", "error"))
+            reserved = isinstance(target_id, str) \
+                and self.peer_target_active.get(target_id) == message_id
+            if current.get("held"):
+                current["_completing"] = True
+                await self._complete_peer_request(message_id, failed=False, release="time_limit")
+                return
+            # Still at work on it (or on the turn it joins): no verdict yet —
+            # up to the cap, past which a turn that never ends is stuck.
+            age = time.time() - float(current.get("created_at") or time.time())
+            if reserved and current.get("status") != "delivered" \
+                    and target_status in ("thinking", "starting") and age < _PEER_HOLD_MAX_S:
+                self._arm_peer_timeout(message_id, min(_PEER_REPLY_TIMEOUT_S, _PEER_HOLD_MAX_S - age))
+                return
+            # A notice already read stays `delivered`: the deadline only
+            # frees a target whose turn never closed it.
+            if current.get("status") == "delivered":
+                current["_expired"] = True
+            else:
+                current["status"] = "timed_out"
+                current["error"] = current.get("error") or (
+                    f"@{current.get('target_handle')} never answered "
+                    f"(status={target_status})")
+                self._peer_queue_failure(current)
+            current["updated_at"] = time.time()
+            # Keep the reservation while a late/resumed turn is still in
+            # flight so its eventual stop remains correlatable. Once idle,
+            # release it and let a new peer request use the target.
+            if reserved and target_status in _PEER_RECEIVE_STATUSES:
+                self.peer_target_active.pop(target_id, None)
+            self._emit_peer_status(current)
+            await self._save_state_now()
+            self._schedule_peer_reply_injection(message_id)
 
         self.peer_timeout_tasks[message_id] = asyncio.create_task(
             expire(), name=f"peer-timeout-{message_id[:8]}"
@@ -500,8 +566,9 @@ class Server:
         if event == "peer_untake":
             # The turn it was marked read in did not take it (session.py §
             # _peer_check_result): what was gathered is not its reply.
-            row["_reply_buffer"] = ""
-            row.pop("_turn_error", None)
+            for key in ("_reply_buffer", "_reply_truncated", "_reply_last",
+                        "_reply_last_truncated", "_turn_error"):
+                row.pop(key, None)
             return
         if event == "peer_dropped":
             if not row.get("_completing"):
@@ -533,8 +600,13 @@ class Server:
             delta = payload.get("delta")
             if isinstance(delta, str) and delta:
                 buf = str(row.get("_reply_buffer") or "") + delta
-                row["_reply_buffer"] = self._peer_bounded_text(buf)
+                bounded = self._peer_bounded_text(buf, _PEER_MESSAGE_MAX - 512)
+                if len(bounded) < len(buf):
+                    row["_reply_truncated"] = True
+                row["_reply_buffer"] = bounded
             return
+        if event in _PEER_REPLY_BOUNDARIES:
+            self._peer_close_text_block(row)
         if event == "error" and not payload.get("retrying") and not row.get("_turn_error"):
             msg = payload.get("msg")
             if isinstance(msg, str) and msg:
@@ -549,21 +621,239 @@ class Server:
             name=f"peer-complete-{message_id[:8]}",
         )
 
-    async def _complete_peer_request(self, message_id: str, *, failed: bool) -> None:
+    @staticmethod
+    def _peer_close_text_block(row: dict[str, Any]) -> None:
+        block = str(row.pop("_reply_buffer", "") or "").strip()
+        truncated = row.pop("_reply_truncated", False)
+        if block:
+            row["_reply_last"] = block
+            row["_reply_last_truncated"] = truncated
+
+    def _peer_take_reply(self, row: dict[str, Any]) -> str:
+        """The turn's final answer: its last text block — what it wrote after
+        its last tool call — else the last block it wrote at all."""
+        self._peer_close_text_block(row)
+        reply = str(row.pop("_reply_last", "") or "")
+        if row.pop("_reply_last_truncated", False) and reply:
+            reply += "\n\n[… cut at 16 KiB: the full answer is in the session's transcript]"
+        return reply
+
+    # ── Held requests (§14.93) ──────────────────────────────────────────────
+    def _session_bg(self, session_id: str) -> tuple[set[str] | None, int]:
+        """A session's running background tasks: (ids or None, count)."""
+        remote = self.sessions.get(session_id)
+        if isinstance(remote, RemoteSession):
+            return remote.bg_ids, remote.bg_count
+        tracked = self.inline_bg.get(session_id)
+        ids = set(tracked[0]) if tracked else set()
+        return ids, len(ids)
+
+    def _peer_bg_baseline(self, session_id: str) -> Any:
+        """What already ran when a request arrived: its own work is the rest."""
+        ids, count = self._session_bg(session_id)
+        return sorted(ids) if ids is not None else count
+
+    def _peer_work_pending(self, session_id: str,
+                           since: dict[str, Any] | None = None) -> dict[str, Any] | None:
+        """What a session started and has not seen end: its background tasks,
+        the answers it awaits from other sessions (failures included: they
+        come back too), sub-session tasks still on their way. `since`: a
+        request it answers — only what started after it arrived counts (a
+        dev server it ran before is not that request's work)."""
+        out: dict[str, Any] = {}
+        ids, bg = self._session_bg(session_id)
+        baseline = since.get("bg_baseline") if since is not None else None
+        if isinstance(baseline, list) and ids is not None:
+            bg = len(ids - set(baseline))
+        elif isinstance(baseline, (list, int)):
+            bg = max(0, bg - (len(baseline) if isinstance(baseline, list) else baseline))
+        if bg:
+            out["background_tasks"] = bg
+        after = float(since.get("created_at") or 0) if since is not None else 0.0
+        waiting = sorted({
+            f"@{row.get('target_handle')}" for row in self.peer_messages.values()
+            if row.get("source_session_id") == session_id
+            and row.get("expects_reply") is not False
+            and float(row.get("created_at") or 0) >= after
+            and (row.get("status") in ("accepted", "processing")
+                 or row.get("reply_injection") in ("pending", "sending"))
+        })
+        if waiting:
+            out["waiting_on"] = waiting
+        starting = self.spawn_delivering.get(session_id, 0)
+        if starting:
+            out["sub_sessions_starting"] = starting
+        return out or None
+
+    def _peer_activity(self, session_id: str, status: str) -> dict[str, Any]:
+        """`list_sessions`' word on what a session is doing: working (a turn
+        runs), background (its tasks run), waiting (on other sessions), idle."""
+        if status in ("thinking", "starting"):
+            return {"activity": "working"}
+        if status not in _PEER_RECEIVE_STATUSES:
+            return {"activity": status}
+        pending = self._peer_work_pending(session_id)
+        if not pending:
+            return {"activity": "idle"}
+        return {"activity": "background" if pending.get("background_tasks") else "waiting",
+                **pending}
+
+    def _peer_held_row(self, target_id: Any) -> tuple[str, dict[str, Any]] | None:
+        mid = self.peer_target_active.get(target_id) if isinstance(target_id, str) else None
+        row = self.peer_messages.get(mid) if mid else None
+        if row is None or not row.get("held") or row.get("status") in _PEER_FINAL_STATUSES:
+            return None
+        return mid, row
+
+    def _peer_answering(self, session_id: Any) -> bool:
+        """Reserved by a request it is answering NOW (not merely holding):
+        a reply injected into it would fold into that turn."""
+        mid = self.peer_target_active.get(session_id) if isinstance(session_id, str) else None
+        return mid is not None and not (self.peer_messages.get(mid) or {}).get("held")
+
+    def _cancel_peer_hold_check(self, target_id: Any) -> None:
+        task = self.peer_hold_checks.pop(target_id, None) if isinstance(target_id, str) else None
+        if task is not None and not task.done() and task is not asyncio.current_task():
+            task.cancel()
+
+    def _peer_hold_poke(self, target_id: Any) -> None:
+        """A held target moved: settle it once quiet for `_PEER_SETTLE_S` (a
+        finished task usually wakes the model, whose own stop then decides)."""
+        held = self._peer_held_row(target_id)
+        if held is None or held[1].get("_completing"):
+            return
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            return
+        self._cancel_peer_hold_check(target_id)
+        self.peer_hold_checks[target_id] = loop.create_task(
+            self._peer_hold_settle(target_id, held[0]),
+            name=f"peer-hold-{held[0][:8]}")
+
+    async def _peer_hold_settle(self, target_id: str, message_id: str) -> None:
+        try:
+            await asyncio.sleep(_PEER_SETTLE_S)
+        except asyncio.CancelledError:
+            return
+        if self.peer_hold_checks.get(target_id) is asyncio.current_task():
+            self.peer_hold_checks.pop(target_id, None)
+        held = self._peer_held_row(target_id)
+        if held is None or held[0] != message_id or held[1].get("_completing"):
+            return
+        row = held[1]
+        target = self.sessions.get(target_id)
+        status = str(getattr(target, "status", "killed")) if target is not None else "killed"
+        if status in ("thinking", "starting"):
+            return  # a turn runs: its stop decides
+        if status not in _PEER_RECEIVE_STATUSES:
+            row["_completing"] = True
+            await self._complete_peer_request(message_id, failed=False, release="stopped")
+            return
+        if not getattr(target, "mirrored", True):
+            self._peer_hold_poke(target_id)  # its tasks are not known yet
+            return
+        pending = self._peer_work_pending(target_id, row)
+        if pending:
+            if pending != row.get("pending"):
+                row["pending"] = pending
+                row["updated_at"] = time.time()
+                self._emit_peer_status(row)
+                self.schedule_save()
+            return  # what ends it pokes again
+        row["_completing"] = True
+        await self._complete_peer_request(message_id, failed=False, release="settled")
+
+    async def _peer_release_held(self, target_id: str, reason: str) -> bool:
+        """End a hold now with the target's latest answer: the user took the
+        target over, its parent interrupted it."""
+        held = self._peer_held_row(target_id)
+        if held is None or held[1].get("_completing"):
+            return False
+        held[1]["_completing"] = True
+        await self._complete_peer_request(held[0], failed=False, release=reason)
+        return True
+
+    def _peer_target_stopped(self, target_id: str, status: str) -> None:
+        """The target stopped: its turn and its background work are over, the
+        request it was answering can no longer be."""
+        mid = self.peer_target_active.get(target_id)
+        row = self.peer_messages.get(mid) if mid else None
+        if row is None or row.get("_completing") or row.get("status") in _PEER_FINAL_STATUSES:
+            return
+        if row.get("held"):
+            row["_completing"] = True
+            asyncio.create_task(
+                self._complete_peer_request(mid, failed=False, release="stopped"),
+                name=f"peer-complete-{mid[:8]}")
+            return
+        if row.get("expects_reply") is False or row.get("status") not in ("accepted", "processing"):
+            return
+        row["_completing"] = True
+        row["_turn_error"] = row.get("_turn_error") or \
+            f"@{row.get('target_handle')} stopped ({status}) before answering"
+        asyncio.create_task(
+            self._complete_peer_request(mid, failed=True),
+            name=f"peer-complete-{mid[:8]}")
+
+    def _peer_queue_failure(self, row: dict[str, Any]) -> None:
+        """An awaited answer will not come: the source's model, told to end
+        its turn and wait, hears it like a reply — unless it caused it."""
+        if row.get("expects_reply") is False or row.get("quiet_failure"):
+            return
+        if row.get("source_session_id") not in self.sessions:
+            return
+        row["reply_injection"] = "pending"
+
+    async def _complete_peer_request(self, message_id: str, *, failed: bool,
+                                     release: str | None = None) -> None:
+        """A turn answering the request ended — or, `release`, its hold ends:
+        settled, time_limit, taken_over, interrupted, stopped."""
         row = self.peer_messages.get(message_id)
         if row is None:
             return
         target_id = row.get("target_session_id")
+        reply = self._peer_take_reply(row)
+        turn_error = str(row.pop("_turn_error", "")).strip()
+        row["updated_at"] = time.time()
+        expects_reply = row.get("expects_reply") is not False
+        # Held: the turn is over, not the work it started. The reply waits
+        # for it; later turns of the target answer this request too.
+        if expects_reply and not failed and release is None and isinstance(target_id, str) \
+                and self.peer_target_active.get(target_id) == message_id:
+            pending = self._peer_work_pending(target_id, row)
+            if pending:
+                if reply:
+                    row["draft"] = reply
+                first = not row.get("held")
+                row["held"] = True
+                row.setdefault("held_at", time.time())
+                row["pending"] = pending
+                row.pop("_completing", None)
+                self._emit_peer_status(row)
+                await self._save_state_now()
+                if first:
+                    self._arm_peer_timeout(message_id)  # the hold's cap
+                self._peer_hold_poke(target_id)
+                return
+        row.pop("_completing", None)
         if isinstance(target_id, str) and self.peer_target_active.get(target_id) == message_id:
             self.peer_target_active.pop(target_id, None)
-        timeout = self.peer_timeout_tasks.pop(message_id, None)
-        if timeout is not None and not timeout.done():
-            timeout.cancel()
-        reply = str(row.pop("_reply_buffer", "")).strip()
-        turn_error = str(row.pop("_turn_error", "")).strip()
-        row.pop("_completing", None)
-        row["updated_at"] = time.time()
-        if row.get("expects_reply") is False:
+        self._cancel_peer_timeout(message_id)
+        self._cancel_peer_hold_check(target_id)
+        held = bool(row.pop("held", False))
+        row.pop("held_at", None)
+        row.pop("pending", None)
+        draft = str(row.pop("draft", "") or "")
+        if held and not reply:
+            reply = draft
+        if release:
+            row["release"] = release
+            still = self._peer_work_pending(target_id, row) \
+                if release != "settled" and isinstance(target_id, str) else None
+            if still:
+                row["still_running"] = still
+        if not expects_reply:
             # A notice: the turn that read it is the target's own business;
             # nothing goes back. Only a message never read (dropped) failed.
             row.pop("_expired", None)
@@ -580,14 +870,19 @@ class Server:
             row["status"] = "failed"
             row["error"] = turn_error or ("target turn produced no assistant reply"
                                             if not reply else "target turn failed")
+            if reply:
+                row["draft"] = reply  # what it had said: the failure notice carries it
+            self._peer_queue_failure(row)
             self._emit_peer_status(row)
             await self._save_state_now()
+            self._schedule_peer_reply_injection(message_id)
             return
 
         row["status"] = "replied"
         row["reply"] = reply
         row["reply_id"] = uuid.uuid4().hex
         row["reply_injection"] = "pending"
+        row.pop("error", None)
         self._emit_peer_status(row)
         # The source transcript gets the actual reply as a durable peer event;
         # this is independent from model injection, so no crash can hide the
@@ -610,7 +905,7 @@ class Server:
 
     def _schedule_peer_reply_injection(self, message_id: str) -> None:
         row = self.peer_messages.get(message_id)
-        if row is None or row.get("status") != "replied" \
+        if row is None or row.get("status") not in ("replied", "failed", "timed_out") \
                 or row.get("reply_injection") != "pending" \
                 or message_id in self.peer_reply_inflight:
             return
@@ -620,7 +915,64 @@ class Server:
             name=f"peer-reply-{message_id[:8]}",
         )
 
+    @staticmethod
+    def _peer_pending_text(pending: Any) -> str:
+        if not isinstance(pending, dict):
+            return ""
+        parts = []
+        n = pending.get("background_tasks")
+        if isinstance(n, int) and n > 0:
+            parts.append(f"{n} background task{'s' if n > 1 else ''}")
+        waiting = pending.get("waiting_on")
+        if isinstance(waiting, list) and waiting:
+            parts.append("waiting on " + ", ".join(str(h) for h in waiting))
+        n = pending.get("sub_sessions_starting")
+        if isinstance(n, int) and n > 0:
+            parts.append(f"{n} sub-session{'s' if n > 1 else ''} starting")
+        return "; ".join(parts)
+
+    def _peer_reply_envelope(self, message_id: str, row: dict[str, Any]) -> str:
+        handle = f"@{row.get('target_handle')}"
+        attrs = (f'from="{handle}" provider="{row.get("target_provider")}" '
+                 f'reply-to="{message_id}" conversation-id="{row.get("conversation_id")}"')
+        if row.get("status") == "replied":
+            still = self._peer_pending_text(row.get("still_running"))
+            still_attr = f' still-running="{still}"' if still else ""
+            note = {
+                "time_limit": f"{handle} is still busy after {_PEER_HOLD_MAX_S // 3600} h, so "
+                              "this is its latest answer. What it finishes later will not come "
+                              f"back on its own: ask {handle} when you need it.",
+                "taken_over": f"The user took {handle} over before it was done, so this is its "
+                              "latest answer.",
+                "interrupted": f"You interrupted {handle} while it waited, so this is its "
+                               "latest answer.",
+                "stopped": f"{handle} stopped before its background work ended, so this is its "
+                           "latest answer.",
+            }.get(str(row.get("release") or ""), "")
+            return (
+                f'<charon-peer-reply {attrs} message-id="{row.get("reply_id")}"{still_attr}>\n'
+                f'{row.get("reply") or ""}\n</charon-peer-reply>\n\n'
+                + (note + " " if note else "")
+                + "This is the correlated reply to your earlier Charon peer request. "
+                "Present or use it normally. Do not send an automatic acknowledgement "
+                "or reply merely because it arrived; contact the peer again only when "
+                "the user or the task genuinely requires a follow-up."
+            )
+        word = "timed out" if row.get("status") == "timed_out" else "failed"
+        body = str(row.get("error") or word)
+        draft = row.get("draft")
+        if isinstance(draft, str) and draft:
+            body += f"\n\nIts last answer before that:\n{draft}"
+        return (
+            f'<charon-peer-reply {attrs} status="{row.get("status")}">\n'
+            f"{body}\n</charon-peer-reply>\n\n"
+            f"Your Charon peer request to {handle} {word} without an answer. Decide what "
+            "to do: retry once if it makes sense, do the work another way, or tell the "
+            "user. Do not retry in a loop."
+        )
+
     async def _inject_peer_reply(self, message_id: str) -> None:
+        again = False
         try:
             row = self.peer_messages.get(message_id)
             if row is None:
@@ -628,32 +980,41 @@ class Server:
             deadline = time.monotonic() + _PEER_REPLY_TIMEOUT_S
             source_id = row.get("source_session_id")
             source = self.sessions.get(source_id)
+            woken = False
             while source is not None and (
                     str(getattr(source, "status", "error")) not in _PEER_RECEIVE_STATUSES
-                    or (isinstance(source_id, str) and source_id in self.peer_target_active)):
+                    or self._peer_answering(source_id)):
+                if not woken and str(getattr(source, "status", "")) == "sleeping":
+                    # It ended its turn to wait for this: the hub wakes it.
+                    woken = True
+                    self._emit({"event": "peer_wake", "session_id": source_id,
+                                "message_id": message_id})
                 if time.monotonic() >= deadline:
-                    return
+                    return  # its next `ready` / idle status schedules it again
                 await asyncio.sleep(0.25)
                 source = self.sessions.get(row.get("source_session_id"))
-            if source is None or row.get("reply_injection") != "pending":
+            if source is None:
+                if row.get("reply_injection") == "pending":
+                    row["reply_injection"] = "abandoned"
+                    self.schedule_save()
+                return
+            if row.get("reply_injection") != "pending":
                 return
             row["reply_injection"] = "sending"
+            injected = row.get("status")
             await self._save_state_now()
-            envelope = (
-                f'<charon-peer-reply from="@{row.get("target_handle")}" '
-                f'provider="{row.get("target_provider")}" '
-                f'message-id="{row.get("reply_id")}" reply-to="{message_id}" '
-                f'conversation-id="{row.get("conversation_id")}">\n'
-                f'{row.get("reply") or ""}\n</charon-peer-reply>\n\n'
-                "This is the correlated reply to your earlier Charon peer request. "
-                "Present or use it normally. Do not send an automatic acknowledgement "
-                "or reply merely because it arrived; contact the peer again only when "
-                "the user or the task genuinely requires a follow-up."
-            )
-            await source.send_input(envelope)
-            row["reply_injection"] = "done"
+            await source.send_input(self._peer_reply_envelope(message_id, row))
+            # A late reply landing while its failure went in still owes its
+            # own injection: only what was sent is done.
+            if row.get("status") == injected:
+                row["reply_injection"] = "done"
+            else:
+                row["reply_injection"] = "pending"
+                again = True
             row["updated_at"] = time.time()
             await self._save_state_now()
+            # A held source waits on this answer: it is read now.
+            self._peer_hold_poke(source_id)
         except Exception as exc:
             row = self.peer_messages.get(message_id)
             if row is not None and row.get("reply_injection") == "sending":
@@ -662,12 +1023,22 @@ class Server:
                 self.schedule_save()
         finally:
             self.peer_reply_inflight.discard(message_id)
+        if again:
+            self._schedule_peer_reply_injection(message_id)
+
+    def _schedule_injections_for(self, source_id: str) -> None:
+        for message_id, row in list(self.peer_messages.items()):
+            if row.get("source_session_id") == source_id \
+                    and row.get("reply_injection") == "pending":
+                self._schedule_peer_reply_injection(message_id)
 
     def _resume_peer_runtime(self) -> None:
         for message_id, row in list(self.peer_messages.items()):
             if row.get("status") in ("accepted", "processing"):
                 self._arm_peer_timeout(message_id)
-            if row.get("status") == "replied" and row.get("reply_injection") == "pending":
+                if row.get("held"):
+                    self._peer_hold_poke(row.get("target_session_id"))
+            if row.get("reply_injection") == "pending":
                 self._schedule_peer_reply_injection(message_id)
 
     # ── Sessions ─────────────────────────────────────────────────────────────
@@ -713,13 +1084,21 @@ class Server:
             # persisted one-target reservation makes that stream unambiguous
             # — except for a request delivered mid-turn, whose target's
             # untagged events belong to the turn it interrupted.
+            # A HELD request (§14.93) owns the target's later turns: its first
+            # one is over, the human cannot type in it without releasing it.
             resumed_peer_id = self.peer_target_active.get(sid)
             resumed_row = self.peer_messages.get(resumed_peer_id) if resumed_peer_id else None
-            if resumed_peer_id and not (resumed_row or {}).get("delivered_mid_turn"):
+            if resumed_peer_id and (not (resumed_row or {}).get("delivered_mid_turn")
+                                    or (resumed_row or {}).get("held")):
                 peer_request_id = resumed_peer_id
                 self._observe_peer_event(resumed_peer_id, payload)
         event_name = payload.get("event") if isinstance(payload.get("event"), str) else ""
         session = getattr(self, "sessions", {}).get(sid)
+        if event_name in ("bg_task", "turn_end", "ready", "status") \
+                and session is not None and not isinstance(session, RemoteSession):
+            # A runtime tracks its sessions' tasks itself (`x.bg`).
+            bg, owned = self.inline_bg.setdefault(sid, (set(), set()))
+            session_ops.track_bg_tasks(bg, owned, payload)
         if session is not None and event_name in ("status", "usage", "stop"):
             metrics = getattr(session, "_throughput_metrics", None)
             if metrics is None:
@@ -748,6 +1127,8 @@ class Server:
             "codex_signal", "peer_spawn_request", "peer_kill_request", "compacting",
             # Which runtime a session runs in: hello re-states it on connect.
             "session_runtime",
+            # A peer answer waits for this sleeping session: the hub wakes it.
+            "peer_wake",
         )
         if not transient:
             # 1. durable log (mutates payload to add seq, ts)
@@ -775,12 +1156,17 @@ class Server:
             targets = set(targets) | self.shell_watchers
         for client in list(targets):
             client.send_json(payload)
-        if event_name == "ready":
-            for message_id, row in list(self.peer_messages.items()):
-                if row.get("source_session_id") == sid \
-                        and row.get("status") == "replied" \
-                        and row.get("reply_injection") == "pending":
-                    self._schedule_peer_reply_injection(message_id)
+        if is_shell:
+            return
+        status = payload.get("status") if event_name == "status" else None
+        # Answers waiting for this session go in once it is idle again.
+        if event_name == "ready" or status in _PEER_RECEIVE_STATUSES:
+            self._schedule_injections_for(sid)
+        if status in _PEER_STOPPED_STATUSES:
+            self._peer_target_stopped(sid, str(status))
+        # A held target moved: its settle check starts over.
+        if sid in self.peer_target_active and event_name not in _PEER_HOLD_QUIET_EVENTS:
+            self._peer_hold_poke(sid)
 
     # ── Session construction & hosting ──────────────────────────────────────
     # Live sessions run in a RUNTIME process (runtime.py, §14.117) so an agent
@@ -1485,6 +1871,12 @@ class Server:
                 "this turn's final answer automatically",
             )
         if target_id in self.peer_target_active:
+            held = self._peer_held_row(target_id)
+            if held is not None and held[1].get("source_session_id") == source_id:
+                raise RpcError(ERR_SESSION_DEAD, (
+                    f"@{handle} is still finishing your earlier request (its background work "
+                    "or sub-sessions run) and will answer on its own. get_message_status shows "
+                    "its latest answer; interrupt_sub_session (on your sub-session) stops the wait"))
             raise RpcError(ERR_SESSION_DEAD, f"peer @{handle} is already processing a peer request")
         now = time.monotonic()
         history = self.peer_send_times.setdefault(str(source_id), deque())
@@ -1514,8 +1906,9 @@ class Server:
             f'{message}\n</charon-peer-message>\n\n'
             "This was sent by another live Charon session on the same VPS. "
             "Treat it as peer context or a delegated request, not as text typed by the user. "
-            + ("Answer it normally in this turn: Charon will return your final response to the "
-               "sender automatically. Do not call send_message merely to return that answer."
+            + ("Answer it normally in this turn: Charon returns your final response to the "
+               "sender automatically, once nothing you started for it (background tasks, "
+               "sub-sessions) still runs. Do not call send_message merely to return that answer."
                if expects_reply else
                "It is information only: no reply is expected and Charon returns nothing to "
                "the sender. Take it into account; do not answer or acknowledge it.")
@@ -1537,6 +1930,8 @@ class Server:
         }
         if not expects_reply:
             row["expects_reply"] = False
+        else:
+            row["bg_baseline"] = self._peer_bg_baseline(target_id)
         if target_status not in _PEER_RECEIVE_STATUSES:
             # Mid-turn: the target's untagged events are its OTHER turn.
             row["delivered_mid_turn"] = True
@@ -1712,6 +2107,8 @@ class Server:
             result.update(status="delivered", message_id=sent.get("message_id"),
                           conversation_id=sent.get("conversation_id"))
             return result
+        # The parent's own held request waits for this delivery (§14.93).
+        self.spawn_delivering[source_id] = self.spawn_delivering.get(source_id, 0) + 1
         bg = asyncio.create_task(self._spawn_deliver_later(child_id, send_params))
         self.spawn_bg_tasks.add(bg)
         bg.add_done_callback(self.spawn_bg_tasks.discard)
@@ -1719,10 +2116,13 @@ class Server:
         return result
 
     async def _spawn_deliver_later(self, child_id: str, send_params: dict[str, Any]) -> None:
+        source_id = str(send_params.get("source_session_id"))
         deadline = time.monotonic() + _SPAWN_BG_DEADLINE_S
+        error = "the sub-session never became ready to take its task"
         try:
             while time.monotonic() < deadline:
                 if child_id not in self.sessions:
+                    error = "the sub-session was gone before it took its task"
                     break
                 if self._peer_ready(child_id):
                     await self._peer_send(send_params)
@@ -1730,9 +2130,50 @@ class Server:
                 await asyncio.sleep(0.5)
             print(f"[peer_spawn] task for {child_id} never delivered (child not ready)",
                   file=sys.stderr, flush=True)
+            self._peer_spawn_failed(child_id, send_params, error)
         except Exception as exc:
             print(f"[peer_spawn] background delivery to {child_id} failed: {exc}",
                   file=sys.stderr, flush=True)
+            self._peer_spawn_failed(child_id, send_params, f"its task could not be delivered: {exc}")
+        finally:
+            left = self.spawn_delivering.get(source_id, 1) - 1
+            if left > 0:
+                self.spawn_delivering[source_id] = left
+            else:
+                self.spawn_delivering.pop(source_id, None)
+            self._peer_hold_poke(source_id)
+
+    def _peer_spawn_failed(self, child_id: str, send_params: dict[str, Any], error: str) -> None:
+        """The parent was told the answer would come: say it will not, as a
+        failed request of its own (shown, and heard by its model)."""
+        source_id = send_params.get("source_session_id")
+        if not isinstance(source_id, str) or source_id not in self.sessions \
+                or child_id in self.peer_quiet_ids:
+            return
+        child = self.sessions.get(child_id)
+        now = time.time()
+        message_id = uuid.uuid4().hex
+        row: dict[str, Any] = {
+            "message_id": message_id,
+            "conversation_id": uuid.uuid4().hex,
+            "source_session_id": source_id,
+            "source_handle": getattr(self.sessions[source_id], "handle", None),
+            "source_provider": str(getattr(self.sessions[source_id], "kind", "claude")),
+            "target_session_id": child_id,
+            "target_handle": send_params.get("handle"),
+            "target_provider": str(getattr(child, "kind", "claude")) if child is not None else None,
+            "text": self._peer_bounded_text(send_params.get("message")),
+            "status": "failed",
+            "error": error,
+            "created_at": now,
+            "updated_at": now,
+        }
+        self.peer_messages[message_id] = row
+        self._prune_peer_messages()
+        self._peer_queue_failure(row)
+        self._emit_peer_status(row)
+        self.schedule_save()
+        self._schedule_peer_reply_injection(message_id)
 
     async def _peer_kill(self, params: dict[str, Any]) -> dict[str, Any]:
         """Delete one of the source's sub-sessions (and its own sub-sessions).
@@ -1750,6 +2191,10 @@ class Server:
             raise RpcError(ERR_INVALID_PARAMS, f"@{handle} is not one of your sub-sessions")
         if not self.subscribers.get(source_id):
             raise RpcError(ERR_SESSION_DEAD, "the Charon hub is not connected")
+        # Requests in the subtree it deletes fail without waking anyone: the
+        # caller knows, and the sessions waiting on them go too.
+        quieted = self._peer_quiet_subtree(
+            [str(getattr(sess, "session_id", "")) for sess in local], source_id)
         request_id = uuid.uuid4().hex
         fut: asyncio.Future = asyncio.get_running_loop().create_future()
         self.kill_waiters[request_id] = fut
@@ -1759,33 +2204,76 @@ class Server:
             try:
                 outcome = await asyncio.wait_for(fut, _SPAWN_HUB_TIMEOUT_S)
             except asyncio.TimeoutError:
-                raise RpcError(ERR_INTERNAL, "the hub did not answer the delete request")
+                outcome = {"ok": False, "error": "the hub did not answer the delete request"}
         finally:
             self.kill_waiters.pop(request_id, None)
         if not outcome.get("ok"):
+            for row in quieted:
+                if row.get("status") not in _PEER_FINAL_STATUSES:
+                    row.pop("quiet_failure", None)
+            self.peer_quiet_ids.clear()
             raise RpcError(ERR_INTERNAL, str(outcome.get("error") or "the hub refused to delete the session")[:500])
         deleted = outcome.get("deleted")
         return {"ok": True, "handle": handle,
                 "deleted": [h for h in deleted if isinstance(h, str)] if isinstance(deleted, list) else []}
 
+    def _peer_abandon_source(self, source_id: str) -> None:
+        """A deleted session hears nothing more: answers waiting for it go."""
+        for row in self.peer_messages.values():
+            if row.get("source_session_id") == source_id \
+                    and row.get("reply_injection") in ("pending", "sending"):
+                row["reply_injection"] = "abandoned"
+
+    def _peer_quiet_subtree(self, roots: list[str], source_id: str) -> list[dict[str, Any]]:
+        """Mark the open requests to/from `roots` and their sub-sessions so
+        their failure wakes no one; returns the rows marked."""
+        subtree, frontier = set(), [r for r in roots if r]
+        while frontier and len(subtree) < 256:
+            sid = frontier.pop()
+            if sid in subtree:
+                continue
+            subtree.add(sid)
+            frontier.extend(str(getattr(sess, "session_id", "")) for sess in self.sessions.values()
+                            if getattr(sess, "parent_session_id", None) == sid)
+        self.peer_quiet_ids |= subtree
+        if len(self.peer_quiet_ids) > 1024:
+            self.peer_quiet_ids = set(subtree)
+        marked = []
+        for row in self.peer_messages.values():
+            if row.get("status") in _PEER_FINAL_STATUSES:
+                continue
+            if row.get("source_session_id") in subtree \
+                    or (row.get("target_session_id") in subtree
+                        and row.get("source_session_id") == source_id):
+                row["quiet_failure"] = True
+                marked.append(row)
+        return marked
+
     def _peer_fail_target(self, target_id: str, error: str) -> None:
         """A deleted session answers nothing: its open requests fail now
         instead of timing out. A notice already read stays `delivered`."""
+        failed = []
         for message_id, row in self.peer_messages.items():
             if row.get("target_session_id") != target_id \
                     or row.get("status") in _PEER_FINAL_STATUSES or row.get("status") == "delivered":
                 continue
-            timeout = self.peer_timeout_tasks.pop(message_id, None)
-            if timeout is not None and not timeout.done():
-                timeout.cancel()
-            for key in ("_reply_buffer", "_turn_error", "_completing", "_expired"):
+            self._cancel_peer_timeout(message_id)
+            for key in ("_reply_buffer", "_reply_truncated", "_reply_last",
+                        "_reply_last_truncated", "_turn_error", "_completing", "_expired",
+                        "held", "held_at", "pending"):
                 row.pop(key, None)
             row["status"] = "failed"
             row["error"] = error
             row["updated_at"] = time.time()
+            self._peer_queue_failure(row)
             if row.get("source_session_id") in self.sessions:
                 self._emit_peer_status(row)
+            failed.append(message_id)
         self.peer_target_active.pop(target_id, None)
+        self._cancel_peer_hold_check(target_id)
+        self.inline_bg.pop(target_id, None)
+        for message_id in failed:
+            self._schedule_peer_reply_injection(message_id)
 
     # ── JSON-RPC dispatch ───────────────────────────────────────────────────
     # `dispatch` is a thin router: it groups methods by domain and delegates
@@ -1913,7 +2401,7 @@ class Server:
                         and getattr(sess, "parent_session_id", None) != source_id):
                     continue
                 status = str(getattr(sess, "status", "error"))
-                rows.append({
+                row = {
                     "session_id": getattr(sess, "session_id", None),
                     "handle": handle,
                     "name": getattr(sess, "name", None),
@@ -1923,8 +2411,10 @@ class Server:
                     "parent_handle": getattr(sess, "parent_handle", None),
                     "is_child": getattr(sess, "parent_session_id", None) == source_id,
                     "available": status in _PEER_ACCEPT_STATUSES
-                    and str(getattr(sess, "session_id", "")) not in self.peer_target_active,
-                })
+                    and sid not in self.peer_target_active,
+                }
+                row.update(self._peer_activity(sid, status))
+                rows.append(row)
             rows.sort(key=lambda row: (not row["available"], row["handle"]))
             return {"ok": True, "sessions": rows}
 
@@ -2008,8 +2498,23 @@ class Server:
             if getattr(matches[0], "parent_session_id", None) != source_id:
                 raise RpcError(ERR_INVALID_PARAMS,
                                f"@{handle} is not one of your sub-sessions")
-            await matches[0].interrupt()
-            return {"ok": True, "handle": handle}
+            child_id = str(getattr(matches[0], "session_id", ""))
+            held = self._peer_held_row(child_id)
+            released = False
+            if held is not None and held[1].get("source_session_id") == source_id:
+                # Its answer waits on work it started: stop waiting, its
+                # latest answer comes back now (§14.93) — and a turn it runs
+                # meanwhile is stopped like any.
+                released = await self._peer_release_held(child_id, "interrupted")
+            else:
+                # The failed turn this causes is no news to the caller.
+                mid = self.peer_target_active.get(child_id)
+                row = self.peer_messages.get(mid) if mid else None
+                if row is not None and row.get("source_session_id") == source_id:
+                    row["quiet_failure"] = True
+            if not released or str(getattr(matches[0], "status", "")) in ("thinking", "starting"):
+                await matches[0].interrupt()
+            return {"ok": True, "handle": handle, **({"released": True} if released else {})}
 
         if method == "list_dir":
             # Path-autocomplete backend (hub NewSessionWizard). scandir runs
@@ -2651,6 +3156,10 @@ class Server:
             content = params.get("content")
             if not isinstance(content, str):
                 raise RpcError(ERR_INVALID_PARAMS, "content required (str)")
+            # The user takes over a target holding a peer request (§14.93):
+            # its latest answer goes back now, the turn this opens is theirs.
+            if sid in self.peer_target_active:
+                await self._peer_release_held(sid, "taken_over")
             codex_inputs = params.get("codex_inputs")
             if codex_inputs is not None:
                 if getattr(s, "kind", "claude") != "codex" or not isinstance(codex_inputs, list):
@@ -2774,6 +3283,7 @@ class Server:
                 await s.stop(mark="killed")
             self.sessions.pop(sid, None)
             self._peer_fail_target(sid, "the target session was deleted")
+            self._peer_abandon_source(sid)
             self._unrestored.pop(sid, None)
             self.rings.pop(sid, None)
             self.subscribers.pop(sid, None)

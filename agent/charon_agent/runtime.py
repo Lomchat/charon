@@ -154,7 +154,7 @@ class _Slot:
     """One hosted session. `released` silences a dropped object's late emits
     (a force-stopped run winding down in the background)."""
 
-    __slots__ = ("sid", "session", "released", "bg", "last_input")
+    __slots__ = ("sid", "session", "released", "bg", "bg_owned", "last_input")
 
     def __init__(self, sid: str) -> None:
         self.sid = sid
@@ -162,23 +162,14 @@ class _Slot:
         self.released = False
         # Background tasks the provider reported started and not yet ended:
         # stopping the CLI would kill them (§14.91). Kept HERE, not in the
-        # daemon, so a daemon restart forgets nothing.
+        # daemon, so a daemon restart forgets nothing (mirrored as `x.bg`:
+        # a peer request waits for them, §14.93).
         self.bg: set[str] = set()
+        self.bg_owned: set[str] = set()
         self.last_input = 0.0
 
     def track(self, payload: dict[str, Any]) -> None:
-        name = payload.get("event")
-        if name == "bg_task":
-            task_id = payload.get("task_id")
-            if not isinstance(task_id, str) or not task_id:
-                return
-            if payload.get("terminal") is True or payload.get("kind") == "finished":
-                self.bg.discard(task_id)
-            elif payload.get("kind") == "started":
-                self.bg.add(task_id)
-        elif name == "ready" or (name == "status" and payload.get("status") in (
-                "sleeping", "error", "killed")):
-            self.bg.clear()
+        session_ops.track_bg_tasks(self.bg, self.bg_owned, payload)
 
     def blocker(self, *, recent: bool = True) -> str | None:
         """`session_ops.migration_blocker` plus what only the runtime saw.
@@ -267,6 +258,7 @@ class Runtime:
             x = session_ops.session_extras(s)
             x["blocker"] = slot.blocker(recent=False)
             x["bg"] = len(slot.bg)
+            x["bg_ids"] = sorted(slot.bg)
             snap = {"sid": sid, "info": s.to_info(), "persist": s.to_persist(), "x": x}
             key = json.dumps(snap, sort_keys=True, default=str)
         except Exception:

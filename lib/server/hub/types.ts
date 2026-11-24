@@ -2,6 +2,7 @@
 // SSE clients). We keep a wide TS union + guard helpers.
 import type { ClaudeEffort, ClaudeMode, SessionProvider } from '@/lib/sessionCapabilities';
 import type { SessionErrorPayload } from '@/lib/sessionError';
+import type { PeerPending } from '@/lib/peerPending';
 import type { PermissionPrompt, PermissionSuggestion } from '@/lib/permissionSuggestions';
 /** A user row its provider has not read yet (`waiting_inputs`, lib/waitingInputs.ts). */
 export type WaitingInput = import('@/lib/waitingInputs').WaitingInput;
@@ -199,6 +200,8 @@ export type BridgeEvent =
       targetSessionId?: string; target?: string; targetProvider?: SessionProvider;
       text?: string; status: 'accepted' | 'processing' | 'replied' | 'delivered' | 'failed' | 'timed_out';
       error?: string; replyId?: string; rowId?: number;
+      /** Held (§14.93): what the target still waits on. */
+      pending?: PeerPending;
     }
   // turn_error (agent >= 0.36.0) = typed turn failure off AssistantMessage
   // .error (authentication_failed, billing_error, …). The same fact §14.65

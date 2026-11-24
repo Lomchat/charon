@@ -39,6 +39,7 @@ import { mergeSessionTokenUsage, type SessionTokenUsage } from '@/lib/sessionTok
 import { resolveAsyncQuestionMessages } from '@/lib/asyncQuestions';
 import { scheduledFireContent } from '@/lib/scheduledTasks';
 import { providerNoticeContent } from '@/lib/providerNotice';
+import { asPeerPending } from '@/lib/peerPending';
 import {
   appendThinkingMessage, applyThinkingFlushed, applyThinkingReopened, closeThinkingMessage,
   openThinkingCreatedAt, prependMessagePage, thinkingLaneSnapshot, thinkingRowIds, createThinkingLane,
@@ -1055,6 +1056,7 @@ export function applyFrame(s: TranscriptState, ev: SessionFrame, ctx: Transcript
         messageId: ev.messageId, conversationId: ev.conversationId, peerStatus: ev.status,
         peerTarget: ev.target ?? null, peerTargetSessionId: ev.targetSessionId ?? null,
         peerError: ev.error ?? null, fromProvider: ev.targetProvider ?? null,
+        peerPending: asPeerPending(ev.pending),
       };
       const idx = st.messages.findIndex((m) => m.id === message.id);
       st = { ...st, messages: idx < 0 ? [...st.messages, message]

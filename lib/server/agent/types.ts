@@ -433,7 +433,13 @@ export type AgentEvent = (
       target_provider?: AgentKind; text?: string;
       status: 'accepted' | 'processing' | 'replied' | 'delivered' | 'failed' | 'timed_out';
       error?: string; reply_id?: string;
+      // agent >= 0.144.0: the target's turn ended, the work it started did
+      // not — the request is HELD until it does (§14.93).
+      pending?: { background_tasks?: number; waiting_on?: string[]; sub_sessions_starting?: number };
     }
+  // TRANSIENT (agent >= 0.144.0): a peer answer waits for this SLEEPING
+  // session, which ended its turn to wait for it: the hub wakes it (§14.93).
+  | { event: 'peer_wake'; session_id: string; message_id?: string }
   // TRANSIENT (never logged): the parent's agent asks the hub to create a
   // sub-session (charon_peer `start_sub_session`). Hub-internal, never persisted.
   | {

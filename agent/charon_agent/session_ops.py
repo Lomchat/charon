@@ -137,6 +137,34 @@ def live_task(s: Any) -> bool:
     return task is not None and not task.done()
 
 
+def track_bg_tasks(bg: set[str], owned: set[str], payload: dict[str, Any]) -> None:
+    """Background tasks a session started that are still running (§14.91),
+    from its own events. `owned`: commands a sub-agent runs in its foreground,
+    which the Stop hook's `background_tasks` never lists. That list is the
+    CLI's word on what is alive at a turn's end: a task it leaves out has
+    ended even if its finish was never seen."""
+    name = payload.get("event")
+    if name == "bg_task":
+        task_id = payload.get("task_id")
+        if not isinstance(task_id, str) or not task_id:
+            return
+        if payload.get("terminal") is True or payload.get("kind") == "finished":
+            bg.discard(task_id)
+            owned.discard(task_id)
+        elif payload.get("kind") == "started":
+            bg.add(task_id)
+            if payload.get("owned_by_subagent") is True:
+                owned.add(task_id)
+    elif name == "turn_end" and isinstance(payload.get("background_tasks"), list):
+        alive = {t for t in payload["background_tasks"] if isinstance(t, str)}
+        bg.intersection_update(alive | owned)
+        owned.intersection_update(bg)
+    elif name == "ready" or (name == "status" and payload.get("status") in (
+            "sleeping", "error", "killed")):
+        bg.clear()
+        owned.clear()
+
+
 def migration_blocker(s: Any) -> str | None:
     """Why stopping this session NOW would interrupt something, or None.
 

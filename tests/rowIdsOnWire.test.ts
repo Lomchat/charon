@@ -166,6 +166,7 @@ const FIXTURES: { [K in AgentEvent['event']]: Scenario } = {
   // Hub-internal and transient: no row, no frame (empty id = ignored).
   peer_spawn_request: { events: [{ event: 'peer_spawn_request', request_id: '', task: 't', seq: null }] },
   peer_kill_request: { events: [{ event: 'peer_kill_request', request_id: '', handle: 'kid', seq: null }] },
+  peer_wake: { events: [{ event: 'peer_wake', message_id: 'm', seq: null }] },
   shell_idle: { events: [{ event: 'shell_idle', shell_id: 's1', idle_seconds: 1, burst_seconds: 1, burst_bytes: 1, seq: null }] },
 };
 

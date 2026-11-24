@@ -21,7 +21,8 @@ import {
 import type { PermissionMode } from '@/lib/server/hub/types';
 import type { WorkerEvent, WorkerStatus, AccountUsage, WaitingInput } from '@/lib/server/hub/types';
 import { getAgentClientForVpsId } from './AgentClientPool';
-import { handlePeerKillRequest, handlePeerSpawnRequest } from '@/lib/server/hub/subSessions';
+import { handlePeerKillRequest, handlePeerSpawnRequest, wakeForPeerAnswer } from '@/lib/server/hub/subSessions';
+import { peerPendingFromWire } from '@/lib/peerPending';
 import type { AgentSessionInfo } from './types';
 import { sendPushToAll } from '@/lib/server/hub/webPush';
 import {
@@ -2691,9 +2692,16 @@ export class SessionStream {
         });
         break;
       }
+      case 'peer_wake': {
+        // Hub-internal and transient: an answer awaits this sleeping session,
+        // which ended its turn to wait for it (§14.93). A replay never wakes.
+        if (!this.isReplaying) void wakeForPeerAnswer(this.id);
+        break;
+      }
       case 'peer_message_status': {
         if (this._replayAlreadyPersisted(ev)) { this._dropReplayedAssistantBuffer(); break; }
         if (!this._flushAssistant()) break; // order-preserving stop (16.3)
+        const pending = peerPendingFromWire(ev.pending);
         const payload = {
           type: 'peer_message_status' as const,
           messageId: ev.message_id,
@@ -2705,6 +2713,7 @@ export class SessionStream {
           status: ev.status,
           ...(ev.error ? { error: ev.error } : {}),
           ...(ev.reply_id ? { replyId: ev.reply_id } : {}),
+          ...(pending ? { pending } : {}),
         };
         this._broadcast(withRowId(payload, this._persist('event', payload)));
         break;
@@ -5494,11 +5503,14 @@ export class SessionStream {
     } catch { return false; }
   }
 
-  /** A sub-session's finish (§14.93) is never announced: its parent gets the
-   *  reply (or the failure) and its own finish notifies. Gates still do: they
-   *  block the parent too. Read per event: a re-rooted child speaks again. */
+  /** A sub-session's finish (§14.93) is not announced when its parent gets
+   *  it — the reply or the failure of the request it was answering — and the
+   *  parent's own finish notifies. A turn the user drove (or nobody
+   *  correlated) speaks like any session's. Gates still do: they block the
+   *  parent too. Read per event: a re-rooted child speaks again. */
   private _silentFinish(event: NotificationEvent): boolean {
     if (!SILENT_SUB_SESSION_EVENTS.has(event)) return false;
+    if (!(this.peerDrivenFinish ?? this._peerTurnFromHistory())) return false;
     try {
       return !!db.select({ parent: agentSessions.parentSessionId }).from(agentSessions)
         .where(eq(agentSessions.id, this.id)).get()?.parent;

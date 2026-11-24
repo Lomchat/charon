@@ -1,6 +1,7 @@
 // Types for the chat view (HubPanel + SessionView +
 import type { SessionProvider } from '@/lib/sessionCapabilities';
 import type { PermissionPrompt, PermissionSuggestion } from '@/lib/permissionSuggestions';
+import type { PeerPending } from '@/lib/peerPending';
 // useSessionStream). Before this file, the desktop and the old separate
 // mobile view each redeclared the same types locally (Msg, ToolCallEntry,
 // EditSnapshot, PermissionRequest, PendingQuestion, PendingExitPlan)
@@ -48,6 +49,8 @@ export type Msg = {
   peerTarget?: string | null;
   peerTargetSessionId?: string | null;
   peerError?: string | null;
+  /** Held (§14.93): the target's turn ended, what it started still runs. */
+  peerPending?: PeerPending | null;
 };
 
 export type PlanStep = { step: string; status: string };

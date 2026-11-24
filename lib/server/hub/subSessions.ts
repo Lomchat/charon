@@ -25,6 +25,9 @@ const MAX_ANCESTOR_WALK = 16;
 
 // Process-wide (§14.106): module copies may load it more than once.
 const g = globalThis as unknown as { __charonSpawnSeen?: Map<string, number> };
+// Sessions being woken for a peer answer (`peer_wake`), one wake at a time.
+const gw = globalThis as unknown as { __charonPeerWakes?: Set<string> };
+const waking = (gw.__charonPeerWakes ??= new Set<string>());
 const seen = (g.__charonSpawnSeen ??= new Map<string, number>());
 // Spawns past their limit check but without a child row yet: counted with the
 // live children so parallel requests cannot all pass before any row exists.
@@ -263,6 +266,26 @@ export async function handlePeerSpawnRequest(parentId: string, ev: SpawnRequest)
     } catch (e) {
       console.warn(`[sub-sessions] orphan child ${createdId} cleanup failed: ${(e as Error)?.message ?? e}`);
     }
+  }
+}
+
+/** A peer answer (reply or failure) waits for this SLEEPING session, which
+ *  ended its turn to wait for it (§14.93): resume it — the daemon injects the
+ *  answer at its `ready`. An archived session stays asleep. */
+export async function wakeForPeerAnswer(sessionId: string): Promise<void> {
+  if (waking.has(sessionId)) return;
+  const row = db.select({ status: agentSessions.status, archived: agentSessions.archived })
+    .from(agentSessions).where(eq(agentSessions.id, sessionId)).get();
+  if (!row || row.archived || row.status !== 'sleeping') return;
+  waking.add(sessionId);
+  try {
+    const { resumeSession } = await import('@/lib/server/agent/sessionOps');
+    await resumeSession(sessionId);
+    console.log(`[sub-sessions] ${sessionId} woken for a peer answer`);
+  } catch (e) {
+    console.warn(`[sub-sessions] waking ${sessionId} for a peer answer failed: ${(e as Error)?.message ?? e}`);
+  } finally {
+    waking.delete(sessionId);
   }
 }
 
