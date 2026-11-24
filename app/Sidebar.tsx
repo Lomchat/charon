@@ -1,5 +1,5 @@
 'use client';
-import { Fragment, memo, useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore, type CSSProperties } from 'react';
+import { Fragment, memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore, type CSSProperties } from 'react';
 import type { Vps, VpsFolder, VpsPath } from '@/lib/db/schema';
 import type { SessionListItem, InstallInfo, AgentKind, VpsStalenessBaselines } from '@/lib/types/api';
 import { IconAlarm, IconArrowClockwise, IconArrowRepeat, IconCheck2Circle, IconClockHistory, IconLightningCharge, IconEyeSlash, IconListUl, IconMoon, IconPencil, IconRobot, IconServers, IconTerminal, IconTrash, IconWrench } from './icons';
@@ -15,6 +15,7 @@ import { useReorder, type ReorderItemProps } from './useReorder';
 import SidebarOffscreenPills, { CollapsedAttention } from './SidebarOffscreenPills';
 import { buildOffscreenTargets, collapsedAttentionCounts, type OffscreenTarget } from './sidebarOffscreen';
 import { REVEAL_TTL_MS, revealScrollDelta } from './sidebarReveal';
+import { captureMiddleAnchor, restoreAnchor, type ScrollAnchor } from './sidebarScrollAnchor';
 import { colorToCss } from './SessionContextMenu';
 import { useLongPress } from './useLongPress';
 import { useLatest, useStableCallback, useStableOptionalCallback } from './useStable';
@@ -413,7 +414,16 @@ export default function Sidebar({
       return !v;
     });
   }
+  // The list's scroller (`.cs-scroll`).
+  const scrollRef = useRef<HTMLDivElement | null>(null);
+  // Every card changes height: the one in the middle of the list stays there.
+  const detailsAnchor = useRef<ScrollAnchor | null>(null);
+  useLayoutEffect(() => {
+    restoreAnchor(scrollRef.current, detailsAnchor.current);
+    detailsAnchor.current = null;
+  }, [showDetails]);
   function toggleShowDetails() {
+    detailsAnchor.current = captureMiddleAnchor(scrollRef.current);
     setShowDetails((v) => {
       const next = !v;
       storeFlag(DETAILS_KEY, next);
@@ -698,7 +708,6 @@ export default function Sidebar({
 
   // Lit rows above/below the visible part of the list (app/sidebarOffscreen.ts):
   // the ones the list holds now, anchored to the collapsed group hiding them.
-  const scrollRef = useRef<HTMLDivElement | null>(null);
   const knownFolderIds = new Set(vpsFolders.map((f) => f.id));
   const offscreenTargets = buildOffscreenTargets({
     folders: sortedFolders.map((folder) => ({
