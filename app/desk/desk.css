@@ -1512,6 +1512,7 @@
   border-width: 1px 0 0;
 }
 .desk .dk-sv .app-main .bgtasks-bar .bgtasks-more { display: none; }
+.desk .dk-sv .app-main .status-strips { display: contents; }
 
 /* ── Gates. A card (or the async strip) gives way before the conversation:
    it shrinks to a 32px strip and scrolls inside; its grip folds it. */

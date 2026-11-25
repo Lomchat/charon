@@ -1828,7 +1828,7 @@ export default function SessionView({
             (§14.91). Gating it meant a reader in conversation view — the
             usual choice on a phone, where the preference is per-browser —
             could neither see nor stop background work.
-            The wrapper is `display: contents` except on a phone holding two
+            The wrapper is `display: contents` except when it holds two
             strips or more: then they share ONE row (app.css). */}
         <div className="status-strips">
           <BgTasksBar tasks={bgTasks} olderEnded={bgOlderEnded} sessionId={sessionId} vpsId={vpsId} cwd={selected.cwd || null}
