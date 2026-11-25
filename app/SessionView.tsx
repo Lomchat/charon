@@ -1263,6 +1263,10 @@ export default function SessionView({
       measureChatScroll();
     });
   }, [measureChatScroll]);
+  // A layout change that is not a scroll (the chat shrinking under a bar or
+  // the recap, the newest bubble finishing its layout) moves the newest
+  // message's top out of view too: the pills re-read it. Stable for the memo.
+  const onChatResize = useStableCallback(() => handleChatScroll());
   // Cleared, not only cancelled: a session kept alive (HubPanel <Activity>)
   // unmounts its effects when hidden and mounts them again when shown.
   useEffect(() => () => {
@@ -1615,7 +1619,7 @@ export default function SessionView({
                   <div className="app-loadmore-indicator" role="status"><span className="app-history-loading-spinner" aria-hidden /></div>
                 )}
                 <MessageHistory key={`around-${detached.nonce}`}
-                  scrollerRef={chatBodyRef} windowRef={chatWindowRef} followNewest={false}
+                  scrollerRef={chatBodyRef} windowRef={chatWindowRef} followNewest={false} onResize={onChatResize}
                   siblings={siblings} onOpenPeerSession={onOpenSession}
                   onPeerRequestHover={hoverRequest} onPeerRequestJump={jumpToRequest}
                   peerReplyToById={NO_REPLIES}
@@ -1659,7 +1663,7 @@ export default function SessionView({
                     peerReplyTo={peerReplies.streamingReplyTo} onPeerRequestHover={hoverRequest} onPeerRequestJump={jumpToRequest} />
                 )}
                 <MessageHistory key="live"
-                  scrollerRef={chatBodyRef} windowRef={chatWindowRef}
+                  scrollerRef={chatBodyRef} windowRef={chatWindowRef} onResize={onChatResize}
                   siblings={siblings} onOpenPeerSession={onOpenSession}
                   onPeerRequestHover={hoverRequest} onPeerRequestJump={jumpToRequest}
                   peerReplyToById={peerReplies.replyToById}
@@ -1983,11 +1987,13 @@ const MessageHistory = memo(function MessageHistory({
   renderable, kind, vpsId, cwd, onReauth, authMsgId, continuableMsgId, schedulableMsgId, onContinue, onScheduleResume, onCancelScheduledResume, turnInFlight,
   limitMsgId, currentAccount, onContinueWithAccount, finishMsgId, finishCue,
   siblings, onOpenPeerSession, onPeerRequestHover, onPeerRequestJump, peerReplyToById, onForkFrom,
-  liveRow, substitute, selectedModel, scrollerRef, windowRef, followNewest = true,
+  liveRow, substitute, selectedModel, scrollerRef, windowRef, followNewest = true, onResize,
 }: {
   /** False for a window around a search hit: pages loaded toward the live
    *  end never move what is read (chatWindow.ts). */
   followNewest?: boolean;
+  /** The chat or a row changed size without a scroll (chatWindow.ts). */
+  onResize?: () => void;
   renderable: { msg: Msg; attached?: Msg }[];
   /** The chat column (the window's scroller) and the window's controller
    *  (chatWindow.ts): only the rows near the viewport are mounted. */
@@ -2037,7 +2043,7 @@ const MessageHistory = memo(function MessageHistory({
   const order = useMemo(() => [...renderable].reverse(), [renderable]);
   const keys = useMemo(() => order.map((e) => e.msg.id), [order]);
   const estimate = useCallback((i: number) => estimateRowHeight(order[i]!.msg), [order]);
-  const { start, end, bottomSpace, topSpace } = useChatWindow({ keys, estimate, scrollerRef, controllerRef: windowRef, followNewest });
+  const { start, end, bottomSpace, topSpace } = useChatWindow({ keys, estimate, scrollerRef, controllerRef: windowRef, followNewest, onResize });
   const rows = order.slice(start, end).map(({ msg, attached }) => {
     // One wrapper per row: the window measures it (`.vrow:empty` = a row
     // that draws nothing, no height and no gap).

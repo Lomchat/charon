@@ -24,6 +24,7 @@
 // measured at size 0; shown again, the layout effect re-measures.
 
 import { useEffect, useLayoutEffect, useRef, useState, type RefObject } from 'react';
+import { useLatest } from './useStable';
 
 /** Rows mounted on the first frame, before anything is measured. */
 const INITIAL_ROWS = 24;
@@ -60,8 +61,13 @@ export function useChatWindow(o: {
    *  paging toward the live end) never move what is read. True (the live
    *  transcript): as before — a reader away from the bottom sees them push. */
   followNewest?: boolean;
+  /** The chat or a mounted row changed size without a scroll (a bar or the
+   *  recap under it, a bubble finishing its layout): what reads the layout
+   *  (the scroll pills) reads it again. */
+  onResize?: () => void;
 }): { start: number; end: number; bottomSpace: number; topSpace: number } {
   const { keys, estimate, scrollerRef, controllerRef, followNewest = true } = o;
+  const onResizeRef = useLatest(o.onResize);
   const heights = useRef(new Map<string, number>()).current;
   const gapRef = useRef(10);
   const [range, setRange] = useState<Range>(() => ({
@@ -238,7 +244,7 @@ export function useChatWindow(o: {
       if (Number.isFinite(g)) gapRef.current = g;
     };
     readGap();
-    const ro = new ResizeObserver(() => { readGap(); schedule(); });
+    const ro = new ResizeObserver(() => { readGap(); schedule(); onResizeRef.current?.(); });
     roRef.current = ro;
     ro.observe(el);
     const onScroll = () => schedule();
