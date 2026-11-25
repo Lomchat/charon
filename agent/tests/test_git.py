@@ -631,13 +631,18 @@ class GitWorkspaceTest(unittest.TestCase):
         self.assertEqual(len(G.git_workspace(self.dir)["repos"]), 2)      # cached
         self.assertEqual(len(G.git_workspace(self.dir, refresh=True)["repos"]), 3)
 
-    def test_the_repo_cap_is_reported_not_silently_applied(self):
+    def test_the_repo_cap_keeps_the_shallowest_and_is_reported(self):
+        # Breadth-first by name: the cap drops the DEEPEST repos (nest/beta,
+        # though `nest` sorts before every r###), never an arbitrary set
+        # picked by directory-entry order.
+        made = []
         for i in range(G.MAX_REPOS + 3):
             p = os.path.join(self.dir, f"r{i:03d}")
             os.makedirs(p, exist_ok=True)
             sh(p, "init", "-q", "-b", "main")
+            made.append(p)
         found, truncated = G._discover_repos(self.dir, 3)
-        self.assertEqual(len(found), G.MAX_REPOS)
+        self.assertEqual(sorted(found), [self.roots[0], *made[:G.MAX_REPOS - 1]])
         self.assertTrue(truncated)
 
     def test_a_broken_dot_git_at_the_base_does_not_hide_the_projects(self):

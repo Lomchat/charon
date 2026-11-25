@@ -25,6 +25,7 @@ Safety rules baked in here, not in the caller:
 """
 from __future__ import annotations
 
+import collections
 import os
 import subprocess
 import time
@@ -55,7 +56,7 @@ NUMSTAT_MAX_PATHSPEC_CHARS = 200_000  # beyond: numstat the whole tree
 # has to be a known constant, not "however big this tree is".
 SCAN_MAX_DEPTH = 3           # levels below cwd we look for a .git
 SCAN_MAX_DIRS = 4000         # hard stop on directories visited per scan
-MAX_REPOS = 20               # repos reported for one workspace
+MAX_REPOS = 25               # repos reported for one workspace
 MULTI_MAX_FILES = 400        # per-repo file entries when there are several
 SCAN_TTL_S = 60.0            # discovery is cached; `refresh` bypasses it
 
@@ -504,27 +505,31 @@ def git_status(cwd: str, include_recent: bool = False,
 def _discover_repos(base: str, max_depth: int) -> tuple[list[str], bool]:
     """Repo toplevels at most `max_depth` levels BELOW `base`.
 
-    Returns (roots, truncated). Sorted, so the panel's order is stable between
-    polls instead of following directory-entry order.
+    Returns (roots, truncated), roots in SCAN order: shallowest first, each
+    level by name. The caller applies its own cap, then sorts for display.
 
     Deliberate rules:
+      * breadth-first, each directory's children by name: when the cap bites,
+        the repos kept are the shallowest, and always the same ones — never
+        whatever the directory-entry order happened to reach first.
       * a directory containing `.git` is a root and we DO NOT descend into it.
         Its submodules are its business; listing them as peers of the projects
         you opened the folder for is noise, and it is what makes the walk cheap.
       * symlinked directories are never followed — one loop back up the tree
         would turn a bounded scan into an unbounded one.
-      * `SCAN_SKIP_DIRS` and `SCAN_MAX_DIRS` bound the cost; hitting the latter
-        sets `truncated` so the UI can say the list may be incomplete rather
-        than quietly pretending it is exhaustive.
+      * `SCAN_SKIP_DIRS` and `SCAN_MAX_DIRS` bound the cost. Hitting the dir
+        cap, or finding a repo past `MAX_REPOS`, sets `truncated` so the UI
+        can say the list may be incomplete rather than quietly pretending it
+        is exhaustive (exactly `MAX_REPOS` repos is NOT truncated).
     """
     roots: list[str] = []
     visited = 0
     truncated = False
     # (path, depth). Iterative: a deep tree must not depend on the recursion
     # limit, and the caps are easier to read as loop conditions.
-    stack: list[tuple[str, int]] = [(base, 0)]
-    while stack:
-        path, depth = stack.pop()
+    queue: collections.deque[tuple[str, int]] = collections.deque([(base, 0)])
+    while queue:
+        path, depth = queue.popleft()
         if visited >= SCAN_MAX_DIRS:
             truncated = True
             break
@@ -550,16 +555,15 @@ def _discover_repos(base: str, max_depth: int) -> tuple[list[str], bool]:
         except (OSError, PermissionError):
             continue
         if is_repo and path != base:
-            roots.append(path)
             if len(roots) >= MAX_REPOS:
-                truncated = True
+                truncated = True        # one past the cap: the list IS partial
                 break
+            roots.append(path)
             continue                    # never descend into a checkout
         # Always scan below BASE, even when BASE is a valid checkout. The
         # caller includes that root separately; its .git must not hide child
         # repos. A broken marker at BASE must not hide them either (§14.83).
-        stack.extend((c, depth + 1) for c in children)
-    roots.sort()
+        queue.extend((c, depth + 1) for c in sorted(children))
     return roots, truncated
 
 
@@ -629,11 +633,14 @@ def git_workspace(cwd: str, scan_depth: int = SCAN_MAX_DEPTH,
 
     if root:
         # Keep the checkout holding `path` alongside its children, within the
-        # same total repo cap. Never mutate the cached child list.
+        # same total repo cap: the cut drops the DEEPEST child (scan order).
+        # Never mutate the cached child list.
         truncated = truncated or len(roots) >= MAX_REPOS
         own = os.path.normpath(os.path.realpath(root)) == os.path.normpath(real)
-        children = roots[:MAX_REPOS - 1]
+        children = sorted(roots[:MAX_REPOS - 1])
         roots = [root, *children] if own else [*children, root]
+    else:
+        roots = sorted(roots)
 
     repos = []
     for r in roots:
