@@ -46,6 +46,10 @@ export type ChatWindowController = {
   findAbove(test: (key: string) => boolean): string | null;
   /** The mounted row element of `key`, if mounted. */
   rowElement(key: string): HTMLElement | null;
+  /** Every row's top in px from the content's top (mounted rows measured,
+   *  the others from the heights the spacers use), with the scroll height:
+   *  the conversation map beside the scrollbar. Null while nothing draws. */
+  rowTops(): { keys: readonly string[]; tops: number[]; total: number } | null;
 };
 
 type Range = { startKey: string | null; endKey: string | null };
@@ -285,6 +289,31 @@ export function useChatWindow(o: {
       },
       atNewest() {
         return live.current.range.startKey == null;
+      },
+      rowTops() {
+        const el = scrollerRef.current;
+        if (!el || el.clientHeight === 0) return null;
+        const { keys: ks, estimate: est } = live.current;
+        const gap = gapRef.current;
+        // The newest mounted row that draws: where the list's bottom is.
+        let anchor: { i: number; bottom: number } | null = null;
+        for (let i = 0; i < ks.length && !anchor; i++) {
+          const node = observed.get(ks[i]!);
+          if (!node) continue;
+          const r = node.getBoundingClientRect();
+          if (r.height > 0) anchor = { i, bottom: r.bottom };
+        }
+        if (!anchor) return null;
+        const S = new Float64Array(ks.length + 1);
+        for (let i = 0; i < ks.length; i++) {
+          const h = heights.get(ks[i]!) ?? est(i);
+          S[i + 1] = S[i]! + (h > 0 ? h + gap : 0);
+        }
+        const listBottom = anchor.bottom + S[anchor.i]!;
+        const max = el.scrollHeight - el.clientHeight;
+        const contentTop = el.getBoundingClientRect().top + el.clientTop - (max - Math.abs(el.scrollTop));
+        const tops = ks.map((_, i) => listBottom - (S[i + 1]! - gap) - contentTop);
+        return { keys: ks, tops, total: el.scrollHeight };
       },
       findAbove(test) {
         const el = scrollerRef.current;

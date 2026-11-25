@@ -43,6 +43,7 @@ import { resolveResetAtMs } from '@/lib/rateLimitReset';
 import Message, { type Msg, summarizeToolInput, FileLinkContext } from './Message';
 import ToolPanel from './ToolPanel';
 import BgTasksBar from './BgTasksBar';
+import ChatMap, { type ChatMapRow } from './ChatMap';
 import ScheduledTasksBar from './ScheduledTasksBar';
 import GoalBar from './GoalBar';
 import Switch from './Switch';
@@ -1148,6 +1149,15 @@ export default function SessionView({
   }, []);
   useEffect(() => () => { if (flashTimerRef.current != null) clearTimeout(flashTimerRef.current); flashTimerRef.current = null; }, []);
   const shownRows = detachedRenderable ?? visibleRenderable;
+  // The conversation map beside the scrollbar: your messages and the final
+  // answers (ChatMap.tsx). The live transcript only.
+  const mapRows = useMemo((): ChatMapRow[] => (detachedRenderable ? [] : visibleRenderable.flatMap(({ msg }) => {
+    const user = msg.role === 'user';
+    if (!user && !(msg.role === 'assistant' && msg.assistantFinal !== 0)) return [];
+    const text = typeof msg.content === 'string' ? msg.content.replace(/\s+/g, ' ').trim().slice(0, 400) : '';
+    return [{ key: msg.id, role: user ? 'user' : 'agent', text, at: msg.createdAt }];
+  })), [detachedRenderable, visibleRenderable]);
+  const chatMapRefresh = useRef<(() => void) | null>(null);
   useEffect(() => {
     const p = pendingHitRef.current;
     if (!p) return;
@@ -1266,7 +1276,25 @@ export default function SessionView({
   // A layout change that is not a scroll (the chat shrinking under a bar or
   // the recap, the newest bubble finishing its layout) moves the newest
   // message's top out of view too: the pills re-read it. Stable for the memo.
-  const onChatResize = useStableCallback(() => handleChatScroll());
+  const onChatResize = useStableCallback(() => { handleChatScroll(); chatMapRefresh.current?.(); });
+  // The scroll capsule is lit by a scroll, a pointer on it or a click, and
+  // fades 1.5 s after the last one, pointer resting on it or not: idle, it
+  // hides little of the text under it. A class, not state: no render.
+  const navRef = useRef<HTMLDivElement>(null);
+  const navTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const wakeNav = useCallback(() => {
+    navRef.current?.classList.add('is-live');
+    if (navTimerRef.current != null) clearTimeout(navTimerRef.current);
+    navTimerRef.current = setTimeout(() => {
+      navTimerRef.current = null;
+      navRef.current?.classList.remove('is-live');
+    }, 1500);
+  }, []);
+  useEffect(() => () => {
+    if (navTimerRef.current != null) clearTimeout(navTimerRef.current);
+    navTimerRef.current = null;
+  }, []);
+  const onChatScroll = useCallback(() => { wakeNav(); handleChatScroll(); }, [wakeNav, handleChatScroll]);
   // Cleared, not only cancelled: a session kept alive (HubPanel <Activity>)
   // unmounts its effects when hidden and mounts them again when shown.
   useEffect(() => () => {
@@ -1603,7 +1631,7 @@ export default function SessionView({
             <SessionSearch sessionId={sessionId} view={transcriptView ?? 'full'} focusSignal={searchFocus}
               onJump={jumpToHit} onClose={closeSearch} />
           )}
-          <div className="app-chat" ref={chatBodyRef} onScroll={handleChatScroll}>
+          <div className="app-chat" ref={chatBodyRef} onScroll={onChatScroll}>
             {isLoadingHistory && messages.length === 0 ? (
               // Placeholder during the 1st refetch — differentiates "empty
               // session" from "history not yet loaded". Disappears as soon
@@ -1723,47 +1751,35 @@ export default function SessionView({
               <span className="app-scroll-arrow">⤒</span> scroll to start
             </button>
           )}
-          {/* Fixed area for the scroll buttons. The ↓ pill may disappear
-              (when at the bottom), but the two ↑ buttons keep their fixed
-              positions above, independently — and they show/hide together so
-              the stack never shifts under the cursor. */}
-          {showScrollUpButton && (
-            <button
-              type="button"
-              className="app-scroll-up-pill is-user"
-              onClick={onScrollUpUserClick}
-              aria-label="scroll up to the previous user message"
-              title="previous user message"
-            >
-              <span className="app-scroll-arrow app-scroll-arrow-dbl" aria-hidden="true">
-                <span>▴</span>
-                <span>▴</span>
-              </span>
-            </button>
+          {/* ONE capsule for the three jumps (▴▴ your previous message, ▴ the
+              agent's previous one, ▾ the bottom), faded while idle. Always the
+              three: one that has nowhere to go is greyed, so the capsule never
+              changes size. Gone only when nothing scrolls. `aria-disabled`,
+              not `disabled`: a disabled button swallows the pointer events
+              that light the capsule. */}
+          {(showScrollUpButton || !isAtBottom || detached) && (
+            <div ref={navRef} className="app-scroll-nav" role="group" aria-label="scroll"
+              onPointerEnter={wakeNav} onPointerMove={wakeNav} onPointerDown={wakeNav} onFocus={wakeNav}>
+              <button type="button" className="is-user" aria-disabled={!showScrollUpButton}
+                onClick={showScrollUpButton ? onScrollUpUserClick : undefined}
+                aria-label="scroll up to the previous user message" title="previous user message">
+                <span className="app-scroll-arrow app-scroll-arrow-dbl" aria-hidden="true"><span>▴</span><span>▴</span></span>
+              </button>
+              <button type="button" className="is-agent" aria-disabled={!showScrollUpButton}
+                onClick={showScrollUpButton ? onScrollUpAgentClick : undefined}
+                aria-label="scroll up to the previous agent message" title="previous agent message">
+                <span className="app-scroll-arrow" aria-hidden="true">▴</span>
+              </button>
+              <button type="button" className={`is-down${newCount > 0 ? ' has-new' : ''}`} aria-disabled={isAtBottom && !detached}
+                onClick={isAtBottom && !detached ? undefined : onPillClick}
+                aria-label={newCount > 0 ? `${newCount} new message — go to bottom` : 'go to bottom'}
+                title={isAtBottom && !detached ? 'at the bottom' : newCount > 0 ? `${newCount} new message` : 'go to bottom'}>
+                <span className="app-scroll-arrow" aria-hidden="true">▾</span>
+                {newCount > 0 && <span className="app-scroll-count">{newCount}</span>}
+              </button>
+            </div>
           )}
-          {showScrollUpButton && (
-            <button
-              type="button"
-              className="app-scroll-up-pill is-agent"
-              onClick={onScrollUpAgentClick}
-              aria-label="scroll up to the previous agent message"
-              title="previous agent message"
-            >
-              <span className="app-scroll-arrow">▴</span>
-            </button>
-          )}
-          {(!isAtBottom || detached) && (
-            <button
-              type="button"
-              className={`app-scroll-pill${newCount > 0 ? ' has-new' : ''}`}
-              onClick={onPillClick}
-              aria-label={newCount > 0 ? `${newCount} new message — go to bottom` : 'go to bottom'}
-              title={newCount > 0 ? `${newCount} new message` : 'go to bottom'}
-            >
-              <span className="app-scroll-arrow">▾</span>
-              {newCount > 0 && <span className="app-scroll-count">{newCount}</span>}
-            </button>
-          )}
+          {!detached && <ChatMap rows={mapRows} scrollerRef={chatBodyRef} windowRef={chatWindowRef} refreshRef={chatMapRefresh} />}
         </div>
 
         <PendingInputs items={pendingItems} turnRunning={status === 'thinking'}
