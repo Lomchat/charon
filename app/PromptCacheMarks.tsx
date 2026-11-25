@@ -102,10 +102,11 @@ export function CacheSymbol({ reading }: { reading: CacheReading }) {
 
 // ── Sidebar card ────────────────────────────────────────────────────────────
 
-/** The card mark: the flame while warm or live, NOTHING once cold (the card's
- *  tooltip still says it). Its empty title stays transparent. */
+/** The card mark: the flame while warm, NOTHING while live (a working card's
+ *  cache is warm by definition) or once cold (the card's tooltip still says
+ *  both). Its empty title stays transparent. */
 export function SessionCacheMark({ reading }: { reading: CacheReading | null }) {
-  if (!reading || (reading.phase !== 'warm' && reading.phase !== 'live')) return null;
+  if (reading?.phase !== 'warm') return null;
   return (
     <span className={`cs-cache cs-cache-${reading.phase}`} style={{ color: cacheHeat(reading) }} title="">
       <CacheSymbol reading={reading} />
@@ -123,10 +124,10 @@ export function cacheTipSection(reading: CacheReading): TipSection {
   };
 }
 
-/** The time on the card's details line ("cache 48m"); nothing once cold. */
+/** The time on the card's details line ("cache 48m"); nothing while live or
+ *  once cold, like the mark. */
 export function sessionCacheFootText(reading: CacheReading | null): string | null {
-  if (!reading || (reading.phase !== 'warm' && reading.phase !== 'live')) return null;
-  if (reading.phase === 'live') return 'cache live';
+  if (reading?.phase !== 'warm') return null;
   return `cache ${reading.approx ? '≈' : ''}${fmtSpanShort(reading.remainingMs)}`;
 }
 
