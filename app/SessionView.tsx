@@ -12,17 +12,17 @@ import EndpointEffortPicker, { EndpointEffortSummary } from './EndpointEffortPic
 import { isOpenCodeGo } from '@/lib/opencodeModels';
 
 import SessionSettingsModal from './SessionSettingsModal';
-import { IconArrowRepeat, IconGear, IconPause, IconPlay, IconStop, IconRewind, IconGitBranch, IconBullseye, IconChatSide, IconSparkle, IconSearch } from './icons';
-import { goalIsLive, shownGoal } from '@/lib/sessionGoal';
+import { IconArrowRepeat, IconGear, IconPause, IconPlay, IconStop, IconRewind, IconGitBranch, IconChatSide, IconEnvelope, IconSparkle, IconSearch } from './icons';
 import { sameModel } from '@/lib/strictModel';
 import type { SessionRecap } from '@/lib/sessionRecap';
 import { FoldEdge, foldRootProps, setFoldScope, useBubbleFold } from './bubbleFold';
 import { coldResumeShare, fmtTokens as fmtDriverTokens } from '@/lib/usageDrivers';
 import type { InsightUsage } from './SessionInsight';
 import type { TurnLedger } from '@/lib/promptCache';
-import { Fragment, memo, useCallback, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore, type Ref, type RefObject } from 'react';
+import { Fragment, memo, useCallback, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore, type Ref, type RefObject, type SyntheticEvent } from 'react';
 import type { Vps } from '@/lib/db/schema';
 import { addOverlay, getSummary, subscribeSummaries } from './sync/summaryStore';
+import { getFocusTicket } from './globalEventStream';
 import type { SessionListItem, AgentKind, SessionAttachment, FastModeVerdict } from '@/lib/types/api';
 import {
   asSessionProvider, hasEffortAxis, isSessionEffort, PROVIDERS, sessionCapabilities, sessionModes,
@@ -44,7 +44,7 @@ import Message, { type Msg, summarizeToolInput, FileLinkContext } from './Messag
 import ToolPanel from './ToolPanel';
 import BgTasksBar from './BgTasksBar';
 import ScheduledTasksBar from './ScheduledTasksBar';
-import GoalBar, { GoalEditor } from './GoalBar';
+import GoalBar from './GoalBar';
 import Switch from './Switch';
 import { codexSpeedOf, useCodexSpeeds } from './codexModelsCache';
 import { SpeedRow, SwitchRow, fastModeBlocker, fastModeOffered } from './EffortSwitches';
@@ -183,6 +183,9 @@ type Props = {
   onNewShellIn?: (vpsId: string, cwd: string) => void;
   /** `/routine`: the Routines modal on a new routine prefilled from here. */
   onNewRoutine?: (draft: { vpsId: string; cwd: string; kind: AgentKind; prompt: string }) => void;
+  /** Move off this session (its tab). Given ⇒ the header's "unread" button:
+   *  left for later, lit as an unread finish (§14.47). */
+  onLeaveUnread?: () => void;
   /** A narrow embed (the desk's drawer): no Tools panel, the header always
    *  unfolded, a composer that ignores the shared composer size (no grip, never
    *  collapsed) and grows with its text. Adds `.is-compact` on `.app-main`. */
@@ -324,7 +327,7 @@ export default function SessionView({
   onNewAgentHere,
   onOpenFolder: onOpenFolderProp,
   onNewSessionIn: onNewSessionInProp,
-  onNewShellIn, onNewRoutine,
+  onNewShellIn, onNewRoutine, onLeaveUnread: onLeaveUnreadProp,
   compact = false, composerRef, onEmptyComposerKey: onEmptyComposerKeyProp,
 }: Props) {
   // The parent passes inline arrows and a freshly mapped `siblings` on every
@@ -340,6 +343,7 @@ export default function SessionView({
   const onAfterRevert = useStableOptionalCallback(onAfterRevertProp);
   const onUsageRefresh = useStableOptionalCallback(onUsageRefreshProp);
   const onEmptyComposerKey = useStableOptionalCallback(onEmptyComposerKeyProp);
+  const onLeaveUnread = useStableOptionalCallback(onLeaveUnreadProp);
   const fileLinks = useContext(FileLinkContext);
   const siblings = useStableValue(siblingsProp, shallowEqualRows);
   const usageProfile = accountProfileId(selected);
@@ -487,7 +491,6 @@ export default function SessionView({
   const [compacting, setCompacting] = useState(false);
   const [compactError, setCompactError] = useState<string | null>(null);
   const [rewindOpen, setRewindOpen] = useState(false);
-  const [goalEditorOpen, setGoalEditorOpen] = useState(false);
   // A question beside the conversation (§14.119): the row and its answer
   // arrive as frames; a refusal puts the text back in the box (the caller).
   const [asideError, setAsideError] = useState<string | null>(null);
@@ -603,7 +606,7 @@ export default function SessionView({
           void doCompact();
           return true;
         case 'goal':
-          if (!arg) { setGoalEditorOpen(true); return true; }
+          if (!arg) return refuse('/goal: write the objective after it.');
           await api.setSessionGoal(sessionId, arg);
           return true;
         case 'mode': {
@@ -940,11 +943,21 @@ export default function SessionView({
   // portalled menus. Hovering is no action. Optimistic (a summary overlay,
   // §14.32): the cue goes at once, a failure brings it back; the overlay
   // zeroes `unreadStop`, which unplugs the handlers until the next finish.
-  const markFinishRead = useCallback(() => {
+  // The "unread" button is the one action that must not read it.
+  const markFinishRead = useCallback((e?: SyntheticEvent) => {
+    if ((e?.target as Element | null)?.closest?.('[data-keeps-unread]')) return;
     const o = addOverlay(sessionId, { unreadStop: 0 });
     api.markSessionRead(sessionId).then((r) => o.ack(r?.sync), () => o.fail());
   }, [sessionId]);
   const readOnAction = selected.unreadStop ? markFinishRead : undefined;
+  // Leave it for later: lit as unread at once (overlay), and the SSE conn's
+  // move off it reads nothing, whichever request lands first.
+  const leaveUnread = useCallback(() => {
+    if (!onLeaveUnread) return;
+    const o = addOverlay(sessionId, { unreadStop: 1 });
+    api.markSessionUnread(sessionId, getFocusTicket().conn).then((r) => o.ack(r?.sync), () => o.fail());
+    onLeaveUnread();
+  }, [sessionId, onLeaveUnread]);
   const currentAccount = accountProfileId(selected);
   // The usage popovers offer the provider's other accounts (§14.115); a turn
   // in flight, or background tasks the restart would kill with the CLI
@@ -1523,10 +1536,9 @@ export default function SessionView({
                   aria-label="Rewind session" aria-busy={rewinding}
                   title={status === 'sleeping' || status === 'error' ? 'Resume the session before rewinding' : 'Rewind to an earlier turn'}><IconRewind /></button>
               )}
-              {supportsSessionCapability(sessionKind, 'goal') && (
-                <button type="button" className={`session-action${goalIsLive(shownGoal(selected.goal)) ? ' has-goal' : ''}`}
-                  onClick={() => setGoalEditorOpen(true)}
-                  aria-label="Session goal" title={goalIsLive(shownGoal(selected.goal)) ? 'Change the goal' : 'Set a goal the session keeps working toward'}><IconBullseye /></button>
+              {onLeaveUnread && (
+                <button type="button" className="session-action" data-keeps-unread onClick={leaveUnread}
+                  aria-label="Leave unread" title="leave unread"><IconEnvelope /></button>
               )}
               <button type="button" className={`session-action${searchOpen ? ' is-on' : ''}`} aria-pressed={searchOpen}
                 onClick={() => { if (searchOpen) closeSearch(); else { setSearchOpen(true); setSearchFocus((n) => n + 1); } }}
@@ -1808,8 +1820,6 @@ export default function SessionView({
             <GoalBar goal={selected.goal} sessionId={sessionId} provider={asSessionProvider(sessionKind)} />
           )}
         </div>
-        {goalEditorOpen && <GoalEditor sessionId={sessionId} provider={asSessionProvider(sessionKind)}
-          initial={selected.goal} onClose={() => setGoalEditorOpen(false)} />}
 
         {/* Async questions: ONE strip above the composer slot and above the
             Resume CTA (answering auto-resumes), never in place of either.

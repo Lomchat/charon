@@ -746,9 +746,8 @@ export const api = {
   listRoutineRuns: () => send<{ runs: RoutineRun[] }>('GET', '/api/routines/runs'),
   askSideQuestion: (id: string, question: string) =>
     send<OkResponse & ActionSyncStamp & { rowId: number }>('POST', `/api/sessions/${id}/side`, { question }),
-  setSessionGoal: (id: string, objective: string | null, tokenBudget?: number | null) =>
-    send<OkResponse & ActionSyncStamp>('POST', `/api/sessions/${id}/goal`,
-      { objective, ...(tokenBudget ? { tokenBudget } : {}) }),
+  setSessionGoal: (id: string, objective: string | null) =>
+    send<OkResponse & ActionSyncStamp>('POST', `/api/sessions/${id}/goal`, { objective }),
   dismissSessionGoal: (id: string) =>
     send<OkResponse & ActionSyncStamp>('POST', `/api/sessions/${id}/goal`, { dismiss: true }),
   setSessionHidden: (id: string, hidden: boolean) =>
@@ -763,6 +762,10 @@ export const api = {
   /** The session's finish is read (a click on the pulsing answer, §14.47). */
   markSessionRead: (id: string) =>
     send<OkResponse & ActionSyncStamp>('POST', `/api/sessions/${id}/read`),
+  /** Leave the session for later, lit as unread; `conn`'s move off it reads
+   *  nothing (§14.47). */
+  markSessionUnread: (id: string, conn: string) =>
+    send<OkResponse & ActionSyncStamp>('POST', `/api/sessions/${id}/unread`, { conn }),
   // Sleep / resume / input / interrupt / force-stop: all return { ok: true }
   sleepSession: (id: string) =>
     send<OkResponse & ActionSyncStamp>('POST', `/api/sessions/${id}/sleep`),

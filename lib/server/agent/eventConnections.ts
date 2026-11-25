@@ -72,6 +72,9 @@ type ConnState = {
   /** Focus targets this conn moved off while it was not (yet) proven
    *  attended: the presence report that follows the move settles them (§14.47). */
   leftUnsettled?: Set<string>;
+  /** Focus targets the user left UNREAD on purpose (the header's "unread"
+   *  button, `keepUnreadOnLeave`): their next move off reads nothing. */
+  keepUnread?: Set<string>;
 };
 
 /** "Attended" = visible AND input on that device within this window (I10). */
@@ -148,8 +151,22 @@ function takeReadLeaves(conn: ConnState, now: number, settle: boolean): string[]
 }
 
 function noteLeft(conn: ConnState, from: string | null, to: string | null): void {
-  if (from && from !== to) (conn.leftUnsettled ??= new Set()).add(from);
+  if (from && from !== to && !conn.keepUnread?.delete(from)) (conn.leftUnsettled ??= new Set()).add(from);
   if (to) conn.leftUnsettled?.delete(to);
+}
+
+/**
+ * The user leaves `sessionId` UNREAD on purpose (POST /sessions/[id]/unread):
+ * this conn's move off it reads nothing (§14.47). Order-proof against the
+ * focus move it comes with: a move already noted but not settled is dropped;
+ * one still to come (the conn is on it) is exempted once. A move already read
+ * is undone by the marker the caller sets afterwards.
+ */
+export function keepUnreadOnLeave(connId: string, sessionId: string): void {
+  const conn = connections.get(connId);
+  if (!conn) return;
+  conn.leftUnsettled?.delete(sessionId);
+  if (conn.focus === sessionId) (conn.keepUnread ??= new Set()).add(sessionId);
 }
 
 const encoder = new TextEncoder();
@@ -286,6 +303,7 @@ export function registerConnection(opts: {
   // A move the old stream did not see settled (or that the URL makes) is
   // still owed its read decision by the next presence report (§14.47).
   const leftUnsettled = existing?.leftUnsettled ? new Set(existing.leftUnsettled) : undefined;
+  const keepUnread = existing?.keepUnread ? new Set(existing.keepUnread) : undefined;
 
   const now = Date.now();
   const urlAge = typeof opts.initialAttentiveAgeMs === 'number' && Number.isFinite(opts.initialAttentiveAgeMs)
@@ -306,6 +324,7 @@ export function registerConnection(opts: {
     attentionFromUrl: opts.initialAttentive === true,
     legacyAttention: opts.initialAttentive === undefined,
     leftUnsettled,
+    keepUnread,
   };
   if (existing) noteLeft(conn, existing.focus, focus);
   connections.set(connId, conn);

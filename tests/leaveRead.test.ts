@@ -41,4 +41,21 @@ describe('leaving is reading (§14.47)', () => {
     expect(ec.setConnectionFocus('leave-read-c', 'C', 3, true, { attentive: true }).read).toEqual([]);
     unreg();
   });
+
+  it('left unread on purpose: the move off reads nothing, before or after it lands, once', async () => {
+    const [ec, unreg] = await conn('leave-unread-a', 'A');
+    ec.keepUnreadOnLeave('leave-unread-a', 'A');
+    expect(ec.setConnectionFocus('leave-unread-a', 'B', 2, true, { attentive: true }).read).toEqual([]);
+    // Spent: coming back and leaving again reads as usual.
+    ec.setConnectionFocus('leave-unread-a', 'A', 3, true, { attentive: true });
+    expect(ec.setConnectionFocus('leave-unread-a', 'C', 4, true, { attentive: true }).read).toEqual(['A']);
+    unreg();
+
+    // The window GET moved first and its read is still owed: dropped.
+    const [, unregLate] = await conn('leave-unread-b', 'A');
+    ec.setConnectionFocus('leave-unread-b', 'B', 2, true, { routingOnly: true });
+    ec.keepUnreadOnLeave('leave-unread-b', 'A');
+    expect(ec.setConnectionFocus('leave-unread-b', 'B', 2, true, { attentive: true }).read).toEqual([]);
+    unregLate();
+  });
 });

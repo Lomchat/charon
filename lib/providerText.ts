@@ -50,15 +50,9 @@ export function providerName(kind: Kind): string {
 }
 
 /** Goal copy per backend that has goals (capability `goal`, §14.119). */
-const GOAL_TEXT: Partial<Record<SessionProvider, { how: string; where: string }>> = {
-  claude: {
-    how: 'After every turn Claude checks this condition, and keeps working until it holds.',
-    where: 'Claude\'s /goal: checked after every turn by a small model reading the transcript.',
-  },
-  codex: {
-    how: 'Codex keeps working toward it, turn after turn, until it is done or the budget is spent.',
-    where: 'Codex\'s thread goal: it keeps opening turns until done or out of budget.',
-  },
+const GOAL_WHERE: Partial<Record<SessionProvider, string>> = {
+  claude: 'Claude\'s /goal: checked after every turn by a small model reading the transcript.',
+  codex: 'Codex\'s thread goal: it keeps opening turns until done or out of budget.',
 };
 
 export const providerText = {
@@ -185,10 +179,8 @@ export const providerText = {
   /** The fleet default for a provider that owns its own approval reviewer. */
   autoReviewDefault: (kind: Kind) =>
     `let the ${providerName(kind)} reviewer decide approvals for new sessions`,
-  /** The goal editor's explanation (§14.119): how this backend pursues one. */
-  goalHow: (kind: Kind) => GOAL_TEXT[kind as SessionProvider]?.how ?? '',
-  /** The goal panel's foot: where the goal lives. */
-  goalWhere: (kind: Kind) => GOAL_TEXT[kind as SessionProvider]?.where ?? '',
+  /** The goal panel's foot (§14.119): where the goal lives. */
+  goalWhere: (kind: Kind) => GOAL_WHERE[kind as SessionProvider] ?? '',
   /** Ultracode, in the new-session form (§14.56). */
   ultracodeHint: (kind: Kind) =>
     `${providerName(kind)} plans big tasks as dynamic workflows of parallel agents, at any effort.`,

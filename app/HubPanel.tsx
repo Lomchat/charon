@@ -24,7 +24,7 @@ import type { EditSnapshot } from './sessionTypes';
 import {
   useTabs, hydrateTabs, restoreLocalTabFocus, refreshTabs,
   openTab as openWorkspaceTab, activateTab as activateWorkspaceTab,
-  pinTab as pinWorkspaceTab, closeTab as closeWorkspaceTab,
+  pinTab as pinWorkspaceTab, closeTab as closeWorkspaceTab, leaveTab as leaveWorkspaceTab,
   closeTabsWhere as closeWorkspaceTabsWhere, reorderTabs as reorderWorkspaceTabs, onTabOpen,
 } from './tabStore';
 import ShellTerminal from './ShellTerminal';
@@ -1449,6 +1449,13 @@ export default function HubPanel({ vpsList: initialVpsList, vpsFolders: initialF
   function onTabCloseClick(t: ResolvedTab) {
     closeTabsOrAsk(t.label, [t], () => closeWorkspaceTab(t.id));
   }
+  /** The session header's "unread" button: off the session's tab, back to the
+   *  previous one (a temporary tab closes, a pinned one stays). */
+  function leaveSessionTab(sessionId: string) {
+    const t = resolvedTabs.find((x) => x.kind === 'session' && x.ref === sessionId);
+    if (t) void leaveWorkspaceTab(t.id);
+    else setSelectedId(null);
+  }
   /** The ✕ a file pane draws itself on a phone, where the strip is hidden
    *  (≤820px): closes that pane's OWN tab exactly like the strip's ✕. */
   function paneCloser(match: (t: ResolvedTab) => boolean): (() => void) | undefined {
@@ -2496,6 +2503,7 @@ export default function HubPanel({ vpsList: initialVpsList, vpsFolders: initialF
               onNewSessionIn={newSessionIn}
               onNewShellIn={newShellIn}
               onNewRoutine={newRoutineFrom}
+              onLeaveUnread={() => leaveSessionTab(row.id)}
               onImportError={(vps) => {
                 // The VPS agent crashed an "import claude_agent_sdk" → we trigger
                 // the install in a new install session (instead of the

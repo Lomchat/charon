@@ -515,6 +515,22 @@ export function markSessionRead(sessionId: string): void {
 }
 
 /**
+ * The user leaves a session UNREAD on purpose (the header's "unread" button):
+ * the marker as a finish lights it, without the finish's push or Telegram.
+ * Returns false for an unknown or archived session.
+ */
+export function markSessionUnread(sessionId: string): boolean {
+  const [row] = db.select({ archived: agentSessions.archived, unreadStop: agentSessions.unreadStop })
+    .from(agentSessions).where(eq(agentSessions.id, sessionId)).all();
+  if (!row || row.archived) return false;
+  if (row.unreadStop !== 1) {
+    db.update(agentSessions).set({ unreadStop: 1 }).where(eq(agentSessions.id, sessionId)).run();
+    emitGlobalSession({ type: 'session_unread', unread: true, sessionId });
+  }
+  return true;
+}
+
+/**
  * THE helper for a HUB-originated status write (C13; R1 §3 S1–S6/S9): DB
  * (unless `persist:false` — the caller already wrote it), the hydrated
  * stream's memory, and the `status` frame — so memory, DB and every tab never

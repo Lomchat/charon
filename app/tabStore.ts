@@ -347,6 +347,15 @@ export async function closeTab(id: string): Promise<void> {
   await mutate(() => api.closeTab(id, next ?? undefined), (res) => setTabs(res.tabs));
 }
 
+/** Leave a tab (the session header's "unread" button): focus falls where its ✕
+ *  would send it; a temporary tab goes, a pinned one stays in the strip. */
+export async function leaveTab(id: string): Promise<void> {
+  const leaving = state.tabs.find((t) => t.id === id);
+  if (!leaving) return;
+  if (!leaving.pinned) return closeTab(id);
+  if (leaving.id === state.activeId) setTabs(state.tabs, nextFocusAfterClosing(leaving));
+}
+
 /**
  * Reorder one row. Applied locally first — a drag that snaps back while the
  * server answers is the single worst thing a sortable list can do.

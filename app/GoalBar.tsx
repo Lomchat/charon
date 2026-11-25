@@ -12,8 +12,7 @@ import type { SessionProvider } from '@/lib/sessionCapabilities';
 // The line beside BgTasksBar / ScheduledTasksBar for what the session keeps
 // working toward (CLAUDE.md §14.119), straight from the session summary.
 // Click → its details (the evaluator's last verdict, tokens, time) and the
-// actions: change, clear, close once reached. `GoalEditor` is also what the
-// header's goal button opens when there is none yet.
+// actions: clear, close once reached. Setting one is the provider's `/goal`.
 
 /** The pill tone a status reads as (shared `.tm-pill` palette). */
 function tone(g: SessionGoal): 'running' | 'completed' | 'failed' | 'due' {
@@ -43,67 +42,11 @@ function progress(g: SessionGoal): string {
   return parts.join(' · ');
 }
 
-/** Set or change the goal. Claude: the condition the CLI checks after every
- *  turn. Codex: an objective with an optional token budget. */
-export function GoalEditor({ sessionId, provider, initial, onClose }: {
-  sessionId: string; provider: SessionProvider; initial?: SessionGoal | null; onClose: () => void;
-}) {
-  const [objective, setObjective] = useState(initial && goalIsLive(initial) ? initial.objective : '');
-  const [budget, setBudget] = useState(initial?.tokenBudget ? String(initial.tokenBudget) : '');
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const codex = provider === 'codex';
-
-  async function save() {
-    const text = objective.trim();
-    if (!text || busy) return;
-    const n = Number(budget.replace(/[\s_,]/g, ''));
-    setBusy(true); setError(null);
-    try {
-      await api.setSessionGoal(sessionId, text, codex && Number.isInteger(n) && n > 0 ? n : null);
-      onClose();
-    } catch (e) {
-      setError(e instanceof Error ? e.message : 'Could not set the goal.');
-      setBusy(false);
-    }
-  }
-
-  return (
-    <TaskModal icon={<IconBullseye />} tone="goal" title={initial && goalIsLive(initial) ? 'Change the goal' : 'Set a goal'}
-      subtitle={providerText.goalHow(provider)}
-      onClose={onClose}
-      foot={providerText.goalWhere(provider)}>
-      <div className="goal-editor">
-        <label>
-          <span>{codex ? 'Objective' : 'Done when…'}</span>
-          <textarea value={objective} autoFocus rows={4} maxLength={4000} disabled={busy}
-            placeholder={codex ? 'Ship the export feature with tests passing' : 'npm test passes and the README documents the new flag'}
-            onChange={(e) => setObjective(e.target.value)}
-            onKeyDown={(e) => { if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) { e.preventDefault(); void save(); } }} />
-        </label>
-        {codex && <label className="goal-budget">
-          <span>Token budget <small>(optional)</small></span>
-          <input inputMode="numeric" value={budget} disabled={busy} placeholder="e.g. 2000000"
-            onChange={(e) => setBudget(e.target.value)} />
-        </label>}
-        {error && <p className="goal-error" role="alert">{error}</p>}
-        <div className="goal-actions">
-          <button type="button" onClick={onClose} disabled={busy}>Cancel</button>
-          <button type="button" className="primary" onClick={() => void save()} disabled={busy || !objective.trim()}>
-            {busy ? 'Setting…' : 'Set goal'}
-          </button>
-        </div>
-      </div>
-    </TaskModal>
-  );
-}
-
 function GoalBarImpl({ goal: raw, sessionId, provider }: {
   goal: SessionGoal | null | undefined; sessionId: string; provider: SessionProvider;
 }) {
   const goal = shownGoal(raw);
   const [open, setOpen] = useState(false);
-  const [editing, setEditing] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [now, setNow] = useState(() => Date.now());
@@ -131,7 +74,7 @@ function GoalBarImpl({ goal: raw, sessionId, provider }: {
         <span className="bgtasks-more" aria-hidden>▸ details</span>
       </button>
 
-      {open && !editing && (
+      {open && (
         <TaskModal icon={<IconBullseye />} tone="goal" title="Goal"
           subtitle={live ? 'What this session keeps working toward' : goal.status === 'met' ? 'Reached' : 'Stopped'}
           onClose={close}
@@ -156,14 +99,9 @@ function GoalBarImpl({ goal: raw, sessionId, provider }: {
             {live
               ? <button type="button" disabled={busy} onClick={() => void act(() => api.setSessionGoal(sessionId, null))}>Clear goal</button>
               : <button type="button" disabled={busy} onClick={() => void act(() => api.dismissSessionGoal(sessionId))}>Close</button>}
-            <button type="button" className="primary" disabled={busy} onClick={() => setEditing(true)}>
-              {live ? 'Change…' : 'New goal…'}
-            </button>
           </div>
         </TaskModal>
       )}
-      {open && editing && <GoalEditor sessionId={sessionId} provider={provider} initial={goal}
-        onClose={() => { setEditing(false); close(); }} />}
     </>
   );
 }

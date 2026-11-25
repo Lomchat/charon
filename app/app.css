@@ -2683,16 +2683,8 @@ html[data-density='small'] .cs-sub-fold { font-size: 8.5px; }
 .goal-reason { margin-top: 8px; }
 .goal-reason h5 { margin: 0 0 3px; font: 600 11px/1.4 var(--body); color: var(--text-muted); text-transform: uppercase; letter-spacing: .04em; }
 .goal-reason p { margin: 0; font: 12px/1.5 var(--body); color: var(--text); white-space: pre-wrap; overflow-wrap: anywhere; }
-.goal-editor { display: flex; flex-direction: column; gap: 10px; }
-.goal-editor label { display: flex; flex-direction: column; gap: 4px; font: 12px/1.4 var(--body); color: var(--text-muted); }
-.goal-editor textarea, .goal-editor input {
-  width: 100%; box-sizing: border-box; padding: 8px 10px; border: 1px solid var(--border);
-  border-radius: var(--radius-md); background: var(--bg-inset); color: var(--text); font: 13px/1.5 var(--body); resize: vertical;
-}
-.goal-editor .goal-budget input { max-width: 220px; }
 .goal-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 10px; }
 .goal-actions button { padding: 6px 14px; border-radius: var(--radius-md); border: 1px solid var(--border); background: transparent; color: var(--text); font: 500 12px/1.3 var(--body); cursor: pointer; }
-.goal-actions button.primary { border-color: color-mix(in srgb, var(--success) 50%, transparent); background: color-mix(in srgb, var(--success) 14%, transparent); color: var(--success); }
 .goal-actions button:disabled { opacity: .5; cursor: default; }
 .goal-error { margin: 6px 0 0; color: var(--danger-strong); font: 12px/1.4 var(--body); }
 .task-modal.tone-scheduled .tm-ico {
@@ -9674,7 +9666,6 @@ html:not([data-file-icons='mono']) .tt-row:not(.ignored) > .tt-ico.fi { opacity:
 .app-bar .session-action { display: grid; place-items: center; width: 30px; height: 30px; padding: 6px; border-radius: var(--radius-md); letter-spacing: 0; background: transparent; border-color: transparent; color: var(--text-muted); }
 .app-bar .session-action svg { width: 16px; height: 16px; }
 .app-bar .session-action:hover:not(:disabled) { background: color-mix(in srgb, var(--accent) 12%, transparent); color: var(--text); }
-.app-bar .session-action.has-goal { color: var(--success); }
 .app-bar .session-action:focus-visible { outline: 2px solid var(--accent-strong); outline-offset: 2px; }
 .app-bar .session-action-stop, .app-bar .session-action-stop:hover:not(:disabled) { color: var(--danger-strong); }
 .app-bar .session-action[aria-busy="true"] { opacity: .5; }

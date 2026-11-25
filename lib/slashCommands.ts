@@ -55,7 +55,7 @@ const CHARON_COMMANDS: readonly CharonCommand[] = [
   { name: 'compact', action: 'compact', hint: '',
     offered: (p) => !supportsSessionCapability(p, 'slashCommands') && supportsSessionCapability(p, 'compact'),
     description: 'Free up context by summarizing the conversation so far' },
-  { name: 'goal', action: 'goal', hint: '[condition]',
+  { name: 'goal', action: 'goal', hint: '<objective>',
     offered: (p) => !supportsSessionCapability(p, 'slashCommands') && supportsSessionCapability(p, 'goal'),
     description: 'Set a goal the session keeps working toward' },
   { name: 'review', action: 'review', hint: '[base <branch> | commit <sha>]',
