@@ -26,10 +26,11 @@ export type SubSessionGroup<T> = {
  * the sidebar's flat order). A session whose parent is absent from `items`
  * (deleted, archived, filtered out) is a root; so is any member of a parent
  * cycle. Roots keep the incoming order and group by their OWN path; a child
- * joins its parent's group whatever its cwd, ordered by createdAt.
+ * joins its parent's group whatever its cwd, ordered by createdAt. `keep`
+ * (the open session) stays drawn inside a folded subtree.
  */
 export function nestSubSessions<T extends SubSessionItem>(
-  items: T[], folded: ReadonlySet<string>,
+  items: T[], folded: ReadonlySet<string>, keep: string | null = null,
 ): SubSessionGroup<T>[] {
   const ids = new Set(items.map((item) => item.id));
   const kids = new Map<string, T[]>();
@@ -51,7 +52,7 @@ export function nestSubSessions<T extends SubSessionItem>(
     seen.add(item.id);
     const own = (kids.get(item.id) ?? []).filter((child) => !seen.has(child.id));
     const row: SubSessionRow<T> = { item, depth, descendants: [], folded: own.length > 0 && folded.has(item.id) };
-    if (!hidden) out.push(row);
+    if (!hidden || item.id === keep) out.push(row);
     for (const child of own) {
       if (seen.has(child.id)) continue;
       row.descendants.push(child, ...walk(child, depth + 1, out, hidden || row.folded));
@@ -74,9 +75,35 @@ export function nestSubSessions<T extends SubSessionItem>(
 
 /** Session ids in the exact order the sidebar draws them. */
 export function renderedSessionIds<T extends SubSessionItem>(
-  items: T[], folded: ReadonlySet<string>, pathHidden: (path: string) => boolean,
+  items: T[], folded: ReadonlySet<string>, pathHidden: (path: string) => boolean, keep: string | null = null,
 ): string[] {
-  return nestSubSessions(items, folded)
+  return nestSubSessions(items, folded, keep)
     .filter((group) => !pathHidden(group.path))
     .flatMap((group) => group.rows.map((row) => row.item.id));
+}
+
+/** What deleting `ids` also deletes (§14.93): their sub-sessions at any depth,
+ *  in tree order, the ones already in `ids` left out. */
+export function subSessionsDeletedWith<T extends { id: string; parentSessionId?: string | null }>(
+  ids: Iterable<string>, all: readonly T[],
+): T[] {
+  const chosen = new Set(ids);
+  const kids = new Map<string, T[]>();
+  for (const s of all) {
+    if (!s.parentSessionId) continue;
+    const list = kids.get(s.parentSessionId);
+    if (list) list.push(s); else kids.set(s.parentSessionId, [s]);
+  }
+  const out: T[] = [];
+  const seen = new Set(chosen);
+  const walk = (id: string) => {
+    for (const k of kids.get(id) ?? []) {
+      if (seen.has(k.id)) continue;
+      seen.add(k.id);
+      out.push(k);
+      walk(k.id);
+    }
+  };
+  for (const id of chosen) walk(id);
+  return out;
 }

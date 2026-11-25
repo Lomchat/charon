@@ -543,9 +543,10 @@ export async function DELETE(_req: Request, { params }: { params: Promise<{ id: 
   if (s instanceof Response) return s;
   const { id } = await params;
   try {
-    await deleteSession(id);
+    // Its sub-sessions go with it (§14.93).
+    const r = await deleteSession(id);
     // deleteSession published `session_summary{null}` synchronously.
-    return Response.json({ ok: true, sync: syncAfter([id]) });
+    return Response.json({ ok: true, descendants: r.descendants, sync: syncAfter([id, ...r.descendants]) });
   } catch (e: any) {
     return Response.json({ error: e?.message ?? String(e) }, { status: 500 });
   }

@@ -1,0 +1,1 @@
+ALTER TABLE `agent_sessions` ADD `sub_sessions_open` integer DEFAULT 0 NOT NULL;

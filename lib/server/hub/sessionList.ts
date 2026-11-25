@@ -5,7 +5,7 @@ import { eq, sql } from 'drizzle-orm';
 import { accountProfileId, accountProfileNumber } from '@/lib/accountProfiles';
 import { publicConnection } from '@/lib/server/customEndpoints';
 import { db, sessionPendingPermissions, sessionPendingQuestions, type AgentSession } from '@/lib/db';
-import { listStreams } from '@/lib/server/agent/sessionOps';
+import { listStreams, runningSubSessionIds } from '@/lib/server/agent/sessionOps';
 import { bgWorkCount, pruneStaleBgTasks, runningBgTasksIfWarm } from '@/lib/server/hub/bgTaskState';
 import { listVpsRuntimeSnapshots } from '@/lib/server/agent/vpsRuntimeSnapshot';
 import { compareVersions } from '@/lib/version';
@@ -15,10 +15,11 @@ import { ultracodeOf } from '@/lib/providerConfigFlags';
 import { SESSION_PEER_AGENT_VERSION } from '@/lib/sessionHandle';
 import type { SessionListItem, VpsRuntimeSnapshot } from '@/lib/types/api';
 
-/** The sidebar's background-task count (§14.91). A live stream's registry is
- *  the truth and is cached after its first read. Without a stream, only a row
- *  parked `background` can have any, so only that one pays for a history scan;
- *  a paused session's children died with its CLI. */
+/** The sidebar's background-task count (§14.91): native tasks + sub-sessions
+ *  at work. A live stream's registry is the truth and is cached after its
+ *  first read. Without a stream, only a row parked `background` can have any,
+ *  so only that one pays for a history scan; a paused session's children died
+ *  with its CLI. */
 function runningBgTasksFor(
   id: string, liveStatus: string, stream: ReturnType<typeof listStreams>[number] | undefined,
 ): number {
@@ -27,10 +28,11 @@ function runningBgTasksFor(
   if (liveStatus !== 'background') return 0;
   // A cold registry warms in background slices (bgTaskState.ts): 0 meanwhile
   // (the count is cosmetic; the row stays `background`).
+  const subs = runningSubSessionIds(id).length;
   const running = runningBgTasksIfWarm(id);
-  if (running == null) return 0;
+  if (running == null) return subs;
   pruneStaleBgTasks(running, Math.floor(Date.now() / 1000));
-  return bgWorkCount(id, running);
+  return bgWorkCount(id, running) + subs;
 }
 
 /**

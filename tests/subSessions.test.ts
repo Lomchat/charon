@@ -1,7 +1,8 @@
 import { beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
+import { eq } from 'drizzle-orm';
 
 // Sub-sessions (charon_peer start_sub_session): the mode ceiling, the depth and
-// live-children limits, and the re-rooting of children when a parent is deleted.
+// live-children limits, and a deleted parent taking its subtree along.
 
 vi.mock('server-only', () => ({}));
 vi.mock('@/lib/server/seed', () => ({ seedInitialData: () => {} }));
@@ -117,17 +118,32 @@ describe('kill_sub_session', () => {
     const left = db.select().from(schema.agentSessions).all().map((r: any) => r.id).sort();
     expect(left).toEqual(['boss', 'sibling', 'stranger']);
   });
+
+  it('a child born while the subtree goes is deleted too, before its parent (no orphan)', async () => {
+    insert('kid', { handle: 'kid' });
+    insert('grandkid', { handle: 'grandkid', parentSessionId: 'kid' });
+    let born = false;
+    const order = await sub.deleteSubtree('kid', async (id) => {
+      if (!born) { born = true; insert('late', { handle: 'late', parentSessionId: 'kid' }); }
+      db.delete(schema.agentSessions).where(eq(schema.agentSessions.id, id)).run();
+      return id;
+    });
+    expect(order).toEqual(['grandkid', 'late', 'kid']);
+    expect(db.select().from(schema.agentSessions).all()).toEqual([]);
+  });
 });
 
 describe('deleting a parent', () => {
-  it('re-roots its children (no FK) and republishes their summaries', async () => {
+  it('takes its sub-sessions along, at any depth, deepest first (no orphan)', async () => {
     insert('par');
     insert('kid', { parentSessionId: 'par' });
+    insert('grandkid', { parentSessionId: 'kid' });
     insert('other');
     const ops = await import('@/lib/server/agent/sessionOps');
-    expect((await ops.deleteSession('par')).deleted).toBe(true);
-    expect(parentOf('kid')).toBeNull();
-    expect(parentOf('other')).toBeNull();
+    const r = await ops.deleteSession('par');
+    expect(r.deleted).toBe(true);
+    expect(r.descendants).toEqual(['grandkid', 'kid']);
+    expect(db.select().from(schema.agentSessions).all().map((row: any) => row.id)).toEqual(['other']);
   });
   it('the row and its children go at once, its messages in slices (search too); a restart finishes them', async () => {
     const { rawSqlite } = await import('@/lib/db');

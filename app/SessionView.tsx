@@ -335,6 +335,8 @@ export default function SessionView({
   // memo(Message), memo(ToolPanel) and memo(ChatInputBar) hold (§14.38). An
   // unstable prop here re-rendered — and re-parsed — every bubble per frame.
   const onOpenSession = useStableOptionalCallback(onOpenSessionProp);
+  // The background bar opens a sub-session by id (§14.91).
+  const openSubSession = useCallback((id: string) => onOpenSession?.(id), [onOpenSession]);
   const parentSessionId = selected.parentSessionId ?? null;
   const onReauth = useStableOptionalCallback(onReauthProp);
   const onOpenTools = useStableOptionalCallback(onOpenToolsProp);
@@ -1811,7 +1813,7 @@ export default function SessionView({
         <div className="status-strips">
           <BgTasksBar tasks={bgTasks} olderEnded={bgOlderEnded} sessionId={sessionId} vpsId={vpsId} cwd={selected.cwd || null}
             provider={asSessionProvider(sessionKind)}
-            sessionStatus={status ?? 'sleeping'} />
+            sessionStatus={status ?? 'sleeping'} onOpenSession={onOpenSession ? openSubSession : undefined} />
           {/* What will wake the session later (CronCreate / ScheduleWakeup /
               /loop), from its summary. Same placement, same reason. */}
           <ScheduledTasksBar state={selected.scheduledTasks} sessionStatus={status ?? 'sleeping'} />

@@ -301,4 +301,7 @@ export const backgroundWorkText = {
   lostHint: 'The session restarted while this ran: its outcome is unknown.',
   noPerAgentStop: 'no per-agent stop', nothing: 'Nothing in the background right now.',
   stopped: 'stopped', lost: 'lost', untimed: 'no times yet',
+  // Charon sub-sessions (§14.91)
+  charonAgent: 'Charon agent', open: 'Open', interrupt: 'Interrupt', interruptHint: 'Interrupt its turn. The sub-session stays.',
+  under: 'under',
 };

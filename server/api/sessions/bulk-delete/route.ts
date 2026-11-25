@@ -20,6 +20,8 @@ import { syncAfter } from '@/lib/server/sync/sessionSummaries';
 // - The event loop gets a turn between two sessions: each delete cascades
 //   through the message table and its FTS index (§4), and a long synchronous
 //   run would stall every SSE stream of the hub meanwhile.
+// - A session takes its sub-sessions with it (§14.93): they are reported
+//   deleted, and one listed after its parent is not "missing".
 const MAX_IDS = 2000;
 
 export async function POST(req: Request) {
@@ -38,7 +40,9 @@ export async function POST(req: Request) {
 
   const out: BulkDeleteSessionsResponse = { ok: true, deleted: [], missing: [], notPaused: [], failed: [] };
   let tabsDropped = false;
+  const gone = new Set<string>();
   for (const id of ids) {
+    if (gone.has(id)) continue;
     try {
       const [row] = db.select({ status: agentSessions.status }).from(agentSessions)
         .where(eq(agentSessions.id, id)).all();
@@ -49,6 +53,7 @@ export async function POST(req: Request) {
       }
       const r = await deleteSession(id, { announce: false });
       if (r.deleted) out.deleted.push(id); else out.missing.push(id);
+      for (const d of r.descendants) { gone.add(d); out.deleted.push(d); }
       tabsDropped ||= r.tabsDropped;
     } catch (e: any) {
       out.failed.push({ id, error: e?.message ?? String(e) });

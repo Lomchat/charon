@@ -1,5 +1,6 @@
 'use client';
 import { memo, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import { api } from '@/lib/api';
 import { backgroundWorkText as text } from '@/lib/providerText';
 import { summarizeAgentActivity, type AgentActivity, type AgentToolActivity } from '@/lib/subagentActivity';
 import { prettyOutputJson } from './backgroundOutput';
@@ -30,14 +31,20 @@ function ToolCard({ call, expanded, toggle }: { call: AgentToolActivity; expande
 }
 
 /** Public actions and conclusions are two independent, always-visible readers. */
-function BgAgentActivity({ sessionId, task, label, phase, nativeAgent, workflowAgent, running, identity, preview, mission }: {
+function BgAgentActivity({ sessionId, task, label, phase, nativeAgent, workflowAgent, session, runShown, running, identity, preview, mission }: {
   sessionId: string; task?: string; label?: string; phase?: string; nativeAgent?: string; running: boolean;
+  /** A Charon sub-session: its own transcript (§14.91). */
+  session?: string;
+  /** The detail's head already names the model and effort. */
+  runShown?: boolean;
   /** With `task`: that workflow's node by native id (repeated labels are fine). */
   workflowAgent?: string;
   identity: string; preview?: string | null; mission?: string | null;
 }) {
-  const data = useWorkflowOutput(sessionId, nativeAgent ? { agent: nativeAgent, activity: '1' }
-    : workflowAgent ? { task, agent: workflowAgent } : { task, label, phase }, running, identity);
+  const data = useWorkflowOutput(session ?? sessionId, session ? { agent: session }
+    : nativeAgent ? { agent: nativeAgent, activity: '1' }
+    : workflowAgent ? { task, agent: workflowAgent } : { task, label, phase }, running, identity,
+  session ? api.getSessionOutput : api.getWorkflowOutput);
   const view = data.view;
   const activity = useRef<HTMLDivElement>(null), output = useRef<HTMLDivElement>(null);
   const [shown, setShown] = useState(() => ({ activity: view.activitySnapshot || data.entries, output: view.outputSnapshot || data.entries }));
@@ -131,8 +138,8 @@ function BgAgentActivity({ sessionId, task, label, phase, nativeAgent, workflowA
         <pre>{missionText}{data.info.missionTruncated ? `\n${text.missionExcerpt}` : ''}</pre>
       </details>}
       <div className="bga-facts">
-        {(summary.model || data.info.model) && <span><small>{text.model}</small>{shortModel(summary.model || data.info.model!)}</span>}
-        {(summary.effort || data.info.effort) && <span><small>{text.effort}</small>{summary.effort || data.info.effort}</span>}
+        {!runShown && (summary.model || data.info.model) && <span><small>{text.model}</small>{shortModel(summary.model || data.info.model!)}</span>}
+        {!runShown && (summary.effort || data.info.effort) && <span><small>{text.effort}</small>{summary.effort || data.info.effort}</span>}
         {(data.info.phase || phase) && <span><small>{text.phase}</small>{data.info.phase || phase}</span>}
         <span><small>{text.lastActivity}</small><time title={summary.last || undefined}>{time(summary.last)}</time></span>
       </div>

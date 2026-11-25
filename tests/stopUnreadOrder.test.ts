@@ -192,6 +192,42 @@ describe('background finish: unread before its push (G6)', () => {
   });
 });
 
+describe('sub-sessions are background work (§14.91)', () => {
+  it('a working sub-session parks the parent; its end frees it; the notice waits for the answer turn', async () => {
+    const CHILD = '7'.repeat(32);
+    const streams = (globalThis as any)._sessionStreams as Map<string, unknown>;
+    db.delete(schema.agentSessions).where(eq(schema.agentSessions.id, CHILD)).run();
+    db.insert(schema.agentSessions).values({
+      id: CHILD, vpsId: VPS_ID, cwd: '/tmp', name: 'child', status: 'thinking', parentSessionId: SID,
+    }).run();
+    const s = mkStream('thinking');
+    streams.set(SID, s);
+    try {
+      s._onAgentEvent(ev({ event: 'stop', subtype: 'success' }));
+      await vi.advanceTimersByTimeAsync(0);
+      expect(contract()).toEqual(['stop', 'status:background', 'push:session_background', 'telegram:session_background']);
+      expect(row()).toMatchObject({ status: 'background', unreadStop: 0 });
+      expect(s.runningBgTaskCount()).toBe(1);
+      // The daemon's idle `active` does not repaint it while the child works.
+      s._onAgentEvent(ev({ event: 'status', status: 'active' }));
+      expect(s.status).toBe('background');
+      order.log = [];
+      // The child's turn ends: its status frame reaches the parent.
+      const { setSessionStatusLocal } = await import('@/lib/server/agent/sessionOps');
+      setSessionStatusLocal(CHILD, 'active');
+      await vi.advanceTimersByTimeAsync(0);
+      expect(contract()).toEqual(['status:active']);
+      await vi.advanceTimersByTimeAsync(10_000);
+      expect(contract()).toEqual(['status:active']);
+      await vi.advanceTimersByTimeAsync(60_000);
+      expect(contract()).toEqual(['status:active', 'unread:true', 'push:session_finished', 'telegram:session_finished']);
+    } finally {
+      streams.delete(SID);
+      db.delete(schema.agentSessions).where(eq(schema.agentSessions.id, CHILD)).run();
+    }
+  });
+});
+
 describe('unread gaps', () => {
   it('U1: a task revealed after the stop clears the marker AND publishes it', () => {
     const s = mkStream('thinking');

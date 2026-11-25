@@ -29,6 +29,8 @@ import {
   sidebarVisiblePathItems,
 } from './sidebarPathGroups';
 import { MAX_SUB_INDENT, nestSubSessions, renderedSessionIds, type SubSessionRow } from './sidebarSubSessions';
+import { addOverlay, getSummary } from './sync/summaryStore';
+import { api } from '@/lib/api';
 import { ALL_BACKENDS_ENABLED, enabledKinds, type EnabledBackends } from './enabledBackends';
 import {
   DEFAULT_SESSION_PROVIDER, PROVIDERS, SESSION_PROVIDERS, providerBackendState,
@@ -358,8 +360,19 @@ export default function Sidebar({
 
   const [collapsedVps, setVpsCollapsed] = useCollapsedGroups('hub.claude.collapsedVps.v2');
   const [collapsedPaths, setPathCollapsed] = useCollapsedGroups('hub.claude.collapsedPaths.v1');
-  // Parents whose sub-sessions are folded (default: unfolded).
-  const [subFolded, setSubFolded] = useCollapsedGroups('hub.sidebar.subFolded.v1');
+  // Parents whose sub-sessions are folded: all but the ones opened by hand, a
+  // hub fact every tab follows (`subSessionsOpen`, §14.93). Keyed by its ids
+  // so a summary change elsewhere keeps the same set.
+  const subFoldedKey = useMemo(() => {
+    const parents = new Set(sessions.flatMap((s) => (s.parentSessionId ? [s.parentSessionId] : [])));
+    return sessions.filter((s) => parents.has(s.id) && !s.subSessionsOpen).map((s) => s.id).sort().join('\n');
+  }, [sessions]);
+  const subFolded = useMemo<ReadonlySet<string>>(() => new Set(subFoldedKey ? subFoldedKey.split('\n') : []), [subFoldedKey]);
+  const setSubFolded = useCallback((id: string) => {
+    const open = !getSummary(id)?.subSessionsOpen;
+    const o = addOverlay(id, { subSessionsOpen: open ? 1 : 0 });
+    api.setSubSessionsOpen(id, open).then((r) => o.ack(r?.sync), () => o.fail());
+  }, []);
 
   // The two view axes (app/showPaused.ts, §14.118): the moon = ONLY sleeping
   // sessions (off = only the awake ones), the eye = ONLY hidden sessions
@@ -597,7 +610,7 @@ export default function Sidebar({
       ? vpsList.filter((v) => !vpsFolders.some((known) => known.id === v.folderId))
       : (vpsByFolder.get(folder.id) ?? []);
     return folderVps.flatMap((vps) => collapsedVps.has(vps.id) ? [] : renderedSessionIds(
-      sessionsFor(vps.id), subFolded, (path) => collapsedPaths.has(pathCollapseKey(vps.id, path)),
+      sessionsFor(vps.id), subFolded, (path) => collapsedPaths.has(pathCollapseKey(vps.id, path)), selectedId,
     ));
   });
 
@@ -1532,14 +1545,14 @@ function WorkspacePathGroups({
       return group;
     };
     // Sub-sessions render under their parent, inside the parent's group.
-    for (const nested of nestSubSessions(sessions, subFolded)) {
+    for (const nested of nestSubSessions(sessions, subFolded, selectedId)) {
       const group = ensure(nested.path);
       group.rows = nested.rows;
       group.total = nested.total;
     }
     for (const shell of shells) ensure(sidebarPathKey(shell.cwd)).shells.push(shell);
     return [...byPath.values()];
-  }, [sessions, shells, subFolded]);
+  }, [sessions, shells, subFolded, selectedId]);
 
   // Only a path holding sessions can move: order lives in `position` on the
   // session rows, so a shell-only group has nothing to carry it — and since

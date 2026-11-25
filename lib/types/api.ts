@@ -1832,7 +1832,8 @@ export type SessionSearchResponse = { results: SearchSessionsResult[] };
 // (DB cascade). Before the kill→delete rework, the `hard` flag distinguished
 // soft-kill (status='killed') from hard-delete (cascade). Soft-kill no
 // longer exists — DELETE is always destructive.
-export type DeleteAgentSessionResponse = { ok: true };
+/** `descendants`: its sub-sessions, deleted with it (§14.93). */
+export type DeleteAgentSessionResponse = { ok: true; descendants?: string[] };
 
 // POST /api/sessions/bulk-delete — the paused-sessions cleanup. Same
 // destruction as the DELETE above, N at a time, announced ONCE. `onlyPaused`
@@ -1936,7 +1937,9 @@ export type SessionEndpointBody = { endpoint?: import('@/lib/customEndpoints').E
 // `task` + `agent`: that workflow's node by native id (no label lookup).
 export type WorkflowOutputQuery = { task?: string; label?: string; phase?: string; agent?: string; activity?: '1'; before?: number; after?: number; expectedAgent?: string; fileId?: string; cursor?: string };
 export type WorkflowOutputResponse =
-  | { ok: true; agentId: string; blocks: string[]; entries: import('@/lib/subagentActivity').AgentActivity[]; info?: import('@/lib/subagentActivity').AgentTranscriptInfo; nextBefore: number | null; nextAfter: number; moreAfter: boolean; fileId: string; cursor: string; source: 'workflow_transcript' }
+  | { ok: true; agentId: string; blocks: string[]; entries: import('@/lib/subagentActivity').AgentActivity[]; info?: import('@/lib/subagentActivity').AgentTranscriptInfo; nextBefore: number | null; nextAfter: number; moreAfter: boolean; fileId: string; cursor: string;
+      /** `session_transcript`: a Charon sub-session's own rows (`…/activity`, §14.91). */
+      source: 'workflow_transcript' | 'session_transcript' }
   | { ok: false; error: string; reason?: string };
 
 export type WorkflowAgentsResponse =

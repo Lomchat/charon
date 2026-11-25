@@ -18,7 +18,7 @@ export function terminalCommand(term: CodexTerminal): string {
   return typeof term.command === 'string' && term.command ? term.command : terminalId(term);
 }
 
-export type FriseKind = 'command' | 'agent' | 'workflow' | 'process' | 'task';
+export type FriseKind = 'command' | 'agent' | 'workflow' | 'process' | 'task' | 'charon';
 export function isWorkflowTask(t: Pick<BgTask, 'taskType' | 'workflowName'>): boolean {
   return t.taskType === 'local_workflow' || !!t.workflowName;
 }
@@ -40,6 +40,16 @@ export function friseStatus(t: Pick<BgTask, 'stopCause'>, status: BgTaskStatus):
     case 'failed': return 'failed';
     case 'killed': return t.stopCause === 'time_limit' ? 'timelimit' : 'stopped';
     default: return 'lost';
+  }
+}
+/** A Charon sub-session's lane: its live status (§14.91). */
+export function charonFriseStatus(status: string): FriseStatus {
+  switch (status) {
+    case 'thinking': case 'starting': case 'background': return 'running';
+    case 'active': return 'done';
+    case 'failed': case 'error': return 'failed';
+    case 'sleeping': return 'stopped';
+    default: return 'unknown';
   }
 }
 export type FriseRange = 'auto' | '1h' | '6h' | 'all';

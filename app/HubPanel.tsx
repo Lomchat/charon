@@ -60,6 +60,7 @@ import { useAccountProfiles, useAccountProfilesLoaded, refreshAccountProfiles } 
 import PromptModal from './PromptModal';
 import { useModelNotices } from './useModelNotices';
 import SessionView from './SessionView';
+import { subSessionsDeletedWith } from './sidebarSubSessions';
 import HeaderSessionNav from './HeaderSessionNav';
 import AccountNav from './AccountNav';
 import ResetCalendar from './ResetCalendar';
@@ -1865,13 +1866,16 @@ export default function HubPanel({ vpsList: initialVpsList, vpsFolders: initialF
   // `<SessionView>`.
   function deleteSessionOne(id: string) {
     if (deletingSessionIds.has(id)) return;
-    setDeletingSessionIds((current) => new Set(current).add(id));
+    // Its sub-sessions go with it (§14.93): their cards go red too.
+    const subtree = [id, ...subSessionsDeletedWith([id], sessions).map((s) => s.id)];
+    setDeletingSessionIds((current) => new Set([...current, ...subtree]));
     void api.deleteAgentSession(id).then((r) => {
       // The summary `null` frame normally wins this race; the overlay hides
       // the row until this tab's bus position covers the deletion, so a
       // dropped SSE never leaves a completed red card behind.
-      addOverlay(id, { removed: true }).ack(r?.sync);
-      if (id === selectedId) setSelectedId(null);
+      const gone = [id, ...(r?.descendants ?? [])];
+      for (const g of gone) addOverlay(g, { removed: true }).ack(r?.sync);
+      if (selectedId && gone.includes(selectedId)) setSelectedId(null);
       refreshIfDegraded();
     }).catch((e: any) => {
       // The row stays in place and loses its deleting treatment, making retry
@@ -1881,7 +1885,7 @@ export default function HubPanel({ vpsList: initialVpsList, vpsFolders: initialF
     }).finally(() => {
       setDeletingSessionIds((current) => {
         const next = new Set(current);
-        next.delete(id);
+        for (const g of subtree) next.delete(g);
         return next;
       });
     });
@@ -1891,9 +1895,11 @@ export default function HubPanel({ vpsList: initialVpsList, vpsFolders: initialF
   // those still paused when the server gets to them (bulk-delete route). The
   // cards go red for the duration exactly as with `deleteSessionOne`.
   async function deletePausedSessions(ids: string[]) {
+    // Their sub-sessions go with them (§14.93): red too.
+    const marked = [...ids, ...subSessionsDeletedWith(ids, sessions).map((s) => s.id)];
     setDeletingSessionIds((current) => {
       const next = new Set(current);
-      for (const id of ids) next.add(id);
+      for (const id of marked) next.add(id);
       return next;
     });
     const res = await outcome(api.bulkDeleteSessions({ ids, onlyPaused: true }));
@@ -1907,7 +1913,7 @@ export default function HubPanel({ vpsList: initialVpsList, vpsFolders: initialF
     }
     setDeletingSessionIds((current) => {
       const next = new Set(current);
-      for (const id of ids) next.delete(id);
+      for (const id of marked) next.delete(id);
       return next;
     });
     refreshIfDegraded();
@@ -2900,6 +2906,7 @@ export default function HubPanel({ vpsList: initialVpsList, vpsFolders: initialF
         <PausedSessionsModal
           hidden={pausedCleanupOpen.hidden}
           sessions={sessions.filter((s) => (s.hidden === 1) === pausedCleanupOpen.hidden)}
+          allSessions={sessions}
           vpsList={vpsList}
           vpsFolders={vpsFolders}
           deletingSessionIds={deletingSessionIds}
@@ -2908,10 +2915,14 @@ export default function HubPanel({ vpsList: initialVpsList, vpsFolders: initialF
         />
       )}
 
-      {confirmDelete && (
+      {confirmDelete && (() => {
+        // A session never goes without its sub-sessions (§14.93): named, in red.
+        const alsoDeleted = subSessionsDeletedWith(confirmDelete.map((s) => s.id), sessions);
+        const total = confirmDelete.length + alsoDeleted.length;
+        return (
         <ConfirmModal
           title={confirmDelete.length === 1 ? 'Delete session' : `Delete ${confirmDelete.length} sessions`}
-          confirmLabel={confirmDelete.length === 1 ? 'delete permanently' : `delete ${confirmDelete.length} permanently`}
+          confirmLabel={total === 1 ? 'delete permanently' : `delete ${total} permanently`}
           busyLabel="deleting…"
           onConfirm={() => {
             // Start, close, then let the red sidebar card own progress.
@@ -2934,12 +2945,24 @@ export default function HubPanel({ vpsList: initialVpsList, vpsFolders: initialF
               ))}
             </ul>
           )}
+          {alsoDeleted.length > 0 && (
+            <div className="confirm-cascade" role="alert">
+              <p>
+                <b>{alsoDeleted.length} sub-session{alsoDeleted.length === 1 ? '' : 's'}</b>
+                {confirmDelete.length === 1 ? ' of this session' : ' of these sessions'} will be deleted too:
+              </p>
+              <ul className="confirm-list">
+                {alsoDeleted.map((s) => <li key={s.id}>{s.name || (s.handle ? `@${s.handle}` : s.id.slice(0, 8))}</li>)}
+              </ul>
+            </div>
+          )}
           <p className="confirm-text">
             {confirmDelete.length === 1 ? 'The session and its whole history' : 'These sessions and their whole histories'}
             {' (messages, permissions, logs) will be permanently deleted. This cannot be undone — to keep them around, pause them instead.'}
           </p>
         </ConfirmModal>
-      )}
+        );
+      })()}
     </div>
     </PanelLayoutProvider>
   );

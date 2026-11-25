@@ -21,7 +21,7 @@ import {
 import type { PermissionMode } from '@/lib/server/hub/types';
 import type { WorkerEvent, WorkerStatus, AccountUsage, WaitingInput } from '@/lib/server/hub/types';
 import { getAgentClientForVpsId } from './AgentClientPool';
-import { handlePeerKillRequest, handlePeerSpawnRequest, wakeForPeerAnswer } from '@/lib/server/hub/subSessions';
+import { deleteSubtree, handlePeerKillRequest, handlePeerSpawnRequest, wakeForPeerAnswer } from '@/lib/server/hub/subSessions';
 import { peerPendingFromWire } from '@/lib/peerPending';
 import type { AgentSessionInfo } from './types';
 import { sendPushToAll } from '@/lib/server/hub/webPush';
@@ -104,6 +104,13 @@ import {
 // declared done. Long enough for the model's automatic follow-up turn (§14.54)
 // to claim the session, short enough to feel immediate. cf. §14.91.
 const BG_FINISH_GRACE_MS = 5_000;
+// The same, when the last work was a sub-session: its answer comes back as a
+// new turn, possibly after the agent's quiet settle (`_PEER_SETTLE_S`, 45 s).
+const SUB_SESSION_FINISH_GRACE_MS = 60_000;
+/** Statuses of a sub-session at work: its ancestors' background work. */
+const SUB_SESSION_WORKING = new Set(['thinking', 'starting', 'background']);
+/** Deeper than any sub-session tree may grow (MAX_SUBSESSION_DEPTH). */
+const SUB_SESSION_WALK_MAX = 8;
 
 // Trailing window of the live `session_token_usage` broadcast: a burst of
 // usage rows publishes ONE frame (clients merge by `revision`, so a skipped
@@ -430,6 +437,77 @@ export function subscribeGlobalSessionEvents(cb: (ev: GlobalSessionEvent) => voi
 
 function emitGlobalSession(ev: GlobalSessionEvent): void {
   publish(ev as GlobalSessionEvent & Record<string, unknown>);
+}
+
+// ── Sub-sessions = their ancestors' background work (§14.91/93) ─────────────
+// A sub-session at work, at any depth, counts as one running background task
+// of every ancestor and keeps a finished ancestor `background`. Its status
+// frames re-read each ancestor (`onSubSessionWork`).
+
+/** The descendants of `rootId` at work (live status first, the row's
+ *  otherwise); archived ones never run. Indexed by `parent_session_id`. */
+export function runningSubSessionIds(rootId: string): string[] {
+  const out: string[] = [];
+  const seen = new Set([rootId]);
+  let level = [rootId];
+  for (let depth = 0; depth < SUB_SESSION_WALK_MAX && level.length > 0; depth++) {
+    const rows = db.select({ id: agentSessions.id, status: agentSessions.status, archived: agentSessions.archived })
+      .from(agentSessions).where(inArray(agentSessions.parentSessionId, level)).all();
+    level = [];
+    for (const r of rows) {
+      if (seen.has(r.id)) continue;
+      seen.add(r.id);
+      level.push(r.id);
+      if (!r.archived && SUB_SESSION_WORKING.has(streams.get(r.id)?.status ?? r.status)) out.push(r.id);
+    }
+  }
+  return out;
+}
+
+type SubWorkState = { parents: Map<string, string | null>; pending: Set<string>; queued: boolean; subscribed: boolean };
+const subWork: SubWorkState = ((globalThis as unknown as { __charonSubWork?: SubWorkState })
+  .__charonSubWork ??= { parents: new Map(), pending: new Set(), queued: false, subscribed: false });
+
+/** A session's parent, cached: a deleted child's `killed` frame still finds it. */
+function parentSessionOf(id: string): string | null {
+  const known = subWork.parents.get(id);
+  if (known !== undefined) return known;
+  const row = db.select({ p: agentSessions.parentSessionId }).from(agentSessions)
+    .where(eq(agentSessions.id, id)).get();
+  if (!row) return null;
+  subWork.parents.set(id, row.p ?? null);
+  return row.p ?? null;
+}
+
+function flushSubSessionWork(): void {
+  subWork.queued = false;
+  const parents = [...subWork.pending];
+  subWork.pending.clear();
+  const done = new Set<string>();
+  for (const first of parents) {
+    for (let id: string | null = first, hops = 0; id && hops < SUB_SESSION_WALK_MAX && !done.has(id); hops++) {
+      done.add(id);
+      const stream = streams.get(id);
+      // No live stream: the count moved; its status waits for the reconcile.
+      if (stream) stream.onSubSessionWork();
+      else markSummaryDirty(id);
+      id = parentSessionOf(id);
+    }
+  }
+}
+
+if (!subWork.subscribed) {
+  subWork.subscribed = true;
+  subscribeFrames((f) => {
+    if (f.type !== 'status' || !f.sessionId) return;
+    // Resolved now: a deleted child's row is gone by the flush.
+    const parent = parentSessionOf(f.sessionId);
+    if (!parent) return;
+    subWork.pending.add(parent);
+    if (subWork.queued) return;
+    subWork.queued = true;
+    queueMicrotask(flushSubSessionWork);
+  });
 }
 
 /**
@@ -1826,7 +1904,7 @@ export class SessionStream {
         // `active` would repaint the session green a few ms after `stop` set it
         // to `background` (§14.91). Only the last task finishing clears it —
         // see _trackBgTask.
-        if (ev.status === 'active' && this.status === 'background' && this.hasRunningBgTasks()) {
+        if (ev.status === 'active' && this.status === 'background' && this.hasBackgroundWork()) {
           break;
         }
         if (ev.status === 'thinking' || ev.status === 'starting') {
@@ -2976,7 +3054,7 @@ export class SessionStream {
         // session is neither working nor finished, and calling it finished is
         // what put a green "done" on sessions that were still busy (§14.91). A
         // failed turn still wins — it is the more urgent thing to report.
-        const bgPending = !alreadyFinished && !terminalError && this.hasRunningBgTasks();
+        const bgPending = !alreadyFinished && !terminalError && this.hasBackgroundWork();
         // Not a finish (no unread marker, push or Telegram; errors still are):
         // an interrupted turn, or inputs held by a compaction (§14.125) still
         // wait / one went out into this turn unanswered — the next turn is theirs.
@@ -3095,7 +3173,7 @@ export class SessionStream {
           && (terminalError || !this.peerDrivenFinish)) {
           const terminalError = this.terminalErrorLatched;
           const providerLabel = providerDisplayName(this.kind);
-          const bgCount = bgPending ? bgWorkCount(this.id, this.bgRunning!) : 0;
+          const bgCount = bgPending ? this.runningBgTaskCount() : 0;
           const finishedBody = `${providerLabel} finished its response${bgCount > 0
             ? ` — ${bgCount} background task${bgCount === 1 ? '' : 's'} still running`
             : ''}`;
@@ -4867,12 +4945,30 @@ export class SessionStream {
    *  owner). The list GET's read: a cold registry is not folded synchronously
    *  there — 0 while it warms (cosmetic; the session's status is unchanged). */
   runningBgTaskCount(): number {
+    return this._nativeBgTaskCount() + runningSubSessionIds(this.id).length;
+  }
+
+  private _nativeBgTaskCount(): number {
     if (this.bgRunning == null) {
       const running = runningBgTasksIfWarm(this.id);
       if (running == null) return 0;
       this.bgRunning = running;
     }
     return this.hasRunningBgTasks() ? bgWorkCount(this.id, this.bgRunning!) : 0;
+  }
+
+  /** Native tasks or sub-sessions at work: what keeps a finished turn
+   *  `background` (sub-sessions count at any depth, §14.91). */
+  hasBackgroundWork(): boolean {
+    return this.hasRunningBgTasks() || runningSubSessionIds(this.id).length > 0;
+  }
+
+  /** A sub-session below this one started or stopped working: the count
+   *  moved, and the last one ending frees a parked session. Its answer comes
+   *  back as a new turn, whose stop notifies: the notice waits longer. */
+  onSubSessionWork(): void {
+    this._announceBgCount();
+    this._onLastBgTaskEnded(SUB_SESSION_FINISH_GRACE_MS);
   }
 
   /** Mirror the count onto every tab (LOW_VOLUME `session_bg_tasks`): the
@@ -4944,15 +5040,15 @@ export class SessionStream {
    *  session was parked in `background` — it is genuinely idle now. Shared with
    *  the `turn_end` reconciliation, which can reach this state by learning that
    *  a task we never saw finish is gone. */
-  private _onLastBgTaskEnded(): void {
-    if (this.status !== 'background') return;
+  private _onLastBgTaskEnded(graceMs = BG_FINISH_GRACE_MS): void {
+    if (this.status !== 'background' || this.hasBackgroundWork()) return;
     this.status = 'active';
     try {
       db.update(agentSessions).set({ status: 'active' })
         .where(eq(agentSessions.id, this.id)).run();
     } catch {}
     this._broadcast({ type: 'status', status: 'active' });
-    this._scheduleBgFinishNotice();
+    this._scheduleBgFinishNotice(graceMs);
   }
 
   /**
@@ -4999,12 +5095,12 @@ export class SessionStream {
    * feature exists to remove. If a new turn does start, its own `stop` sends
    * the normal notification instead.
    */
-  private _scheduleBgFinishNotice(): void {
+  private _scheduleBgFinishNotice(graceMs = BG_FINISH_GRACE_MS): void {
     this._cancelBgFinish();
     const t = setTimeout(() => {
       this.bgFinishTimer = null;
       if (this.status !== 'active') return;         // a new turn / sleep took over
-      if (this.hasRunningBgTasks()) return;         // more work showed up
+      if (this.hasBackgroundWork()) return;         // more work showed up
       if (this.peerDrivenFinish ?? this._peerTurnFromHistory()) return;
       // Same passive marker as a normal finish (§14.47) — this IS the finish.
       // Marked BEFORE the push: in-app green never trails a push (G6).
@@ -5023,7 +5119,7 @@ export class SessionStream {
         `✓ ${this.vpsName} · ${this._label()}\nbackground tasks finished`,
         `/?session=${this.id}`, 'session_finished',
       ).catch(() => {});
-    }, BG_FINISH_GRACE_MS);
+    }, graceMs);
     // Never hold the process open for a notification.
     (t as unknown as { unref?: () => void }).unref?.();
     this.bgFinishTimer = t;
@@ -6131,7 +6227,7 @@ export async function resumeSession(sessionId: string): Promise<SessionStream> {
     // not "done" while that work runs (§14.91). Every hub restart resumes the
     // live sessions, so adopting it verbatim repainted them all green. A real
     // restart is different — its `ready` buries the dead CLI's tasks.
-    if (resumedNoop && resolvedStatus === 'active' && stream.hasRunningBgTasks()) {
+    if (resumedNoop && resolvedStatus === 'active' && stream.hasBackgroundWork()) {
       resolvedStatus = 'background';
     }
     // If the user had already opened the SSE before the resume, attach() has
@@ -6372,6 +6468,25 @@ export async function stopBackgroundTask(sessionId: string, taskId: string): Pro
 export async function deleteSession(
   sessionId: string,
   opts: { announce?: boolean } = {},
+): Promise<{ deleted: boolean; tabsDropped: boolean; descendants: string[] }> {
+  // Its sub-sessions go with it, at any depth, deepest first (§14.93): a
+  // deletion never leaves one behind, whoever asks (user, bulk, parent).
+  let root = { deleted: false, tabsDropped: false };
+  let tabsDropped = false;
+  const descendants: string[] = [];
+  await deleteSubtree(sessionId, async (id) => {
+    const r = await deleteOneSession(id, opts);
+    tabsDropped ||= r.tabsDropped;
+    if (id === sessionId) root = r;
+    else if (r.deleted) descendants.push(id);
+    return r.deleted ? id : null;
+  });
+  return { ...root, tabsDropped, descendants };
+}
+
+async function deleteOneSession(
+  sessionId: string,
+  opts: { announce?: boolean } = {},
 ): Promise<{ deleted: boolean; tabsDropped: boolean }> {
   const announce = opts.announce ?? true;
   const [row] = db.select().from(agentSessions).where(eq(agentSessions.id, sessionId)).all();
@@ -6399,7 +6514,8 @@ export async function deleteSession(
     const visibleSiblings = siblings.filter((sibling) => sibling.archived === 0);
     const order = sidebarOrderAfterDelete(visibleSiblings, sessionId);
     tx.delete(sessionLogs).where(eq(sessionLogs.sessionId, sessionId)).run();
-    // No FK on parent_session_id: children are re-rooted here (sub-sessions).
+    // No FK on parent_session_id. Its children went first (deleteSession); one
+    // still here (its own delete failed) is re-rooted, never left dangling.
     orphans = tx.select({ id: agentSessions.id }).from(agentSessions)
       .where(eq(agentSessions.parentSessionId, sessionId)).all().map((r) => r.id);
     if (orphans.length) {
@@ -6629,7 +6745,7 @@ export async function reconcileVpsAgentState(
     // The registry is derived from the persisted rows, so it is still true
     // after a hub restart — and if the tasks did end meanwhile, this falls
     // through and the realign below fixes the row.
-    if (row.status === 'background' && agentStatus === 'active' && stream.hasRunningBgTasks()) {
+    if (row.status === 'background' && agentStatus === 'active' && stream.hasBackgroundWork()) {
       if (stream.status !== 'background') setSessionStatusLocal(sid, 'background', { persist: false });
       continue;
     }

@@ -6,14 +6,15 @@ import TaskModal from './TaskModal';
 import BgFrise from './BgFrise';
 import { bgTaskOwnAgent, bgWorkItems, CODEX_TERMINAL_TASK_PREFIX, effectiveBgStatus } from './bgTasks';
 import { useBgAgentRuns } from './AgentRunTag';
+import { useCharonAgents } from './charonAgents';
 import { isWorkflowTask, terminalCommand, terminalId, type CodexTerminal } from './bgFrise';
 import type { BgTask } from './bgTasks';
 import type { SessionProvider } from '@/lib/sessionCapabilities';
 
 // ── BgTasksBar ───────────────────────────────────────────────────────────────
 // Slim status line above the chat input: shows the session's BACKGROUND tasks
-// (Bash run_in_background / background subagents) — how many are running and
-// what the freshest one is doing. Click → the modal: ONE frise of every
+// (Bash run_in_background / background subagents / Charon sub-sessions at any
+// depth, §14.91) — how many are running and what the freshest one is doing. Click → the modal: ONE frise of every
 // command, agent, workflow and process (`BgFrise`), the selected one's detail
 // underneath.
 //
@@ -43,7 +44,7 @@ function agentsDone(t: BgTask): number {
   return (t.agents ?? []).filter((a) => (a.state ?? '').toLowerCase() === 'done').length;
 }
 
-function BgTasksBarImpl({ tasks, olderEnded = 0, sessionId, provider, sessionStatus, vpsId, cwd }: {
+function BgTasksBarImpl({ tasks, olderEnded = 0, sessionId, provider, sessionStatus, vpsId, cwd, onOpenSession }: {
   tasks: BgTask[];
   /** Finished items older than the hub's history (counted, not listed). */
   olderEnded?: number;
@@ -52,6 +53,8 @@ function BgTasksBarImpl({ tasks, olderEnded = 0, sessionId, provider, sessionSta
   cwd: string | null;
   provider: SessionProvider;
   sessionStatus: string;
+  /** Opens a sub-session (its lane, its detail). */
+  onOpenSession?: (id: string) => void;
 }) {
   const [open, setOpen] = useState(false);
   const [selectedTaskId, setSelectedTaskId] = useState<string | null>(null);
@@ -63,6 +66,25 @@ function BgTasksBarImpl({ tasks, olderEnded = 0, sessionId, provider, sessionSta
   const [terminals, setTerminals] = useState<CodexTerminal[]>([]);
   const [terminalError, setTerminalError] = useState<string | null>(null);
   const [terminalKilling, setTerminalKilling] = useState<Record<string, 'pending' | string>>({});
+  // Sub-sessions under this one (§14.91); an interrupt stops a turn, not them.
+  const charon = useCharonAgents(sessionId);
+  const [interrupting, setInterrupting] = useState<Record<string, 'pending' | string>>({});
+  const interrupt = useCallback(async (id: string) => {
+    setInterrupting((k) => ({ ...k, [id]: 'pending' }));
+    try {
+      await sessionApi.interrupt(id);
+      setTimeout(() => setInterrupting((k) => {
+        if (k[id] !== 'pending') return k;
+        const next = { ...k }; delete next[id]; return next;
+      }), STOP_RETRY_MS);
+    } catch (e: any) {
+      setInterrupting((k) => ({ ...k, [id]: e?.message ?? 'failed' }));
+    }
+  }, []);
+  const openAgent = useCallback((id: string) => {
+    setOpen(false);
+    onOpenSession?.(id);
+  }, [onOpenSession]);
 
   const kill = useCallback(async (taskId: string) => {
     setKilling((k) => ({ ...k, [taskId]: 'pending' }));
@@ -154,19 +176,23 @@ function BgTasksBarImpl({ tasks, olderEnded = 0, sessionId, provider, sessionSta
     [taskView],
   );
   const ended = useMemo(() => taskView.filter((v) => v.status !== 'running'), [taskView]);
+  const charonRunning = useMemo(() => charon.filter((a) => a.running), [charon]);
+  const charonEnded = charon.length - charonRunning.length;
   const lastEndedAt = useMemo(
-    () => view.reduce((m, { t }) => Math.max(m, t.endedAt ?? 0), 0),
-    [view],
+    () => Math.max(view.reduce((m, { t }) => Math.max(m, t.endedAt ?? 0), 0),
+      ...charon.map((a) => Math.floor((a.endMs ?? 0) / 1000))),
+    [view, charon],
   );
 
   // 1s ticker for the elapsed display — armed only while something runs
   // (or the modal is open on a running list). Self-contained state: ticking
   // re-renders THIS memo'd component only, never the chat.
+  const anyRunning = running.length + charonRunning.length > 0;
   useEffect(() => {
-    if (running.length === 0 && !open) return;
+    if (!anyRunning && !open) return;
     const iv = setInterval(() => setNowS(Math.floor(Date.now() / 1000)), 1000);
     return () => clearInterval(iv);
-  }, [running.length, open]);
+  }, [anyRunning, open]);
 
   const defaultTask = running[running.length - 1] ?? ended[0]?.t;
   // What each background agent runs on (model + effort), read while open.
@@ -178,10 +204,10 @@ function BgTasksBarImpl({ tasks, olderEnded = 0, sessionId, provider, sessionSta
 
   const close = useCallback(() => setOpen(false), []);
 
-  const runningCount = running.length + terminals.length;
+  const runningCount = running.length + terminals.length + charonRunning.length;
   // An open modal never vanishes under its reader when the grace runs out.
   const visible = open || runningCount > 0
-    || (view.length > 0 && lastEndedAt > 0 && nowS - lastEndedAt < ENDED_GRACE_S);
+    || ((view.length > 0 || charon.length > 0) && lastEndedAt > 0 && nowS - lastEndedAt < ENDED_GRACE_S);
   if (!visible) return null;
 
   // Phone: "bg" (app.css swaps the two words at the 820px breakpoint).
@@ -190,9 +216,12 @@ function BgTasksBarImpl({ tasks, olderEnded = 0, sessionId, provider, sessionSta
     <span className="bg-long">background work</span><span className="bg-short">bg</span>
     {runningCount > 0 ? ' running' : ' finished'}
   </>;
+  // The newest sub-session at work speaks when no task runs.
+  const newestAgent = running.length > 0 ? undefined
+    : charonRunning.reduce<typeof charonRunning[number] | undefined>((m, a) => (!m || a.startMs > m.startMs ? a : m), undefined);
   const newest = running.length > 0 ? running[running.length - 1]
-    : terminals.length > 0 ? undefined : ended[0]?.t;
-  const newestTerminal = terminals[terminals.length - 1];
+    : terminals.length > 0 || newestAgent ? undefined : ended[0]?.t;
+  const newestTerminal = newestAgent ? undefined : terminals[terminals.length - 1];
 
   return (
     <>
@@ -213,6 +242,12 @@ function BgTasksBarImpl({ tasks, olderEnded = 0, sessionId, provider, sessionSta
             {running.length > 0 && ` · ${fmtElapsed(newest.startedAt, nowS)}`}
           </span>
         )}
+        {newestAgent && (
+          <span className="bgtasks-snippet">
+            <span className="bgtask-badge charon" aria-hidden>⧉</span>
+            {newestAgent.name} · {fmtElapsed(Math.floor(newestAgent.startMs / 1000), nowS)}
+          </span>
+        )}
         {!newest && newestTerminal && (
           <span className="bgtasks-snippet">
             <span className="bgtask-badge workflow" aria-hidden>⌘</span>
@@ -230,7 +265,7 @@ function BgTasksBarImpl({ tasks, olderEnded = 0, sessionId, provider, sessionSta
           title="Background work"
           subtitle={<>
             {runningCount > 0 ? `${runningCount} running` : 'Nothing running'}
-            {ended.length + olderEnded > 0 && ` · ${ended.length + olderEnded} finished`}
+            {ended.length + olderEnded + charonEnded > 0 && ` · ${ended.length + olderEnded + charonEnded} finished`}
             {' · stopping one leaves the session running'}
           </>}
           onClose={close}
@@ -238,7 +273,9 @@ function BgTasksBarImpl({ tasks, olderEnded = 0, sessionId, provider, sessionSta
           <BgFrise rows={view} terminals={terminals} terminalError={terminalError} olderEnded={olderEnded}
             sessionId={sessionId} vpsId={vpsId} cwd={cwd} provider={provider} nowS={nowS}
             killing={killing} onStop={kill} terminalKilling={terminalKilling} onStopTerminal={killTerminal}
-            runs={agentRuns} agentLabels={agentLabels} initialSelected={selectedTaskId} />
+            runs={agentRuns} agentLabels={agentLabels} initialSelected={selectedTaskId}
+            charon={charon} onOpenSession={onOpenSession ? openAgent : undefined}
+            interrupting={interrupting} onInterrupt={interrupt} />
         </TaskModal>
       )}
     </>

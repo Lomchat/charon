@@ -218,6 +218,14 @@ export const api = {
     for (const [key, value] of Object.entries(query)) if (value != null) params.set(key, String(value));
     return send<WorkflowOutputResponse>('GET', `/api/sessions/${id}/subagents?${params}`, undefined, { signal });
   },
+  /** A session's own transcript in the same shape (a sub-session's output in
+   *  its parent's background work, §14.91): paged by row id. */
+  getSessionOutput: (id: string, query: WorkflowOutputQuery, signal?: AbortSignal) => {
+    const params = new URLSearchParams();
+    if (query.before != null) params.set('before', String(query.before));
+    if (query.after != null) params.set('after', String(query.after));
+    return send<WorkflowOutputResponse>('GET', `/api/sessions/${id}/activity?${params}`, undefined, { signal });
+  },
   listCustomEndpoints: () => send<{ endpoints: CustomEndpoint[] }>('GET', '/api/custom-endpoints'),
   saveCustomEndpoint: (body: EndpointSaveBody) => send<{ endpoint: CustomEndpoint }>('POST', '/api/custom-endpoints', body),
   deleteCustomEndpoint: (id: string) => send<{ ok: boolean }>('DELETE', '/api/custom-endpoints', { id }),
@@ -762,6 +770,9 @@ export const api = {
   /** The session's finish is read (a click on the pulsing answer, §14.47). */
   markSessionRead: (id: string) =>
     send<OkResponse & ActionSyncStamp>('POST', `/api/sessions/${id}/read`),
+  /** Its sub-sessions shown or folded in the sidebar, for every tab (§14.93). */
+  setSubSessionsOpen: (id: string, open: boolean) =>
+    send<OkResponse & ActionSyncStamp>('POST', `/api/sessions/${id}/sub-sessions`, { open }),
   /** Leave the session for later, lit as unread; `conn`'s move off it reads
    *  nothing (§14.47). */
   markSessionUnread: (id: string, conn: string) =>

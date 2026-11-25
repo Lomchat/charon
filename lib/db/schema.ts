@@ -326,6 +326,9 @@ export const agentSessions = sqliteTable('agent_sessions', {
   // NO foreign key (a self-FK rebuilds the table): deleteSession re-roots
   // the children in code.
   parentSessionId: text('parent_session_id'),
+  // Its sub-sessions shown in the sidebar (0/1): folded by default, opened
+  // by hand, shared by every tab (§14.93).
+  subSessionsOpen: integer('sub_sessions_open').notNull().default(0),
   // Hidden session (0/1, §14.118): runs like any other, but only the
   // "hidden" view lists it, no Telegram, browser push only to devices
   // showing hidden ones, and other agents' `list_sessions` skips it.

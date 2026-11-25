@@ -33,6 +33,10 @@ const seen = (g.__charonSpawnSeen ??= new Map<string, number>());
 // live children so parallel requests cannot all pass before any row exists.
 const gp = globalThis as unknown as { __charonSpawnPending?: Map<string, number> };
 const pending = (gp.__charonSpawnPending ??= new Map<string, number>());
+// Sessions a `kill_sub_session` is deleting: nothing is born under them, and a
+// child a spawn past its check creates anyway is removed (no orphan).
+const gd = globalThis as unknown as { __charonSubDying?: Set<string> };
+const dying = (gd.__charonSubDying ??= new Set<string>());
 
 function normalizedRank(modes: readonly string[], mode: string): number {
   const i = modes.indexOf(mode);
@@ -166,6 +170,7 @@ async function resolveRequest(parentId: string, ev: SpawnRequest) {
   const parent = db.select().from(agentSessions).where(eq(agentSessions.id, parentId)).get();
   if (!parent) throw new Error('parent session not found');
   if (parent.archived) throw new Error('parent session is archived');
+  if (dying.has(parent.id)) throw new Error('parent session is being deleted');
   const client = getAgentClientForVpsId(parent.vpsId);
   if (client.status !== 'connected') throw new Error('the VPS agent is not connected');
   if (typeof ev.task !== 'string' || !ev.task.trim()) throw new Error('empty task');
@@ -220,6 +225,13 @@ async function createChild(
     // Asked for, or inherited: an unattended parent's children are too (§14.119).
     unattended: ev.unattended === true || parent.unattended === 1,
   });
+  // Its parent went while it was being created: it goes too.
+  if (dying.has(parent.id) || !db.select({ id: agentSessions.id }).from(agentSessions)
+    .where(eq(agentSessions.id, parent.id)).get()) {
+    const { deleteSession } = await import('@/lib/server/agent/sessionOps');
+    await deleteSession(stream.id).catch(() => {});
+    throw new Error('parent session was deleted');
+  }
   const handle = db.select({ h: agentSessions.handle }).from(agentSessions)
     .where(eq(agentSessions.id, stream.id)).get()?.h ?? null;
   return { session_id: stream.id, handle, provider: kind, mode, mode_clamped: clamped, client };
@@ -319,15 +331,40 @@ export async function killSubSession(parentId: string, rawHandle: unknown): Prom
     .where(and(eq(agentSessions.vpsId, parent.vpsId), eq(agentSessions.handle, handle))).get();
   if (!child) throw new Error(`@${handle} not found`);
   if (child.parentSessionId !== parentId) throw new Error(`@${handle} is not one of your sub-sessions`);
-  const ids = subtreeDeepestFirst(child.id, (id) =>
-    db.select({ id: agentSessions.id }).from(agentSessions)
-      .where(eq(agentSessions.parentSessionId, id)).all().map((r) => r.id));
   const { deleteSession } = await import('@/lib/server/agent/sessionOps');
-  const deleted: string[] = [];
-  for (const id of ids) {
+  return deleteSubtree(child.id, async (id) => {
     const h = db.select({ h: agentSessions.handle }).from(agentSessions)
       .where(eq(agentSessions.id, id)).get()?.h;
-    if ((await deleteSession(id)).deleted) deleted.push(h ?? id);
+    return (await deleteSession(id)).deleted ? h ?? id : null;
+  });
+}
+
+const childIds = (id: string) => db.select({ id: agentSessions.id }).from(agentSessions)
+  .where(eq(agentSessions.parentSessionId, id)).all().map((r) => r.id);
+
+/** Deletes `rootId` and every descendant, deepest first (no delete re-roots a
+ *  row about to go). The whole subtree is `dying` first: no spawn under it
+ *  passes, and a child born meanwhile is found by the re-read before its
+ *  parent goes. Returns what `deleteOne` named. */
+export async function deleteSubtree(rootId: string, deleteOne: (id: string) => Promise<string | null>): Promise<string[]> {
+  const marked = new Set(subtreeDeepestFirst(rootId, childIds));
+  for (const id of marked) dying.add(id);
+  const deleted: string[] = [];
+  const visited = new Set<string>();
+  const drop = async (id: string, depth: number): Promise<void> => {
+    if (visited.has(id) || depth > MAX_ANCESTOR_WALK) return;
+    visited.add(id);
+    for (let kids = childIds(id).filter((k) => !visited.has(k)); kids.length > 0;
+      kids = childIds(id).filter((k) => !visited.has(k))) {
+      for (const k of kids) { marked.add(k); dying.add(k); await drop(k, depth + 1); }
+    }
+    const name = await deleteOne(id);
+    if (name) deleted.push(name);
+  };
+  try {
+    await drop(rootId, 0);
+  } finally {
+    for (const id of marked) dying.delete(id);
   }
   return deleted;
 }

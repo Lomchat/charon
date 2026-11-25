@@ -1,7 +1,7 @@
 'use client';
-import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from 'react';
+import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from 'react';
 import { backgroundWorkText as text, providerText } from '@/lib/providerText';
-import { sessionCapabilities, type SessionProvider } from '@/lib/sessionCapabilities';
+import { asSessionProvider, providerLabel, sessionCapabilities, type SessionProvider } from '@/lib/sessionCapabilities';
 import { bgTaskOwnAgent, codexTerminalProcessId, type BgAgent, type BgTask, type BgTaskStatus } from './bgTasks';
 import { fmtDuration, fmtMoment } from './taskTime';
 import BgTaskOutput from './BgTaskOutput';
@@ -10,20 +10,23 @@ import AgentRunTag, { sharedRun, type AgentRun } from './AgentRunTag';
 import { useBgWorkflowAgents } from './useBgWorkflowAgents';
 import { useBgSessionAgents, type NativeBgAgent } from './useBgSessionAgents';
 import { localTicks, outcomeText, workflowTimeline, type TimelineAgent, type WorkflowTimeline } from './bgWorkflowTimeline';
+import { IconBoxArrowUpRight } from './icons';
+import type { CharonAgent } from './charonAgents';
 import {
-  friseKind, friseStatus, friseWindow, terminalCommand, terminalId,
+  charonFriseStatus, friseKind, friseStatus, friseWindow, terminalCommand, terminalId,
   type CodexTerminal, type FriseKind, type FriseRange, type FriseStatus,
 } from './bgFrise';
 
 // ── BgFrise ──────────────────────────────────────────────────────────────────
-// The "Background work" modal body: every command, agent, workflow and Codex
-// process of the session on ONE clock axis, a lane each (a workflow unfolds
-// into one lane per role); the selected line's detail underneath.
+// The "Background work" modal body: every command, agent, workflow, Codex
+// process and Charon sub-session of the session on ONE clock axis, a lane each
+// (a workflow unfolds into one lane per role, a sub-session's own sub-sessions
+// sit under it); the selected line's detail underneath.
 
 type Row = { t: BgTask; status: BgTaskStatus };
 type Item = {
   key: string; kind: FriseKind; title: string; start: number; end: number | null; st: FriseStatus;
-  row?: Row; terminal?: CodexTerminal;
+  row?: Row; terminal?: CodexTerminal; charon?: CharonAgent;
 };
 type WorkflowAgents = { agents: BgAgent[] | null; loading: boolean; error: string };
 
@@ -37,9 +40,11 @@ const ICON: Record<FriseKind, ReactNode> = {
   agent: <svg viewBox="0 0 16 16" fill="currentColor"><path d="M8 1.5l1.6 4.2 4.4.3-3.4 2.8 1.1 4.3L8 10.7 4.3 13.1l1.1-4.3L2 6l4.4-.3z" /></svg>,
   workflow: <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5"><circle cx="3.5" cy="8" r="1.8" /><circle cx="12.5" cy="3.5" r="1.8" /><circle cx="12.5" cy="12.5" r="1.8" /><path d="M5.2 7.2l5.6-2.8M5.2 8.8l5.6 2.8" /></svg>,
   process: <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.4"><rect x="3.5" y="3.5" width="9" height="9" rx="1.5" /><path d="M6 1.5v2M10 1.5v2M6 12.5v2M10 12.5v2M1.5 6h2M1.5 10h2M12.5 6h2M12.5 10h2" /></svg>,
+  charon: <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.4"><rect x="1.5" y="1.5" width="9" height="9" rx="1.5" /><rect x="5.5" y="5.5" width="9" height="9" rx="1.5" /></svg>,
 };
 const KIND_LABEL: Record<FriseKind, string> = {
   command: text.command, task: text.task, agent: text.agent, workflow: text.workflow, process: text.process,
+  charon: text.charonAgent,
 };
 const STATUS: Record<FriseStatus, { pill: string; label: string; legend: string }> = {
   running: { pill: 'running', label: 'running', legend: text.wfRunning },
@@ -82,7 +87,13 @@ type Props = {
   runs: ReadonlyMap<string, AgentRun>;
   agentLabels: ReadonlyMap<string, string>;
   initialSelected: string | null;
+  /** Sub-sessions under this one, tree order (`useCharonAgents`). */
+  charon: CharonAgent[];
+  onOpenSession?: (id: string) => void;
+  interrupting: Record<string, string>; onInterrupt: (id: string) => void;
 };
+
+const CHARON = 'charon:';
 
 function BgFrise(props: Props) {
   const { rows, terminals, terminalError, olderEnded, sessionId, provider, nowS, runs, agentLabels } = props;
@@ -108,8 +119,23 @@ function BgFrise(props: Props) {
       if (!firstSeen.current.has(pid)) firstSeen.current.set(pid, Date.now());
       out.push({ key: `proc:${pid}`, kind: 'process', title: terminalCommand(term), start: firstSeen.current.get(pid)!, end: null, st: 'running', terminal: term });
     }
+    for (const a of props.charon) {
+      if (a.depth > 0) continue;
+      out.push({ key: `${CHARON}${a.id}`, kind: 'charon', title: a.name, start: a.startMs, end: a.endMs, st: charonFriseStatus(a.status), charon: a });
+    }
     return out.sort((a, b) => a.start - b.start);
-  }, [rows, terminals]);
+  }, [rows, terminals, props.charon]);
+  // A sub-session's own sub-sessions, under its lane (tree order).
+  const nested = useMemo(() => {
+    const out = new Map<string, CharonAgent[]>();
+    let top = '';
+    for (const a of props.charon) {
+      if (a.depth === 0) { top = a.id; continue; }
+      const list = out.get(top);
+      if (list) list.push(a); else out.set(top, [a]);
+    }
+    return out;
+  }, [props.charon]);
 
   const defaultKey = () => {
     const running = items.filter((i) => i.end == null);
@@ -147,7 +173,7 @@ function BgFrise(props: Props) {
   const inventory = useBgSessionAgents(sessionId, provider, nativeOpen);
 
   // ── layout ──
-  const win = friseWindow(items, range, nowMs);
+  const win = friseWindow([...items, ...props.charon.filter((a) => a.depth > 0).map((a) => ({ start: a.startMs, end: a.endMs }))], range, nowMs);
   const { t0, t1 } = win;
   const shown = items.filter((i) => (i.end ?? nowMs) >= t0);
   const hidden = items.length - shown.length;
@@ -191,6 +217,26 @@ function BgFrise(props: Props) {
     if (sel) sel.scrollIntoView({ block: 'nearest' }); else el.scrollTop = el.scrollHeight;
   }, []); // once, at opening
 
+  /** A sub-session's lane: its name opens it, its bar selects it. */
+  const charonLane = (a: CharonAgent, sub: boolean) => {
+    const key = `${CHARON}${a.id}`;
+    const st = charonFriseStatus(a.status);
+    const tip = [a.name, a.model && [a.model, a.effort].filter(Boolean).join(' '),
+      `${clock(a.startMs)} → ${a.endMs == null ? text.wfNow : clock(a.endMs)}`, short((a.endMs ?? nowMs) - a.startMs), STATUS[st].legend].filter(Boolean).join(' · ');
+    return <div key={key} className={`bgf-row bgf-lane${sub ? ' bgf-sub bgf-nested' : ''}${selected === key ? ' selected' : ''}`}
+      style={sub ? { '--bgf-depth': a.depth - 1 } as CSSProperties : undefined} onClick={() => setSelected(key)}>
+      <div className="bgf-name">
+        {!sub && <span className="bgf-caret" aria-hidden />}
+        <span className="bgf-kind charon" aria-label={text.charonAgent}>{ICON.charon}</span>
+        <span className="bgf-title" title={a.handle ? `${a.name} · @${a.handle}` : a.name}>{a.name}</span>
+        <AgentRunTag model={a.model} effort={a.effort} />
+        {props.onOpenSession && <button type="button" className="bgf-open" title={text.open} aria-label={`${text.open} ${a.name}`}
+          onClick={(e) => { e.stopPropagation(); props.onOpenSession!(a.id); }}><IconBoxArrowUpRight /></button>}
+      </div>
+      <div className="bgf-track">{grid}{bar(key, st, a.startMs, a.endMs, tip)}</div>
+    </div>;
+  };
+
   const lanes: ReactNode[] = [];
   const alerts: ReactNode[] = [];
   if (hidden > 0 || olderEnded > 0) lanes.push(<div key="earlier" className="bgf-row bgf-earlier"><span>
@@ -208,6 +254,11 @@ function BgFrise(props: Props) {
     const name = isWf ? t?.workflowName || item.title : item.title;
     const tip = [item.title, run?.model && [run.model, run.effort].filter(Boolean).join(' '),
       `${clock(item.start)} → ${item.end == null ? text.wfNow : clock(item.end)}`, short((item.end ?? nowMs) - item.start), STATUS[item.st].legend].filter(Boolean).join(' · ');
+    if (item.charon) {
+      lanes.push(charonLane(item.charon, false));
+      for (const a of nested.get(item.charon.id) ?? []) lanes.push(charonLane(a, true));
+      continue;
+    }
     lanes.push(<div key={item.key} className={`bgf-row bgf-lane${selected === item.key ? ' selected' : ''}`} onClick={() => setSelected(item.key)}>
       <div className="bgf-name">
         {isWf
@@ -326,6 +377,10 @@ function StopButton({ pending, onStop, hint = text.stopHint }: { pending: boolea
 function Detail(props: DetailProps) {
   const { items, selected, nowMs } = props;
   if (!selected) return null;
+  if (selected.startsWith(CHARON)) {
+    const agent = props.charon.find((a) => a.id === selected.slice(CHARON.length));
+    return agent ? <CharonDetail {...props} agent={agent} /> : null;
+  }
   if (selected.startsWith('native:')) {
     const id = selected.slice('native:'.length);
     const agent = props.inventory.find((a) => a.id === id);
@@ -397,6 +452,33 @@ function TaskDetail({ item, nowMs, provider, sessionId, vpsId, cwd, killing, onS
         plain={isCommand} preview={isCommand ? preview : t.summary} running={running}
         emptyHint={isCommand ? (running ? text.noCommandOutput : text.noCommandOutputEnded) : undefined} />)}
     {t?.outputFile && <div className="tm-path" title={t.outputFile}><span>output</span><code>{t.outputFile}</code></div>}
+  </section>;
+}
+
+function CharonDetail({ agent, nowMs, charon, onOpenSession, interrupting, onInterrupt }: DetailProps & { agent: CharonAgent }) {
+  const st = charonFriseStatus(agent.status);
+  const inTurn = agent.status === 'thinking' || agent.status === 'starting';
+  const state = interrupting[agent.id];
+  const parent = agent.depth > 0 ? charon.find((a) => a.id === agent.parentId) : undefined;
+  const actions = <>
+    {inTurn && <button type="button" className="tm-stop" disabled={state === 'pending'} onClick={() => onInterrupt(agent.id)}
+      title={text.interruptHint}>{state === 'pending' ? text.stopping : text.interrupt}</button>}
+    {onOpenSession && <button type="button" className="bgf-open-btn" onClick={() => onOpenSession(agent.id)}>
+      <IconBoxArrowUpRight />{text.open}</button>}
+  </>;
+  return <section className="bgf-detail">
+    <Head st={st} kind={`${text.charonAgent} · ${providerLabel(asSessionProvider(agent.kind))}`} title={agent.name}
+      run={{ model: agent.model, effort: agent.effort }} actions={actions} />
+    <div className="bgf-facts">
+      {agent.handle && <span><b>@{agent.handle}</b></span>}
+      {parent && <span>{text.under} <b>{parent.handle ? `@${parent.handle}` : parent.name}</b></span>}
+      <span>{text.wfStartedAt} <b>{fmtMoment(agent.startMs, nowMs)}</b></span>
+      {agent.endMs != null && <span>{text.ended.toLowerCase()} <b>{fmtMoment(agent.endMs, nowMs)}</b></span>}
+      <span>{agent.running ? text.wfRunningFor : text.wfTook} <b>{fmtDuration((agent.endMs ?? nowMs) - agent.startMs)}</b></span>
+      <span>{agent.status}</span>
+    </div>
+    {state && state !== 'pending' && <div className="tm-error">{state}</div>}
+    <BgAgentActivity key={agent.id} sessionId={agent.id} session={agent.id} runShown running={agent.running} identity={`${CHARON}${agent.id}`} />
   </section>;
 }
 

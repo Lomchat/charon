@@ -6,7 +6,9 @@ import { getActivityEntry, mergeActivityPage, newActivityEntry, saveActivityEntr
 
 /** A selected node owns one sequential reader. Cached pages survive remounts;
  * periodic checks request only bytes after the last complete native record. */
-export function useWorkflowOutput(sessionId: string, query: WorkflowOutputQuery, running: boolean, identity: string) {
+export function useWorkflowOutput(sessionId: string, query: WorkflowOutputQuery, running: boolean, identity: string,
+  /** Where pages come from: a native transcript, or a session's own rows. */
+  fetchPage: typeof api.getWorkflowOutput = api.getWorkflowOutput) {
   const key = JSON.stringify([sessionId, identity, query.task, query.label, query.phase, query.agent]);
   const [initial] = useState(() => getActivityEntry(key));
   const entry = useRef<ActivityCacheEntry>(initial);
@@ -38,7 +40,7 @@ export function useWorkflowOutput(sessionId: string, query: WorkflowOutputQuery,
           if (older) q.before = item.before!;
           else { q.after = item.after; q.cursor = item.cursor; }
         }
-        const data = await api.getWorkflowOutput(sessionId, q, controller.signal);
+        const data = await fetchPage(sessionId, q, controller.signal);
         if (disposed) return;
         if (!data.ok) {
           if (data.reason === 'reset') {
@@ -74,7 +76,7 @@ export function useWorkflowOutput(sessionId: string, query: WorkflowOutputQuery,
       disposed = true; controller.abort(); clearTimeout(timer); request.current = null;
       document.removeEventListener('visibilitychange', wake); saveActivityEntry(key, entry.current);
     };
-  }, [sessionId, key]);
+  }, [sessionId, key, fetchPage]);
   useEffect(() => {
     if (previousRunning.current !== running) { previousRunning.current = running; void request.current?.(); }
   }, [running]);

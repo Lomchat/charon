@@ -21,6 +21,7 @@ import type { Vps, VpsFolder } from '@/lib/db/schema';
 import type { BulkDeleteSessionsResponse, SessionListItem, AgentKind } from '@/lib/types/api';
 import AgentLogo from './AgentLogo';
 import { IconSearch, IconTrash } from './icons';
+import { subSessionsDeletedWith } from './sidebarSubSessions';
 import {
   buildPausedTree, formatAgo, formatStamp, groupCheckState, sessionHeadline,
   toggleGroup, toggleRow, type CheckState,
@@ -37,6 +38,8 @@ type Props = {
   /** The sidebar's hidden switch was on: these are hidden sessions (§14.118).
    *  The caller filters `sessions`; this only names them. */
   hidden?: boolean;
+  /** Every session: a deleted one takes its sub-sessions along (§14.93). */
+  allSessions?: SessionListItem[];
 };
 
 const DAY = 86_400_000;
@@ -82,7 +85,7 @@ function checkRowProps(state: CheckState, disabled: boolean, onToggle: (range: b
 }
 
 export default function PausedSessionsModal({
-  sessions, vpsList, vpsFolders, deletingSessionIds, onDelete, onClose, hidden = false,
+  sessions, vpsList, vpsFolders, deletingSessionIds, onDelete, onClose, hidden = false, allSessions,
 }: Props) {
   const [query, setQuery] = useState('');
   const [age, setAge] = useState('any');
@@ -131,6 +134,7 @@ export default function PausedSessionsModal({
   const visible = useMemo(() => new Set(tree.ids), [tree]);
   const selectedIds = everything.ids.filter((id) => selected.has(id));
   const hiddenSelected = selectedIds.filter((id) => !visible.has(id)).length;
+  const alsoDeleted = subSessionsDeletedWith(selectedIds, allSessions ?? sessions);
   const order = selectable(tree.ids);
 
   function edit(next: Set<string>) {
@@ -310,13 +314,19 @@ export default function PausedSessionsModal({
                 Permanently delete <b>{plural(selectedIds.length, 'session')}</b> and their whole
                 history{hiddenSelected ? <> — <b>{hiddenSelected}</b> of them hidden by the filter</> : null}?
                 {' '}This cannot be undone.
+                {alsoDeleted.length > 0 && (
+                  <span className="pc-cascade" role="alert">
+                    {' '}<b>{plural(alsoDeleted.length, 'sub-session')}</b> deleted with {selectedIds.length === 1 ? 'it' : 'them'}: {alsoDeleted
+                      .map((s) => s.name || (s.handle ? `@${s.handle}` : s.id.slice(0, 8))).join(', ')}.
+                  </span>
+                )}
               </p>
               <div className="pc-actions">
                 <button type="button" className="confirm-btn ghost" autoFocus disabled={busy}
                   onClick={() => setConfirming(false)}>back</button>
                 <button type="button" className="confirm-btn danger" disabled={busy || selectedIds.length === 0}
                   onClick={() => { void runDelete(); }}>
-                  {busy ? 'deleting…' : 'delete permanently'}
+                  {busy ? 'deleting…' : alsoDeleted.length ? `delete ${selectedIds.length + alsoDeleted.length} permanently` : 'delete permanently'}
                 </button>
               </div>
             </>

@@ -2649,6 +2649,7 @@ html[data-density='small'] .cs-sub-fold { font-size: 8.5px; }
 
 /* Workflow glyph inside the bar's snippet. */
 .bgtasks-snippet .bgtask-badge.workflow { margin-right: 4px; color: var(--violet); }
+.bgtasks-snippet .bgtask-badge.charon { margin-right: 4px; color: var(--info); }
 
 /* ── Task modals (app/TaskModal.tsx): background work + scheduled tasks ──
    Fixed head and foot, the cards scroll between them. One card per task:
@@ -4062,6 +4063,15 @@ html[data-density='small'] .cs-sub-fold { font-size: 8.5px; }
 }
 .confirm-list li { padding: 2px 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .confirm-list li::before { content: '● '; color: var(--danger); }
+/* A deletion that takes sub-sessions along says so, in red (§14.93). */
+.confirm-cascade {
+  margin: 0 0 13px; padding: 10px 13px; border-radius: var(--radius-lg);
+  border: 1px solid color-mix(in srgb, var(--danger-strong) 55%, transparent);
+  background: color-mix(in srgb, var(--danger-strong) 10%, transparent);
+  font-family: var(--body); font-size: 13px; line-height: 1.5; color: var(--danger-strong);
+}
+.confirm-cascade p { margin: 0 0 6px; }
+.confirm-cascade .confirm-list { margin: 0; color: var(--danger-strong); }
 .confirm-actions { display: flex; justify-content: flex-end; gap: 10px; }
 .confirm-btn {
   padding: 9px 16px; border-radius: var(--radius-lg); cursor: pointer;
@@ -4223,6 +4233,8 @@ html[data-density='small'] .cs-sub-fold { font-size: 8.5px; }
 }
 .pc-warn { flex: 1 1 280px; margin: 0; font-family: var(--body); font-size: 12.5px; line-height: 1.5; color: var(--text); }
 .pc-warn b { color: var(--danger); }
+.pc-cascade { color: var(--danger-strong); }
+.pc-cascade b { color: var(--danger-strong); }
 .pc-actions { display: flex; gap: 10px; margin-left: auto; }
 .pc-actions .confirm-btn { display: inline-flex; align-items: center; gap: 7px; }
 .pc-actions .confirm-btn svg { width: 12px; height: 12px; }
@@ -10610,6 +10622,7 @@ button.dv-folder-select { max-width: 170px; padding: 4px 7px; font-size: 11px; }
 
 .bgf {
   --bgf-lane: 340px;
+  --bgf-depth: 0; /* a nested sub-session lane sets its own (BgFrise) */
   display: flex; flex-direction: column; min-height: 0;
 }
 /* The chart always fits the modal's width: nothing in it scrolls sideways. */
@@ -10641,6 +10654,19 @@ button.dv-folder-select { max-width: 170px; padding: 4px 7px; font-size: 11px; }
 .bgf-kind.agent { color: var(--accent); }
 .bgf-kind.workflow { color: var(--violet); }
 .bgf-kind.process { color: var(--warning); }
+.bgf-kind.charon { color: var(--info); }
+/* A sub-session's own sub-sessions: one step further in per level. */
+.bgf-nested .bgf-name { padding-left: calc(30px + var(--bgf-depth) * 14px); }
+.bgf-open { flex: none; display: inline-flex; padding: 2px; border-radius: var(--radius-sm); color: var(--text-muted); }
+.bgf-open svg { width: 12px; height: 12px; }
+.bgf-open:hover { color: var(--accent-strong); background: color-mix(in srgb, var(--accent) 12%, transparent); }
+.bgf-open-btn {
+  flex: none; display: inline-flex; align-items: center; gap: 6px; padding: 3px 11px; border-radius: var(--radius-md);
+  border: 1px solid color-mix(in srgb, var(--accent) 45%, transparent); background: transparent; color: var(--accent-strong);
+  font: 500 11.5px var(--body); cursor: pointer;
+}
+.bgf-open-btn svg { width: 11px; height: 11px; }
+.bgf-open-btn:hover { background: color-mix(in srgb, var(--accent) 12%, transparent); }
 .bgf-grid, .bgf-wave-line, .bgf-now-line { position: absolute; top: 0; bottom: 0; pointer-events: none; }
 .bgf-grid { border-left: 1px dashed color-mix(in srgb, var(--border) 60%, transparent); }
 .bgf-wave-line { border-left: 1px solid color-mix(in srgb, var(--violet) 40%, transparent); }
@@ -10712,11 +10738,13 @@ button.dv-folder-select { max-width: 170px; padding: 4px 7px; font-size: 11px; }
 .bgf-agents tr:hover td { background: color-mix(in srgb, var(--tint) 3%, transparent); }
 .bgf-agent-label { color: var(--text-strong); }
 .bgf-dim { font: 11px var(--mono); color: var(--text-muted); }
-.bgf-detail .bga { flex: 1; min-height: 0; margin-top: 0; display: grid; grid-template-columns: minmax(220px, 300px) minmax(0, 1.25fr) minmax(0, 1fr); grid-template-rows: auto minmax(0, 1fr); gap: 0 14px; }
-.bgf-detail .bga-overview { grid-column: 1; grid-row: 1 / -1; min-height: 0; overflow: auto; }
-.bgf-detail .bga > .tm-error, .bgf-detail .bga > .bgc-output-hint { grid-column: 2 / -1; grid-row: 1; margin-bottom: 10px; }
-.bgf-detail .bga-activity { grid-column: 2; grid-row: 2; }
-.bgf-detail .bga-result { grid-column: 3; grid-row: 2; }
+/* An agent's detail: its overview is ONE strip on top, the two readers share
+   the full width under it. */
+.bgf-detail .bga { flex: 1; min-height: 0; margin-top: 0; display: grid; grid-template-columns: minmax(0, 1.25fr) minmax(0, 1fr); grid-template-rows: auto auto minmax(0, 1fr); gap: 0 14px; }
+.bgf-detail .bga-overview { grid-column: 1 / -1; grid-row: 1; margin-bottom: 10px; }
+.bgf-detail .bga > .tm-error, .bgf-detail .bga > .bgc-output-hint { grid-column: 1 / -1; grid-row: 2; margin-bottom: 10px; }
+.bgf-detail .bga-activity { grid-column: 1; grid-row: 3; }
+.bgf-detail .bga-result { grid-column: 2; grid-row: 3; }
 .task-modal-wide .tm-body > .tm-error { margin: 12px 22px; }
 
 /* Output of a command or a legacy agent: a bounded tail, follow by default. */
@@ -10736,6 +10764,7 @@ button.dv-folder-select { max-width: 170px; padding: 4px 7px; font-size: 11px; }
   .bgf-chart { padding: 6px 10px 8px; }
   .bgf-name > .bg-run, .bgf-title small { display: none; }
   .bgf-sub .bgf-name, .bgf-sub > span:first-child { padding-left: 14px; }
+  .bgf-nested .bgf-name { padding-left: calc(14px + var(--bgf-depth) * 10px); }
   .bgf-earlier > span { padding-left: 0; }
   .bgf-legend, .bgf-alert { margin-left: 0; padding-left: 0; }
   .bgf-lanes { max-height: 260px; }
@@ -10747,16 +10776,21 @@ button.dv-folder-select { max-width: 170px; padding: 4px 7px; font-size: 11px; }
 
 /* Sub-agent public activity and results remain visible together. */
 .bga { display: flex; flex-direction: column; gap: 12px; min-width: 0; margin-top: 12px; }
-.bga-overview { flex: none; font: 11px/1.5 var(--body); color: var(--text); }
+.bga-overview { flex: none; display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 18px; font: 11px/1.5 var(--body); color: var(--text); }
+.bga-overview > details { min-width: 0; }
+/* The mission takes what the facts leave; an opened one takes the row. */
+.bga-overview > details:not(.bga-files) { flex: 1 1 240px; }
+.bga-overview > details[open] { flex-basis: 100%; }
+.bga-overview small { display: inline; }
 .bga details > summary { cursor: pointer; }
 .bga-overview > details > summary { display: flex; gap: 8px; align-items: baseline; }
 .bga-overview > details > summary > span { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
 .bga-overview > details > summary > strong { flex: none; color: var(--accent-strong); }
 .bga-overview pre { max-height: 200px; overflow: auto; padding: 10px; margin-top: 8px; background: var(--bg-inset); border-radius: var(--radius-sm); }
-.bga-facts { display: flex; flex-wrap: wrap; gap: 8px 20px; margin: 10px 0; }
-.bga-facts > span { display: flex; flex-direction: column; overflow-wrap: anywhere; }
+.bga-facts { display: flex; flex-wrap: wrap; gap: 4px 14px; }
+.bga-facts > span { display: flex; gap: 5px; align-items: baseline; overflow-wrap: anywhere; }
 .bga small { display: block; color: var(--text-muted); font: 9px/1.5 var(--mono); }
-.bga .bga-files > summary { display: block; }
+.bga .bga-files > summary { display: flex; gap: 8px; align-items: baseline; white-space: nowrap; }
 .bga-files ul { max-height: 150px; overflow: auto; margin-top: 8px; padding: 0; list-style: none; }
 .bga-files li { display: flex; justify-content: space-between; gap: 10px; padding: 4px 0; }
 .bga-files li code { overflow-wrap: anywhere; min-width: 0; }
