@@ -10627,7 +10627,9 @@ button.dv-folder-select { max-width: 170px; padding: 4px 7px; font-size: 11px; }
 
 /* Background work (§14.91): ONE frise of every command, agent, workflow and
    Codex process on a clock axis (BgFrise), the selected line's detail below.
-   Bars are buttons; colours are status only. */
+   Bars are buttons; colours are status only. The modal fits ONE screen: the
+   lanes and the detail shrink (their readers scroll inside); the body scrolls
+   only once the detail is down to its floor. */
 .app-modal.task-modal.task-modal-wide { width: min(1560px, calc(100vw - 40px)); max-width: none; max-height: calc(100dvh - 40px); }
 .task-modal-wide .tm-body { padding: 0; gap: 0; }
 /* What an agent runs on: its model, then its effort. */
@@ -10640,8 +10642,9 @@ button.dv-folder-select { max-width: 170px; padding: 4px 7px; font-size: 11px; }
   --bgf-depth: 0; /* a nested sub-session lane sets its own (BgFrise) */
   display: flex; flex-direction: column; min-height: 0;
 }
-/* The chart always fits the modal's width: nothing in it scrolls sideways. */
-.bgf-chart { flex: none; min-width: 0; padding: 8px 22px 12px; overflow-x: clip; overflow-wrap: anywhere; border-bottom: 1px solid var(--border); background: var(--bg); }
+/* The chart always fits the modal's width: nothing in it scrolls sideways.
+   Short of height, only its lanes give way. */
+.bgf-chart { flex: 0 1 auto; display: flex; flex-direction: column; min-width: 0; min-height: 0; padding: 8px 22px 12px; overflow: clip; overflow-wrap: anywhere; border-bottom: 1px solid var(--border); background: var(--bg); }
 .bgf-tools { display: flex; justify-content: flex-end; margin-bottom: 2px; }
 .bgf-range { display: inline-flex; border: 1px solid var(--border); border-radius: var(--radius-md); overflow: hidden; }
 .bgf-range button { padding: 2px 10px; font: 10.5px var(--mono); color: var(--text-muted); }
@@ -10721,7 +10724,9 @@ button.dv-folder-select { max-width: 170px; padding: 4px 7px; font-size: 11px; }
 .bgf-alert { margin: 8px 0 0 var(--bgf-lane); padding: 6px 10px; border: 1px solid color-mix(in srgb, var(--attention) 40%, transparent); border-radius: var(--radius-md); background: color-mix(in srgb, var(--attention) 8%, transparent); font: 12px/1.5 var(--body); color: var(--text); }
 .bgf-chart > .tm-error { margin-top: 8px; }
 
-.bgf-detail { flex: none; height: clamp(380px, calc(100dvh - 440px), 680px); display: flex; flex-direction: column; min-height: 0; padding: 12px 22px 16px; background: var(--bg-raised); }
+/* A steady height whatever is selected, given up (down to the floor) when the
+   screen is short. */
+.bgf-detail { flex: 0 1 auto; height: clamp(380px, calc(100dvh - 440px), 680px); display: flex; flex-direction: column; min-height: 280px; padding: 12px 22px 16px; background: var(--bg-raised); }
 .bgf-detail > * { flex-shrink: 0; }
 .bgf-head { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 12px; min-width: 0; }
 .bgf-head-kind { font: 600 9.5px var(--display); letter-spacing: .14em; text-transform: uppercase; color: var(--text-muted); }
@@ -10738,7 +10743,7 @@ button.dv-folder-select { max-width: 170px; padding: 4px 7px; font-size: 11px; }
 .bgf-proc { display: flex; flex-wrap: wrap; gap: 8px 28px; margin: 0 0 12px; }
 .bgf-proc dt { font: 9.5px var(--mono); color: var(--text-muted); }
 .bgf-proc dd { margin: 2px 0 0; font: 13px var(--mono); color: var(--text-strong); }
-.bgf-detail > .bgc-output { flex: 1 1 auto; min-height: 160px; margin-top: 0; }
+.bgf-detail > .bgc-output { flex: 1 1 auto; min-height: 120px; margin-top: 0; }
 .bgf-detail > .tm-path { margin-top: 10px; }
 .bgf-phases { display: flex; gap: 4px; margin: 0 0 12px; }
 .bgf-phase { flex: 1 1 0; min-width: 0; display: flex; flex-direction: column; gap: 3px; }
@@ -10784,11 +10789,10 @@ button.dv-folder-select { max-width: 170px; padding: 4px 7px; font-size: 11px; }
   .bgf-nested .bgf-name { padding-left: calc(14px + var(--bgf-depth) * 10px); }
   .bgf-earlier > span { padding-left: 0; }
   .bgf-legend, .bgf-alert { margin-left: 0; padding-left: 0; }
-  .bgf-lanes { max-height: 260px; }
-  .bgf-detail { height: auto; padding: 12px 14px 14px; }
-  .bgf-detail > .bgc-output { min-height: 320px; }
+  .bgf-lanes { max-height: min(160px, 25dvh); }
+  .bgf-detail { height: calc(100dvh - 340px); padding: 12px 14px 14px; }
   .bgf-detail .bga { display: flex; flex-direction: column; }
-  .bgf-detail .bga-pane { min-height: 320px; }
+  .bgf-detail .bga-pane { min-height: 100px; }
 }
 
 /* Sub-agent public activity and results remain visible together. */
