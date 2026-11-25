@@ -189,10 +189,11 @@ kind of action, the unit panel the command. A deck of command lines is
 unreadable.
 
 The **brazier** at the end of a console is the session's prompt cache
-(`sessionCacheReading`): a flame as tall as the cache has life left (full while
-a turn keeps it alive, shrinking a pixel at a time, its colour deepening by
-quarter of the TTL like the sidebar's), and a dark bowl once it is cold — cold
-is the absence of fire, nothing else is drawn. No brazier when the provider
+(`sessionCacheReading`): once the turn is over, a flame as tall as the cache
+has life left (shrinking a pixel at a time, its colour deepening by quarter of
+the TTL like the sidebar's); a dark bowl while a turn runs (its cache is warm
+by definition) or once it is cold — cold is the absence of fire, nothing else
+is drawn. No brazier when the provider
 reports no cache. Beside the name, the time a warm cache has left.
 
 The beacon takes the colour of what its island most needs; it blinks red when

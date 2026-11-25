@@ -487,17 +487,17 @@ const FLAME_THIN = [0.6, 1, 0.6];
 /**
  * A fire with its base centred on (cx, baseY). `size` (0..1] is how much of
  * it is left: eight pixels tall and five wide when full, shrinking a pixel at
- * a time down to two glowing embers. It sways, faster when `lively`.
+ * a time down to two glowing embers. It sways.
  */
 export function drawFlame(
   g: CanvasRenderingContext2D, cx: number, baseY: number, size: number,
-  time: number, ember: string, core: string, lively = false,
+  time: number, ember: string, core: string,
 ): void {
   const peak = Math.max(2, Math.round(2 + 6 * Math.min(1, Math.max(0, size))));
   const shape = peak >= 5 ? FLAME_WIDE : FLAME_THIN;
   const half = (shape.length - 1) / 2;
   const tall = peak > 2;
-  const frame = Math.floor(time / (tall ? (lively ? 110 : 170) : 480)) % 4;
+  const frame = Math.floor(time / (tall ? 170 : 480)) % 4;
   for (let c = 0; c < shape.length; c += 1) {
     let h = Math.max(1, Math.round(peak * shape[c]));
     // The tip breathes; the flanks lick up in turn.

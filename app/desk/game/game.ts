@@ -1436,7 +1436,7 @@ export class Game {
     // The fires: a warm cache lights its corner of the deck, less and less.
     for (const actor of actors) {
       const c = actor.cache;
-      if (!c || (c.phase !== 'warm' && c.phase !== 'live')) continue;
+      if (c?.phase !== 'warm') continue;
       const s = actor.station;
       const r = 9 + 12 * c.frac;
       g.globalAlpha = (0.12 + 0.26 * c.frac) * (0.85 + 0.15 * Math.sin(t * 0.011 + actor.seed));
@@ -1777,16 +1777,17 @@ export class Game {
     const mood = actor.mood;
     const atDesk = seated(mood, actor.busy);
     // The brazier at the end of the console: its prompt cache. A flame as
-    // tall as the cache has life left (full while a turn keeps it alive), and
-    // a dark bowl once it is cold — nothing else: cold is the absence of fire.
+    // tall as the cache has life left once the turn is over, and a dark bowl
+    // otherwise: cold, or a turn running (its cache is warm by definition, a
+    // fire would say nothing; owner's call).
     const cache = actor.cache;
     if (cache) {
       const bx = s.deskX + 6;
       const by = s.deskY - 14;
       g.drawImage(sprites.brazier, bx, by);
-      if (cache.phase === 'live' || cache.phase === 'warm') {
+      if (cache.phase === 'warm') {
         const heat = HEAT[cache.level];
-        drawFlame(g, bx + 3, by, cache.frac, t, heat.ember, heat.core, cache.phase === 'live');
+        drawFlame(g, bx + 3, by, cache.frac, t, heat.ember, heat.core);
       }
     }
     // The holo screen: what it is doing, as an icon in the tool's colour.
@@ -1801,7 +1802,7 @@ export class Game {
       const hy = s.holoY + (Math.floor(t / 700) % 2);
       const flicker = (Math.floor(t / 90) % 23 === 0) ? 0.55 : 1;
       // Its beam rises from the console — unless a fire is there to carry it.
-      if (!cache || (cache.phase !== 'warm' && cache.phase !== 'live')) {
+      if (cache?.phase !== 'warm') {
         g.globalAlpha = 0.5 * flicker;
         g.fillStyle = colour;
         g.fillRect(hx + 5, hy + 11, 1, s.deskY - 12 - hy - 11);
