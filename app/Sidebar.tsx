@@ -1619,6 +1619,15 @@ function subAttention(descendants: SessionListItem[]): string {
   return best;
 }
 
+/** The first sub-session of the list blocked on you (a gate or a question). */
+function subWaitingName(descendants: SessionListItem[]): string | null {
+  for (const d of descendants) {
+    const a = attentionForRow(d);
+    if (a === 'blocked' || a === 'question') return d.handle ? `@${d.handle}` : d.name || 'a sub-session';
+  }
+  return null;
+}
+
 const SUB_ATTENTION_TEXT: Record<string, string> = {
   blocked: 'needs you', error: 'failed', unread: 'finished', thinking: 'working',
 };
@@ -1713,6 +1722,7 @@ function SessionPathGroup({
     <SessionRow
       s={s}
       depth={Math.min(depth + indent, MAX_SUB_INDENT)}
+      subWaiting={subWaitingName(descendants)}
       deleting={deletingSessionIds.has(s.id)}
       multiSelected={selectedSessionIds.has(s.id)}
       handle={sessionHandles?.get(s.id)?.handle ?? null}
@@ -1798,10 +1808,13 @@ function SessionPathGroup({
 // (kept by the store until it changes), a stable handler or the per-id drag
 // props (`useReorder`) — so a hub update redraws only the cards it touched.
 const SessionRow = memo(function SessionRow({
-  s, handle, selected, multiSelected, deleting, showDetails, depth,
+  s, handle, selected, multiSelected, deleting, showDetails, depth, subWaiting = null,
   onSelect, onSelectionGesture, onContext, editing, onRenameSubmit, onRenameCancel, dnd,
 }: {
   s: SessionListItem;
+  /** A sub-session of it (any depth) waits on you: its name. The card reads
+   *  "needs you" too, like a native sub-agent's prompt in its parent (§14.93). */
+  subWaiting?: string | null;
   /** Sub-session indent (0 = root, capped by the caller). */
   depth: number;
   /** Stable provider-neutral Charon handle on this VPS. */
@@ -1830,7 +1843,8 @@ const SessionRow = memo(function SessionRow({
   // tab bar, filter chip and desk: blocked ⇒ "needs you" whatever the live
   // status (a gate is always raised mid-turn), async question ⇒ "question",
   // unread ⇒ the green ✓ (lit on the card you are reading too, §14.47).
-  const attention = attentionForRow(s);
+  const ownAttention = attentionForRow(s);
+  const attention = ownAttention !== 'blocked' && ownAttention !== 'question' && subWaiting ? 'blocked' : ownAttention;
   // The prompt cache the last turn left (lib/promptCache.ts), on the shared
   // clock: the mark, a tooltip block and the details line all read it.
   const cache = useSessionCacheReading(s);
@@ -1864,6 +1878,7 @@ const SessionRow = memo(function SessionRow({
       s.cwd,
       age ? agePhrase('created', age) : null,
       draft ? 'Unsent draft' : null,
+      subWaiting ? `${subWaiting} needs you` : null,
     ],
     quote: preview && preview !== headline ? preview : null,
     // The prompt cache, under the excerpt: coloured headline + facts.

@@ -1832,6 +1832,10 @@ export type SessionSearchResponse = { results: SearchSessionsResult[] };
 // (DB cascade). Before the kill→delete rework, the `hard` flag distinguished
 // soft-kill (status='killed') from hard-delete (cascade). Soft-kill no
 // longer exists — DELETE is always destructive.
+/** A sub-session's recorded use (GET …/sub-sessions): `costUsd` only where
+ *  the provider bills per turn (§14.102); `pending` = still being counted. */
+export type SubSessionUsage = { tokens: number | null; turns: number; costUsd: number | null; pending?: boolean };
+
 /** `descendants`: its sub-sessions, deleted with it (§14.93). */
 export type DeleteAgentSessionResponse = { ok: true; descendants?: string[] };
 

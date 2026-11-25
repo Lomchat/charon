@@ -193,7 +193,7 @@ describe('background finish: unread before its push (G6)', () => {
 });
 
 describe('sub-sessions are background work (§14.91)', () => {
-  it('a working sub-session parks the parent; its end frees it; the notice waits for the answer turn', async () => {
+  it('a working sub-session parks the parent (at its stop or later); its end frees it; the notice waits', async () => {
     const CHILD = '7'.repeat(32);
     const streams = (globalThis as any)._sessionStreams as Map<string, unknown>;
     db.delete(schema.agentSessions).where(eq(schema.agentSessions.id, CHILD)).run();
@@ -221,10 +221,37 @@ describe('sub-sessions are background work (§14.91)', () => {
       expect(contract()).toEqual(['status:active']);
       await vi.advanceTimersByTimeAsync(60_000);
       expect(contract()).toEqual(['status:active', 'unread:true', 'push:session_finished', 'telegram:session_finished']);
+      // A sub-session working again (whoever drives it): never ready meanwhile.
+      order.log = [];
+      setSessionStatusLocal(CHILD, 'thinking');
+      await vi.advanceTimersByTimeAsync(0);
+      expect(contract()).toEqual(['status:background', 'unread:false']);
+      expect(row()).toMatchObject({ status: 'background', unreadStop: 0 });
     } finally {
       streams.delete(SID);
       db.delete(schema.agentSessions).where(eq(schema.agentSessions.id, CHILD)).run();
     }
+  });
+});
+
+describe('a sub-session is quiet unless the user drove it (§14.93)', () => {
+  it('its own sub-session\'s answer drives a silent turn; a typed one notifies', async () => {
+    db.update(schema.agentSessions).set({ parentSessionId: 'p'.repeat(32) }).where(eq(schema.agentSessions.id, SID)).run();
+    const s = mkStream('thinking');
+    s._onAgentEvent(ev({ event: 'external_message', origin: 'charon_peer_reply', text: 'x = 42', from: 'sub' }));
+    s._onAgentEvent(ev({ event: 'stop', subtype: 'success' }));
+    await vi.advanceTimersByTimeAsync(0);
+    expect(contract()).toEqual(['stop', 'status:active']);
+    expect(row().unreadStop).toBe(0);
+    expect(pushMocks.sendPushToAll).not.toHaveBeenCalled();
+    expect(telegramMocks.sendPlainToTelegram).not.toHaveBeenCalled();
+    order.log = [];
+    s.status = 'thinking';
+    const stop = ev({ event: 'stop', subtype: 'success' });
+    s._persist('user', 'and now the README', { tsMs: (stop.ts as number) * 1000 - 1 });
+    s._onAgentEvent(stop);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(contract()).toEqual(['stop', 'status:active', 'unread:true', 'push:session_finished', 'telegram:session_finished']);
   });
 });
 

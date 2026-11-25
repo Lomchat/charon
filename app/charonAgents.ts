@@ -22,6 +22,8 @@ export type CharonAgent = {
   endMs: number | null;
   model: string | null;
   effort: string | null;
+  /** Blocked on you (a gate or a question). */
+  waiting: boolean;
 };
 
 /** Deeper than any sub-session tree may grow. */
@@ -54,6 +56,7 @@ export function charonAgentsOf(rootId: string, list: readonly SessionSummary[]):
         kind: s.kind, status, running, depth, parentId, startMs,
         endMs: running ? null : Math.max(startMs, lastMs),
         model: s.effectiveModel ?? s.model ?? null, effort: s.effort ?? null,
+        waiting: s.attention === 'blocked' || s.attention === 'question',
       });
       walk(s.id, depth + 1);
     }

@@ -3135,7 +3135,8 @@ export class SessionStream {
         // advance below keep later reconnect-replays from re-marking it.
         // The green unread marker and final background-work notice still
         // wait for the last task (§14.91).
-        if (isNewFinish && !bgPending && !notFinish && (terminalError || !this.peerDrivenFinish)) {
+        if (isNewFinish && !bgPending && !notFinish && (terminalError || !this.peerDrivenFinish)
+          && (terminalError || !this._quietSubSession())) {
           try {
             db.update(agentSessions).set({ unreadStop: 1 })
               .where(eq(agentSessions.id, this.id)).run();
@@ -4964,11 +4965,30 @@ export class SessionStream {
   }
 
   /** A sub-session below this one started or stopped working: the count
-   *  moved, and the last one ending frees a parked session. Its answer comes
-   *  back as a new turn, whose stop notifies: the notice waits longer. */
+   *  moved. One at work: a ready session is not done either (parked
+   *  `background`, whoever drives the sub-session). The last one ending frees
+   *  it; its answer usually comes back as a new turn, whose stop notifies:
+   *  the notice waits longer. */
   onSubSessionWork(): void {
     this._announceBgCount();
+    if (this.status === 'active' && runningSubSessionIds(this.id).length > 0) {
+      this._parkBackground();
+      return;
+    }
     this._onLastBgTaskEnded(SUB_SESSION_FINISH_GRACE_MS);
+  }
+
+  /** A ready session with work still running: `background`, not green. */
+  private _parkBackground(): void {
+    this._cancelBgFinish();
+    this.status = 'background';
+    try {
+      db.update(agentSessions).set({ status: 'background', unreadStop: 0 })
+        .where(eq(agentSessions.id, this.id)).run();
+    } catch {}
+    this._broadcast({ type: 'status', status: 'background' });
+    // The DB marker just went to 0: every tab hears it (no stale green).
+    this._broadcast({ type: 'session_unread', unread: false });
   }
 
   /** Mirror the count onto every tab (LOW_VOLUME `session_bg_tasks`): the
@@ -5020,16 +5040,7 @@ export class SessionStream {
       // Some providers can reveal a native background process immediately
       // after their stop frame. Do not leave the session green/auto-updatable
       // merely because that lifecycle event crossed the wire second.
-      if (!before && this.status === 'active') {
-        this.status = 'background';
-        try {
-          db.update(agentSessions).set({ status: 'background', unreadStop: 0 })
-            .where(eq(agentSessions.id, this.id)).run();
-        } catch {}
-        this._broadcast({ type: 'status', status: 'background' });
-        // The DB marker just went to 0: every tab hears it (no stale green).
-        this._broadcast({ type: 'session_unread', unread: false });
-      }
+      if (!before && this.status === 'active') this._parkBackground();
       return;
     }
     if (!before) return;                            // nothing was running anyway
@@ -5101,7 +5112,7 @@ export class SessionStream {
       this.bgFinishTimer = null;
       if (this.status !== 'active') return;         // a new turn / sleep took over
       if (this.hasBackgroundWork()) return;         // more work showed up
-      if (this.peerDrivenFinish ?? this._peerTurnFromHistory()) return;
+      if ((this.peerDrivenFinish ?? this._peerTurnFromHistory()) || this._quietSubSession()) return;
       // Same passive marker as a normal finish (§14.47) — this IS the finish.
       // Marked BEFORE the push: in-app green never trails a push (G6).
       try {
@@ -5129,7 +5140,18 @@ export class SessionStream {
    * Replies received by the requester still belong to its user-facing work.
    * Bound the lookup by event time so replay cannot borrow a newer input. */
   private _peerTurnFromHistory(): boolean {
-    const row = db.select({ role: sessionMessages.role, content: sessionMessages.content })
+    const row = this._lastTurnDriver();
+    if (row?.role !== 'event') return false;
+    try {
+      const input = JSON.parse(row.content);
+      return input.origin === 'charon_peer' && input.expectsReply !== false;
+    } catch { return false; }
+  }
+
+  /** The latest input that opened a turn: a typed `user` row or a peer's
+   *  `external_message`, up to the event being handled. */
+  private _lastTurnDriver(): { role: string; content: string } | undefined {
+    return db.select({ role: sessionMessages.role, content: sessionMessages.content })
       .from(sessionMessages).where(and(
         eq(sessionMessages.sessionId, this.id),
         or(eq(sessionMessages.role, 'user'), and(
@@ -5138,11 +5160,6 @@ export class SessionStream {
         )),
         ...(this.currentEventTs == null ? [] : [sql`${sessionMessages.tsMs} <= ${this.currentEventTs}`]),
       )).orderBy(desc(sessionMessages.tsMs), desc(sessionMessages.id)).limit(1).get();
-    if (row?.role !== 'event') return false;
-    try {
-      const input = JSON.parse(row.content);
-      return input.origin === 'charon_peer' && input.expectsReply !== false;
-    } catch { return false; }
   }
 
   /** Explicit user/lifecycle recovery permits the daemon's active status again. */
@@ -5615,17 +5632,22 @@ export class SessionStream {
     } catch { return false; }
   }
 
-  /** A sub-session's finish (§14.93) is not announced when its parent gets
-   *  it — the reply or the failure of the request it was answering — and the
-   *  parent's own finish notifies. A turn the user drove (or nobody
-   *  correlated) speaks like any session's. Gates still do: they block the
-   *  parent too. Read per event: a re-rooted child speaks again. */
+  /** A sub-session's finishes are not announced (§14.93), like a native
+   *  sub-agent's: its parent hears its answer and notifies. Only a turn the
+   *  user drove (a typed input) speaks like any session's. Gates still do:
+   *  they block the parent's work too. */
   private _silentFinish(event: NotificationEvent): boolean {
-    if (!SILENT_SUB_SESSION_EVENTS.has(event)) return false;
-    if (!(this.peerDrivenFinish ?? this._peerTurnFromHistory())) return false;
+    return SILENT_SUB_SESSION_EVENTS.has(event) && this._quietSubSession();
+  }
+
+  /** A sub-session whose latest turn no human drove (its parent's task, a
+   *  peer's message, its own sub-session's answer, a task notification). Read
+   *  per event: a re-rooted child speaks again. */
+  private _quietSubSession(): boolean {
     try {
-      return !!db.select({ parent: agentSessions.parentSessionId }).from(agentSessions)
+      const parent = db.select({ parent: agentSessions.parentSessionId }).from(agentSessions)
         .where(eq(agentSessions.id, this.id)).get()?.parent;
+      return !!parent && this._lastTurnDriver()?.role !== 'user';
     } catch { return false; }
   }
 

@@ -176,6 +176,22 @@ _TOOLS = [
         "annotations": {"readOnlyHint": False, "destructiveHint": True, "idempotentHint": False},
     },
     {
+        "name": "read_sub_session",
+        "description": (
+            "Follow one of YOUR sub-sessions (or theirs) without disturbing it: its "
+            "state, what it still runs, and its latest messages and tool calls, "
+            "newest last. Use it to check on a long task instead of messaging it; "
+            "its final answer still comes back on its own."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {"handle": {"type": "string", "description": "Sub-session handle, e.g. api or @api"}},
+            "required": ["handle"],
+            "additionalProperties": False,
+        },
+        "annotations": {"readOnlyHint": True, "destructiveHint": False, "idempotentHint": True},
+    },
+    {
         "name": "get_message_status",
         "description": (
             "Get the authoritative state of one sent or received peer message: "
@@ -310,6 +326,11 @@ def _handle(request: dict[str, Any], source_session_id: str, socket_path: str) -
                     "source_session_id": source_session_id,
                     "handle": args.get("handle"),
                 }, timeout=45.0)
+            elif name == "read_sub_session":
+                value = _agent_call(socket_path, "peer_read", {
+                    "source_session_id": source_session_id,
+                    "handle": args.get("handle"),
+                })
             elif name == "get_message_status":
                 value = _agent_call(socket_path, "peer_status", {
                     "source_session_id": source_session_id,

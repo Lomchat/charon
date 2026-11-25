@@ -2634,6 +2634,9 @@ html[data-density='small'] .cs-sub-fold { font-size: 8.5px; }
 .bgtasks-bar.sched { border-color: color-mix(in srgb, var(--info) 22%, transparent); }
 .bgtasks-bar.sched:hover { border-color: color-mix(in srgb, var(--info) 50%, transparent); }
 .bgtasks-bar.sched .bgtasks-headline { color: var(--info); }
+/* A sub-session blocked on you (§14.93): the bar speaks in the warning colour. */
+.bgtasks-bar.needs-you { border-color: color-mix(in srgb, var(--warning) 60%, transparent); }
+.bgtasks-bar.needs-you .bgtasks-needs { opacity: 1; color: var(--warning); }
 .bgtasks-bar.sched.paused { opacity: 0.7; }
 .bgtasks-bar.sched.paused .bgtasks-headline { color: var(--text-muted); }
 /* The session's goal (§14.119): green while worked on / reached, red when
@@ -10667,6 +10670,8 @@ button.dv-folder-select { max-width: 170px; padding: 4px 7px; font-size: 11px; }
 }
 .bgf-open-btn svg { width: 11px; height: 11px; }
 .bgf-open-btn:hover { background: color-mix(in srgb, var(--accent) 12%, transparent); }
+.bgf-needs { color: var(--warning); font-weight: 600; }
+.bgf-title .bgf-needs { margin-left: 6px; font-family: var(--mono); font-size: 10px; }
 .bgf-grid, .bgf-wave-line, .bgf-now-line { position: absolute; top: 0; bottom: 0; pointer-events: none; }
 .bgf-grid { border-left: 1px dashed color-mix(in srgb, var(--border) 60%, transparent); }
 .bgf-wave-line { border-left: 1px solid color-mix(in srgb, var(--violet) 40%, transparent); }

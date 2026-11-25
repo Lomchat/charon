@@ -57,6 +57,7 @@ import type {
   OkResponse, OkOrErrorResponse,
   SendAgentInputBody, SendAgentInputResponse, ActionSyncStamp,
   SessionWindowQuery, SessionProbeResponse, AgentSessionToolCallsResponse, CachedUsageBatchResponse,
+  SubSessionUsage,
 } from '@/lib/types/api';
 import type { TranscriptView } from '@/lib/transcriptRows';
 
@@ -770,6 +771,9 @@ export const api = {
   /** The session's finish is read (a click on the pulsing answer, §14.47). */
   markSessionRead: (id: string) =>
     send<OkResponse & ActionSyncStamp>('POST', `/api/sessions/${id}/read`),
+  /** What its sub-sessions (any depth) have used: tokens, turns, billed cost. */
+  subSessionUsage: (id: string) =>
+    send<{ ok: true; usage: Record<string, SubSessionUsage> }>('GET', `/api/sessions/${id}/sub-sessions`),
   /** Its sub-sessions shown or folded in the sidebar, for every tab (§14.93). */
   setSubSessionsOpen: (id: string, open: boolean) =>
     send<OkResponse & ActionSyncStamp>('POST', `/api/sessions/${id}/sub-sessions`, { open }),

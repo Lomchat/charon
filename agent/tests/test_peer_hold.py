@@ -185,6 +185,98 @@ class PeerHoldTestCase(unittest.TestCase):
         finally:
             server_mod._PEER_SETTLE_S = settle
 
+    def test_a_sub_session_answers_at_its_real_end_past_the_hold_cap(self):
+        # Like a native sub-agent's task: no clock closes it while it works
+        # (a plain peer would be released with its latest answer).
+        cap, settle = server_mod._PEER_HOLD_MAX_S, server_mod._PEER_SETTLE_S
+        server_mod._PEER_HOLD_MAX_S, server_mod._PEER_SETTLE_S = 0.05, 0.05
+        try:
+            with tempfile.TemporaryDirectory() as tmp:
+                src, tgt = _Fake("s", "src"), _Fake("t", "tgt")
+                tgt.parent_session_id = "s"
+                server, _wires = _server(tmp, src, tgt)
+
+                async def run():
+                    mid = (await server.dispatch("peer_send", {
+                        "source_session_id": "s", "handle": "tgt", "message": "render it"}, None))["message_id"]
+                    server._emit({"event": "bg_task", "session_id": "t", "kind": "started",
+                                  "task_id": "render", "_peer_request_id": mid})
+                    _turn(server, "t", ["Rendering, I report when done."], tag=mid)
+                    await asyncio.sleep(0.3)                 # well past the cap
+                    still = server.peer_messages[mid]["status"]
+                    server._emit({"event": "bg_task", "session_id": "t", "kind": "finished",
+                                  "task_id": "render", "status": "completed"})
+                    _turn(server, "t", ["Done: 120 frames rendered."])
+                    await asyncio.sleep(0.2)
+                    return mid, still
+
+                mid, still = asyncio.run(run())
+                self.assertEqual(still, "processing")
+                row = server.peer_messages[mid]
+                self.assertEqual(row["status"], "replied")
+                self.assertEqual(row["reply"], "Done: 120 frames rendered.")
+                self.assertNotEqual(row.get("release"), "time_limit")
+                self.assertEqual(len(src.inputs), 1)
+        finally:
+            server_mod._PEER_HOLD_MAX_S, server_mod._PEER_SETTLE_S = cap, settle
+
+    def test_the_user_joins_a_sub_session_task_instead_of_closing_it(self):
+        settle = server_mod._PEER_SETTLE_S
+        server_mod._PEER_SETTLE_S = 0.05
+        try:
+            with tempfile.TemporaryDirectory() as tmp:
+                src, tgt = _Fake("s", "src"), _Fake("t", "tgt")
+                tgt.parent_session_id = "s"
+                server, _wires = _server(tmp, src, tgt)
+
+                async def run():
+                    mid = (await server.dispatch("peer_send", {
+                        "source_session_id": "s", "handle": "tgt", "message": "do A"}, None))["message_id"]
+                    server._emit({"event": "bg_task", "session_id": "t", "kind": "started",
+                                  "task_id": "job", "_peer_request_id": mid})
+                    _turn(server, "t", ["Working on A."], tag=mid)
+                    await asyncio.sleep(0.05)
+                    await server.dispatch("send_input", {"session_id": "t", "content": "also do B"}, None)
+                    state = server.peer_messages[mid]["status"]
+                    server._emit({"event": "bg_task", "session_id": "t", "kind": "finished",
+                                  "task_id": "job", "status": "completed"})
+                    _turn(server, "t", ["Done: A and B."])     # the user's turn
+                    await asyncio.sleep(0.2)
+                    return mid, state
+
+                mid, state = asyncio.run(run())
+                self.assertEqual(state, "processing")
+                row = server.peer_messages[mid]
+                self.assertEqual(row["status"], "replied")
+                self.assertEqual(row["reply"], "Done: A and B.")
+                self.assertEqual(len(src.inputs), 1)
+                self.assertIn("also wrote to @tgt", src.inputs[0][0])
+        finally:
+            server_mod._PEER_SETTLE_S = settle
+
+    def test_only_an_ancestor_reads_a_sub_session(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            src, kid, grand, other = (_Fake("s", "src"), _Fake("k", "kid"), _Fake("g", "grand"),
+                                      _Fake("o", "other"))
+            kid.parent_session_id, grand.parent_session_id = "s", "k"
+            server, _wires = _server(tmp, src, kid, grand, other)
+
+            async def run():
+                _turn(server, "g", ["Rendered 120 frames."])
+                mine = await server.dispatch("peer_read", {"source_session_id": "s", "handle": "@grand"}, None)
+                try:
+                    await server.dispatch("peer_read", {"source_session_id": "o", "handle": "kid"}, None)
+                    refused = False
+                except Exception:
+                    refused = True
+                return mine, refused
+
+            mine, refused = asyncio.run(run())
+            self.assertTrue(refused)
+            self.assertEqual(mine["status"], "active")
+            self.assertIn("said: Rendered 120 frames.", mine["recent"])
+            self.assertIn("turn ended", mine["recent"])
+
     def test_a_failed_request_reaches_the_source_model(self):
         with tempfile.TemporaryDirectory() as tmp:
             src, tgt = _Fake("s", "src"), _Fake("t", "tgt")

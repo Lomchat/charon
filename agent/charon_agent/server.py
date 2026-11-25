@@ -194,6 +194,54 @@ _PEER_REPLY_BOUNDARIES = frozenset({
     "exit_plan_request", "compaction", "plan_update", "external_message", "peer_message_status",
 })
 _PEER_STOPPED_STATUSES = frozenset({"sleeping", "error", "killed"})
+# `read_sub_session` (§14.93): the latest entries of a sub-session's own log,
+# public parts only (its text, tool names and their target, inputs it got).
+_PEER_READ_ENTRIES = 30
+_PEER_READ_TEXT = 1200
+_PEER_READ_MAX = 12000
+
+
+def _peer_read_entries(events: list[dict[str, Any]]) -> list[str]:
+    entries: list[str] = []
+    text = ""
+
+    def close() -> None:
+        nonlocal text
+        block = text.strip()
+        if block:
+            entries.append("said: " + (block if len(block) <= _PEER_READ_TEXT
+                                       else block[:_PEER_READ_TEXT] + " …"))
+        text = ""
+
+    for ev in events:
+        name = ev.get("event")
+        if name == "assistant_text":
+            delta = ev.get("delta")
+            if isinstance(delta, str):
+                text += delta
+            continue
+        if name in _PEER_REPLY_BOUNDARIES or name == "stop":
+            close()
+        if name == "tool_use":
+            inp = ev.get("input") if isinstance(ev.get("input"), dict) else {}
+            what = next((str(inp[k]) for k in ("description", "command", "file_path", "path",
+                                                "pattern", "query", "url") if isinstance(inp.get(k), str)), "")
+            entries.append(f"tool {ev.get('name') or '?'}" + (f": {what[:160]}" if what else ""))
+        elif name == "external_message":
+            body = str(ev.get("text") or "").strip().replace("\n", " ")
+            entries.append(f"got a message from @{ev.get('from') or '?'}: {body[:300]}")
+        elif name == "stop":
+            entries.append("turn ended" + (" with an error" if ev.get("is_error") else ""))
+    close()
+    out, size = [], 0
+    for entry in reversed(entries[-_PEER_READ_ENTRIES:]):
+        size += len(entry)
+        if size > _PEER_READ_MAX:
+            break
+        out.append(entry)
+    return list(reversed(out))
+
+
 # Streamed or periodic: they say nothing new about a held target's state.
 _PEER_HOLD_QUIET_EVENTS = frozenset({
     "assistant_text", "thinking", "usage", "generation_progress", "tool_progress",
@@ -489,14 +537,26 @@ class Server:
         if task is not None and not task.done() and task is not asyncio.current_task():
             task.cancel()
 
+    def _peer_sub_session_task(self, row: dict[str, Any]) -> bool:
+        """A request from a session to its OWN sub-session: like a native
+        sub-agent's task, no clock ends it while the sub-session works — its
+        answer goes back at its real end, however long (§14.93)."""
+        target = self.sessions.get(row.get("target_session_id"))
+        source = row.get("source_session_id")
+        return target is not None and isinstance(source, str) \
+            and getattr(target, "parent_session_id", None) == source
+
     def _arm_peer_timeout(self, message_id: str, delay: float | None = None) -> None:
         """One clock per open request: a held one's cap, else the reply
-        deadline — which gives no verdict while the target's turn runs."""
+        deadline — which gives no verdict while the target's turn runs. A
+        sub-session's held answer has no cap."""
         self._cancel_peer_timeout(message_id)
         row = self.peer_messages.get(message_id)
         if row is None or row.get("status") in _PEER_FINAL_STATUSES:
             return
         if delay is None:
+            if row.get("held") and self._peer_sub_session_task(row):
+                return
             if row.get("held"):
                 start = float(row.get("held_at") or time.time())
                 delay = _PEER_HOLD_MAX_S - (time.time() - start)
@@ -526,11 +586,14 @@ class Server:
                 await self._complete_peer_request(message_id, failed=False, release="time_limit")
                 return
             # Still at work on it (or on the turn it joins): no verdict yet —
-            # up to the cap, past which a turn that never ends is stuck.
+            # up to the cap, past which a turn that never ends is stuck. A
+            # sub-session's task has no cap: it works for its parent.
             age = time.time() - float(current.get("created_at") or time.time())
+            sub_task = self._peer_sub_session_task(current)
             if reserved and current.get("status") != "delivered" \
-                    and target_status in ("thinking", "starting") and age < _PEER_HOLD_MAX_S:
-                self._arm_peer_timeout(message_id, min(_PEER_REPLY_TIMEOUT_S, _PEER_HOLD_MAX_S - age))
+                    and target_status in ("thinking", "starting") and (sub_task or age < _PEER_HOLD_MAX_S):
+                self._arm_peer_timeout(message_id, _PEER_REPLY_TIMEOUT_S if sub_task
+                                       else min(_PEER_REPLY_TIMEOUT_S, _PEER_HOLD_MAX_S - age))
                 return
             # A notice already read stays `delivered`: the deadline only
             # frees a target whose turn never closed it.
@@ -684,6 +747,52 @@ class Server:
         if starting:
             out["sub_sessions_starting"] = starting
         return out or None
+
+    def _peer_read(self, params: dict[str, Any]) -> dict[str, Any]:
+        """What one of the caller's sub-sessions (any depth) is doing, read
+        without disturbing it: its state and its latest messages, tool calls
+        and inputs, newest last (§14.93). From the in-memory ring, else the
+        tail of its durable log."""
+        source_id = params.get("source_session_id")
+        if not isinstance(source_id, str) or source_id not in self.sessions:
+            raise RpcError(ERR_SESSION_NOT_FOUND, "peer source session not found")
+        raw = params.get("handle")
+        handle = raw.strip().lstrip("@").lower() if isinstance(raw, str) else ""
+        matches = [sess for sess in self.sessions.values()
+                   if handle and getattr(sess, "handle", None) == handle]
+        if len(matches) != 1:
+            raise RpcError(ERR_SESSION_NOT_FOUND, f"peer @{handle} not found")
+        target = matches[0]
+        child_id = str(getattr(target, "session_id", ""))
+        # Owned: the caller is one of its ancestors.
+        cur, hops = target, 0
+        while cur is not None and hops < 16:
+            parent = getattr(cur, "parent_session_id", None)
+            if parent == source_id:
+                break
+            cur = self.sessions.get(parent) if isinstance(parent, str) else None
+            hops += 1
+        else:
+            cur = None
+        if cur is None:
+            raise RpcError(ERR_INVALID_PARAMS, f"@{handle} is not one of your sub-sessions")
+        events = list(self.rings.get(child_id) or ())
+        if not events:
+            try:
+                log = self._event_log(child_id)
+                events = log.read_since(max(0, log.current_seq() - RING_SIZE))
+            except Exception:
+                events = []
+        status = str(getattr(target, "status", "unknown"))
+        out: dict[str, Any] = {"ok": True, "handle": handle, "status": status,
+                               **self._peer_activity(child_id, status),
+                               "recent": _peer_read_entries(events)}
+        mid = self.peer_target_active.get(child_id)
+        row = self.peer_messages.get(mid) if mid else None
+        if row is not None and row.get("source_session_id") == source_id:
+            out["your_request"] = {"message_id": mid, "status": row.get("status"),
+                                   **({"held": True} if row.get("held") else {})}
+        return out
 
     def _peer_activity(self, session_id: str, status: str) -> dict[str, Any]:
         """`list_sessions`' word on what a session is doing: working (a turn
@@ -949,6 +1058,10 @@ class Server:
                 "stopped": f"{handle} stopped before its background work ended, so this is its "
                            "latest answer.",
             }.get(str(row.get("release") or ""), "")
+            if row.get("user_joined"):
+                note = (note + " " if note else "") + (
+                    f"The user also wrote to {handle} directly while it worked: this answer "
+                    "may include its reply to them.")
             return (
                 f'<charon-peer-reply {attrs} message-id="{row.get("reply_id")}"{still_attr}>\n'
                 f'{row.get("reply") or ""}\n</charon-peer-reply>\n\n'
@@ -2285,7 +2398,7 @@ class Server:
         "cli_agents",
         "peer_list", "peer_send", "peer_spawn", "peer_spawn_resolve", "peer_interrupt",
         "peer_kill", "peer_kill_resolve",
-        "peer_status", "peer_conversation", "peer_inbox", "peer_hidden_set",
+        "peer_status", "peer_conversation", "peer_inbox", "peer_read", "peer_hidden_set",
         "hello", "ping", "list_sessions", "get_usage", "account_profiles",
         "accounts_set", "accounts_list", "accounts_merge_history", "accounts_transcript_check",
         "list_codex_models", "list_codex_threads", "get_codex_usage",
@@ -2459,6 +2572,9 @@ class Server:
                     if source_id in (row.get("source_session_id"), row.get("target_session_id"))]
             rows.sort(key=lambda row: float(row.get("updated_at") or 0), reverse=True)
             return {"ok": True, "messages": rows[:50]}
+
+        if method == "peer_read":
+            return self._peer_read(params)
 
         if method == "peer_send":
             return await self._peer_send(params)
@@ -3158,8 +3274,16 @@ class Server:
                 raise RpcError(ERR_INVALID_PARAMS, "content required (str)")
             # The user takes over a target holding a peer request (§14.93):
             # its latest answer goes back now, the turn this opens is theirs.
+            # A parent's OWN sub-session keeps it: the user's message joins
+            # the work, and the parent hears the real end (and that they spoke).
             if sid in self.peer_target_active:
-                await self._peer_release_held(sid, "taken_over")
+                mid = self.peer_target_active.get(sid)
+                row = self.peer_messages.get(mid) if mid else None
+                if row is not None and self._peer_sub_session_task(row):
+                    row["user_joined"] = True
+                    self.schedule_save()
+                else:
+                    await self._peer_release_held(sid, "taken_over")
             codex_inputs = params.get("codex_inputs")
             if codex_inputs is not None:
                 if getattr(s, "kind", "claude") != "codex" or not isinstance(codex_inputs, list):

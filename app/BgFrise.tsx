@@ -12,8 +12,9 @@ import { useBgSessionAgents, type NativeBgAgent } from './useBgSessionAgents';
 import { localTicks, outcomeText, workflowTimeline, type TimelineAgent, type WorkflowTimeline } from './bgWorkflowTimeline';
 import { IconBoxArrowUpRight } from './icons';
 import type { CharonAgent } from './charonAgents';
+import type { SubSessionUsage } from '@/lib/types/api';
 import {
-  charonFriseStatus, friseKind, friseStatus, friseWindow, terminalCommand, terminalId,
+  charonFriseStatus, fmtTokens, friseKind, friseStatus, friseWindow, terminalCommand, terminalId,
   type CodexTerminal, type FriseKind, type FriseRange, type FriseStatus,
 } from './bgFrise';
 
@@ -89,6 +90,8 @@ type Props = {
   initialSelected: string | null;
   /** Sub-sessions under this one, tree order (`useCharonAgents`). */
   charon: CharonAgent[];
+  /** What each has used (read while the modal is open). */
+  charonUsage?: Record<string, SubSessionUsage>;
   onOpenSession?: (id: string) => void;
   interrupting: Record<string, string>; onInterrupt: (id: string) => void;
 };
@@ -228,7 +231,7 @@ function BgFrise(props: Props) {
       <div className="bgf-name">
         {!sub && <span className="bgf-caret" aria-hidden />}
         <span className="bgf-kind charon" aria-label={text.charonAgent}>{ICON.charon}</span>
-        <span className="bgf-title" title={a.handle ? `${a.name} · @${a.handle}` : a.name}>{a.name}</span>
+        <span className="bgf-title" title={a.handle ? `${a.name} · @${a.handle}` : a.name}>{a.name}{a.waiting && <small className="bgf-needs">needs you</small>}</span>
         <AgentRunTag model={a.model} effort={a.effort} />
         {props.onOpenSession && <button type="button" className="bgf-open" title={text.open} aria-label={`${text.open} ${a.name}`}
           onClick={(e) => { e.stopPropagation(); props.onOpenSession!(a.id); }}><IconBoxArrowUpRight /></button>}
@@ -455,7 +458,8 @@ function TaskDetail({ item, nowMs, provider, sessionId, vpsId, cwd, killing, onS
   </section>;
 }
 
-function CharonDetail({ agent, nowMs, charon, onOpenSession, interrupting, onInterrupt }: DetailProps & { agent: CharonAgent }) {
+function CharonDetail({ agent, nowMs, charon, charonUsage, onOpenSession, interrupting, onInterrupt }: DetailProps & { agent: CharonAgent }) {
+  const used = charonUsage?.[agent.id];
   const st = charonFriseStatus(agent.status);
   const inTurn = agent.status === 'thinking' || agent.status === 'starting';
   const state = interrupting[agent.id];
@@ -470,11 +474,15 @@ function CharonDetail({ agent, nowMs, charon, onOpenSession, interrupting, onInt
     <Head st={st} kind={`${text.charonAgent} · ${providerLabel(asSessionProvider(agent.kind))}`} title={agent.name}
       run={{ model: agent.model, effort: agent.effort }} actions={actions} />
     <div className="bgf-facts">
+      {agent.waiting && <span className="bgf-needs">needs you</span>}
       {agent.handle && <span><b>@{agent.handle}</b></span>}
       {parent && <span>{text.under} <b>{parent.handle ? `@${parent.handle}` : parent.name}</b></span>}
       <span>{text.wfStartedAt} <b>{fmtMoment(agent.startMs, nowMs)}</b></span>
       {agent.endMs != null && <span>{text.ended.toLowerCase()} <b>{fmtMoment(agent.endMs, nowMs)}</b></span>}
       <span>{agent.running ? text.wfRunningFor : text.wfTook} <b>{fmtDuration((agent.endMs ?? nowMs) - agent.startMs)}</b></span>
+      {used?.tokens != null && <span><b>{fmtTokens(used.tokens)}</b> {text.tokens.toLowerCase()}</span>}
+      {used && used.turns > 0 && <span><b>{used.turns}</b> turn{used.turns === 1 ? '' : 's'}</span>}
+      {used?.costUsd != null && <span><b>${used.costUsd.toFixed(2)}</b></span>}
       <span>{agent.status}</span>
     </div>
     {state && state !== 'pending' && <div className="tm-error">{state}</div>}

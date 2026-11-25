@@ -613,6 +613,8 @@ export type AgentMethodName =
   | 'peer_status'
   | 'peer_conversation'
   | 'peer_inbox'
+  // A sub-session's state and latest activity, for its ancestors (§14.93).
+  | 'peer_read'
   // Hub-hidden sessions left out of peer_list (agent >= 0.130.0, §14.118).
   | 'peer_hidden_set'
   | 'subscribe'

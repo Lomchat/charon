@@ -52,6 +52,10 @@ export function charonFriseStatus(status: string): FriseStatus {
     default: return 'unknown';
   }
 }
+/** 12.4M, 830k, 512. */
+export function fmtTokens(n: number): string {
+  return n >= 1_000_000 ? `${(n / 1_000_000).toFixed(1)}M` : n >= 1000 ? `${Math.round(n / 1000)}k` : String(n);
+}
 export type FriseRange = 'auto' | '1h' | '6h' | 'all';
 export type FriseSpan = { start: number; end: number | null };
 const HOUR = 3_600_000;
