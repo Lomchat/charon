@@ -9324,9 +9324,9 @@ html:not([data-file-icons='mono']) .tt-row:not(.ignored) > .tt-ico.fi { opacity:
 }
 .tab-scroll { scrollbar-width: none; }
 .tab-scroll::-webkit-scrollbar { display: none; }
-.tab-scroll[data-fade='r'] { mask-image: linear-gradient(90deg, #000 calc(100% - 28px), transparent); }
-.tab-scroll[data-fade='l'] { mask-image: linear-gradient(90deg, transparent, #000 28px); }
-.tab-scroll[data-fade='lr'] { mask-image: linear-gradient(90deg, transparent, #000 28px, #000 calc(100% - 28px), transparent); }
+.tab-scroll[data-fade='r'] { mask-image: linear-gradient(90deg, var(--bg) calc(100% - 28px), transparent); }
+.tab-scroll[data-fade='l'] { mask-image: linear-gradient(90deg, transparent, var(--bg) 28px); }
+.tab-scroll[data-fade='lr'] { mask-image: linear-gradient(90deg, transparent, var(--bg) 28px, var(--bg) calc(100% - 28px), transparent); }
 .tab-rows-toggle {
   flex: none; align-self: center; display: grid; place-items: center;
   width: 20px; height: 20px; margin-right: -3px; padding: 0;
@@ -10174,7 +10174,7 @@ html:not([data-file-icons='mono']) .tt-row:not(.ignored) > .tt-ico.fi { opacity:
   .app-bar.is-reduced .runtime-summary {
     display: inline-flex; grid-column: 2; grid-row: 1; justify-self: center;
     align-items: center; gap: 8px; height: 26px; min-width: 0; max-width: 100%;
-    padding: 0 9px; border: 1px solid color-mix(in srgb, var(--accent) 18%, transparent); border-radius: 13px;
+    padding: 0 9px; border: 1px solid color-mix(in srgb, var(--accent) 18%, transparent); border-radius: 999px;
     background: linear-gradient(145deg, color-mix(in srgb, var(--accent) 8.5%, transparent), color-mix(in srgb, var(--accent) 2.5%, transparent));
     color: var(--text-muted); font: 11.5px/1 var(--body); letter-spacing: 0; text-transform: none; white-space: nowrap;
     --um-surface: color-mix(in srgb, var(--bg-raised) 50%, var(--bg));
