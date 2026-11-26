@@ -97,16 +97,109 @@ def _env() -> dict[str, str]:
     return e
 
 
+# ── Programs a repository's config makes git run ────────────────────────────
+# A repo's own config can name programs git runs by itself: the fsmonitor
+# hook (every index refresh), clean/process filters (hashing a modified file,
+# e.g. `diff-index --numstat`), textconv and external diff drivers (porcelain
+# diff/log/show). A clone never carries .git/config, but a tree unpacked or
+# copied WITH its .git does, and the Git tab polls on its own. So fsmonitor is
+# always off, READS never textconv/ext-diff, and READS neutralize every filter
+# driver the REPO defines (local/worktree scope, includes too) except git-lfs.
+# Writes the user clicks (add, commit, switch, pull, push, checkout) keep the
+# repo's filters: LFS and friends need them to store the right bytes.
+SAFE_GIT_ARGS = ("-c", "core.fsmonitor=false")
+_READ_CMDS = frozenset({
+    "status", "diff", "diff-index", "diff-files", "diff-tree", "log", "show",
+    "ls-files", "rev-parse", "for-each-ref", "remote", "cat-file", "rev-list",
+})
+_DIFF_CMDS = frozenset({"diff", "log", "show"})
+_LFS_FILTER_COMMANDS = frozenset({"git-lfs clean -- %f", "git-lfs smudge -- %f", "git-lfs filter-process"})
+_FILTER_KEYS = r"^filter\..+\.(clean|smudge|process)$"
+_FILTER_CACHE_TTL_S = 30.0
+# cwd -> (deadline, `-c` overrides, refusal or None)
+_filter_cache: dict[str, tuple[float, list[str], str | None]] = {}
+
+
+class _UnsafeRepoConfig(Exception):
+    pass
+
+
+def _repo_filter_overrides(cwd: str) -> list[str]:
+    """`-c` pairs turning off every filter driver the repo's config defines.
+
+    Raises _UnsafeRepoConfig for a driver name no `-c` can address (a `=` or
+    a line break in it): such a repo is not read at all.
+    """
+    now = time.monotonic()
+    hit = _filter_cache.get(cwd)
+    if hit and hit[0] > now:
+        if hit[2]:
+            raise _UnsafeRepoConfig(hit[2])
+        return hit[1]
+
+    def config(*flags: str) -> subprocess.CompletedProcess | None:
+        try:
+            return subprocess.run(
+                ["git", "--no-pager", *SAFE_GIT_ARGS, "config", "--null", *flags, "--get-regexp", _FILTER_KEYS],
+                cwd=cwd, env=_env(), timeout=READ_TIMEOUT_S,
+                stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+            )
+        except (subprocess.TimeoutExpired, OSError):
+            return None
+
+    names: set[str] = set()
+    # Exit 1 = no such key. `--show-scope` (git >= 2.26) tells the user's own
+    # global/system drivers apart; without it every driver is the repo's.
+    p = config("--show-scope")
+    if p is not None and p.returncode in (0, 1):
+        tokens = p.stdout.decode("utf-8", "replace").split("\0")
+        entries = list(zip(tokens[0::2], tokens[1::2]))
+    else:
+        p = config()
+        tokens = p.stdout.decode("utf-8", "replace").split("\0") if p is not None and p.returncode == 0 else []
+        entries = [("local", t) for t in tokens if t]
+    for scope, entry in entries:
+        key, _, value = entry.partition("\n")
+        if scope in ("system", "global") or value.strip() in _LFS_FILTER_COMMANDS:
+            continue
+        names.add(key[len("filter."):key.rindex(".")])
+
+    refusal = None
+    bad = sorted(n for n in names if "=" in n or "\n" in n)
+    if bad:
+        refusal = f"this repository's config defines filter drivers Charon will not run ({bad[0]!r})"
+    overrides = [
+        arg
+        for n in sorted(names)
+        for setting in ("clean=", "smudge=", "process=", "required=false")
+        for arg in ("-c", f"filter.{n}.{setting}")
+    ]
+    if len(_filter_cache) > 512:
+        _filter_cache.clear()
+    _filter_cache[cwd] = (now + _FILTER_CACHE_TTL_S, overrides, refusal)
+    if refusal:
+        raise _UnsafeRepoConfig(refusal)
+    return overrides
+
+
 def _run(cwd: str, args: list[str], timeout: int = READ_TIMEOUT_S) -> tuple[int, str, str]:
     """Run `git <args>` in `cwd`. Returns (code, stdout, stderr).
 
-    code 124 = timed out, 127 = git not installed. Output is decoded with
+    code 124 = timed out, 127 = git not installed, 126 = the repo's config
+    asks for a program Charon will not run. Output is decoded with
     errors='replace': git paths are bytes and a non-UTF-8 filename must not
     take down JSON serialization of the whole listing.
     """
+    cmd = args[0] if args else ""
+    try:
+        guard = _repo_filter_overrides(cwd) if cmd in _READ_CMDS else []
+    except _UnsafeRepoConfig as ex:
+        return 126, "", str(ex)
+    if cmd in _DIFF_CMDS:
+        args = [cmd, "--no-ext-diff", "--no-textconv", *args[1:]]
     try:
         p = subprocess.run(
-            ["git", "--no-pager", "-c", "color.ui=false", *args],
+            ["git", "--no-pager", "-c", "color.ui=false", *SAFE_GIT_ARGS, *guard, *args],
             cwd=cwd, env=_env(), timeout=timeout,
             stdout=subprocess.PIPE, stderr=subprocess.PIPE,
         )

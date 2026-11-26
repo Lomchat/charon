@@ -88,6 +88,13 @@ function escapeMd(s: string): string {
   return String(s).replace(/[_*[\]()~`>#+\-=|{}.!\\]/g, (c) => '\\' + c);
 }
 
+// Inside a MarkdownV2 ``` block only ` and \ are special, and an unescaped one
+// makes Telegram REJECT the whole message: the card never arrives, or crafted
+// text closes the block and dresses up the command beside ✓ Allow.
+function escapePre(s: string): string {
+  return String(s).replace(/[`\\]/g, (c) => '\\' + c);
+}
+
 // Telegram's callback_data is limited to 64 bytes. We use indices.
 function sessionLabel(sessionId: string): string {
   try {
@@ -124,7 +131,7 @@ export async function sendPermissionToTelegram(
     `🔒 *Permission* — _${escapeMd(name)}_\n` +
     `tool: \`${escapeMd(tool)}\`\n` +
     (extra.reason ? `_${escapeMd(extra.reason.slice(0, 400))}_\n` : '') +
-    `\`\`\`\n${summary.slice(0, 600)}\n\`\`\`` +
+    `\`\`\`\n${escapePre(summary)}\n\`\`\`` +
     (extra.always ? `\n⏵ Always \\= ${escapeMd(extra.always.slice(0, 200))}` : '') +
     // MarkdownV2 inline link: inside (...) only ')' and '\' need escaping —
     // our hex-id URLs contain neither, so no escaping required.

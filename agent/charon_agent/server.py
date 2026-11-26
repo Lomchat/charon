@@ -2652,11 +2652,13 @@ class Server:
         if method == "fs_read":
             return await asyncio.to_thread(
                 _fs_read, str(params.get("root") or ""), str(params.get("path") or ""),
+                bool(params.get("confine")),
             )
 
         if method == "fs_stat":
             return await asyncio.to_thread(
                 _fs_stat, str(params.get("root") or ""), str(params.get("path") or ""),
+                bool(params.get("confine")),
             )
 
         # Session history of this box (agent >= 0.124.0, history.py): the

@@ -869,5 +869,30 @@ class ReceiveFileCliTest(unittest.TestCase):
             self.assertEqual(f.read(), b"two")
 
 
+
+class ConfinedReadTest(unittest.TestCase):
+    """The live view reads with `confine`: a link out of the root is missing
+    there (a page's scripts could send it anywhere), one inside still works."""
+
+    def setUp(self):
+        self.root = tempfile.mkdtemp(prefix="charon-confine-")
+        self.outside = tempfile.mkdtemp(prefix="charon-outside-")
+        with open(os.path.join(self.outside, "id_ed25519"), "w") as f:
+            f.write("SECRET")
+        with open(os.path.join(self.root, "page.txt"), "w") as f:
+            f.write("page")
+        os.symlink(os.path.join(self.outside, "id_ed25519"), os.path.join(self.root, "notes.txt"))
+        os.symlink("page.txt", os.path.join(self.root, "alias.txt"))
+
+    def tearDown(self):
+        shutil.rmtree(self.root, ignore_errors=True)
+        shutil.rmtree(self.outside, ignore_errors=True)
+
+    def test_a_link_out_of_the_root_is_refused_only_when_confined(self):
+        self.assertEqual(F.fs_read(self.root, "notes.txt")["content"], "SECRET")  # explorer
+        self.assertFalse(F.fs_read(self.root, "notes.txt", confine=True)["ok"])
+        self.assertFalse(F.fs_stat(self.root, "notes.txt", confine=True)["ok"])
+        self.assertEqual(F.fs_read(self.root, "alias.txt", confine=True)["content"], "page")
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

@@ -89,6 +89,10 @@ def list_dir(raw: str) -> dict[str, Any]:
         return {"ok": False, "error": str(e), "exists": False, "dirs": []}
 
 
+# A repo's own config may name an fsmonitor program git would run on an index
+# refresh: off for every git call here, as in git.py § SAFE_GIT_ARGS.
+_SAFE_GIT = ("-c", "core.fsmonitor=false")
+
 # ── File tree (agent >= 0.25.0) ─────────────────────────────────────────────
 def contained_path(root: str, target: str) -> str | None:
     """`target` under `root`, or None when its SPELLING leaves the tree.
@@ -116,6 +120,27 @@ def contained_path(root: str, target: str) -> str | None:
     # rstrip: a session at `/` has "/" as its root, and "/" + sep ("//") prefixes
     # nothing, which refused every folder under it.
     if resolved != real_root and not resolved.startswith(real_root.rstrip(os.sep) + os.sep):
+        return None
+    return resolved
+
+
+def confined_path(root: str, target: str) -> str | None:
+    """`contained_path`, and where it LANDS stays under `root` too.
+
+    For a reader that hands bytes to content it does not trust (the live
+    view runs the page's own scripts): a link in the tree pointing at
+    `~/.ssh/id_ed25519` must read as missing there, while the explorer keeps
+    following it (contained_path's whole point).
+    """
+    resolved = contained_path(root, target)
+    if resolved is None:
+        return None
+    try:
+        real_root = os.path.realpath(os.path.expanduser(root)).rstrip(os.sep)
+        real = os.path.realpath(resolved)
+    except (OSError, ValueError):
+        return None
+    if real != (real_root or os.sep) and not real.startswith(real_root + os.sep):
         return None
     return resolved
 
@@ -173,7 +198,7 @@ def _ignored_names(directory: str, names: list[str]) -> set[str]:
         env["GIT_OPTIONAL_LOCKS"] = "0"
         env["LC_ALL"] = "C"
         p = subprocess.run(
-            ["git", "-C", directory, "check-ignore", "--stdin", "-z"],
+            ["git", *_SAFE_GIT, "-C", directory, "check-ignore", "--stdin", "-z"],
             input="\0".join(names).encode() + b"\0",
             stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
             env=env, timeout=10,
@@ -352,10 +377,13 @@ def _version_from_stat(st: os.stat_result) -> str:
     return f"{st.st_dev:x}:{st.st_ino:x}:{st.st_size:x}:{st.st_mtime_ns:x}"
 
 
-def fs_stat(root: str, path: str) -> dict[str, Any]:
-    """Cheap version probe for one open editor (agent >= 0.28.0)."""
+def fs_stat(root: str, path: str, confine: bool = False) -> dict[str, Any]:
+    """Cheap version probe for one open editor (agent >= 0.28.0).
+
+    `confine` (agent >= 0.148.0): links leaving `root` read as outside it
+    (`confined_path`), for the live view."""
     try:
-        target = contained_path(root, path)
+        target = (confined_path if confine else contained_path)(root, path)
         if target is None:
             return {"ok": False, "error": "path outside the root"}
         # `lexists`, so a broken link still reports what it points at — that
@@ -378,7 +406,7 @@ def fs_stat(root: str, path: str) -> dict[str, Any]:
         return {"ok": False, "error": str(e)}
 
 
-def fs_read(root: str, path: str) -> dict[str, Any]:
+def fs_read(root: str, path: str, confine: bool = False) -> dict[str, Any]:
     """Read ONE file under `root`, for the viewer.
 
     Text comes back as utf-8 in the JSON; anything with a NUL in its first
@@ -387,7 +415,7 @@ def fs_read(root: str, path: str) -> dict[str, Any]:
     first 2MB of a 40MB log and says so beats one that appears to show all of it.
     """
     try:
-        target = contained_path(root, path)
+        target = (confined_path if confine else contained_path)(root, path)
         if target is None:
             return {"ok": False, "error": "path outside the root"}
         if os.path.isdir(target):
@@ -1207,7 +1235,7 @@ def _in_work_tree(path: str) -> bool:
     """
     try:
         p = subprocess.run(
-            ["git", "-C", path, "rev-parse", "--is-inside-work-tree", "--show-toplevel", "--show-prefix"],
+            ["git", *_SAFE_GIT, "-C", path, "rev-parse", "--is-inside-work-tree", "--show-toplevel", "--show-prefix"],
             stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, stdin=subprocess.DEVNULL,
             env=_git_env(), timeout=5,
         )
@@ -1228,7 +1256,7 @@ def _in_work_tree(path: str) -> bool:
         # No `-q`: git refuses it with more than one path (exit 128), which
         # read as "not ignored" and listed nothing.
         q = subprocess.run(
-            ["git", "-C", top, "check-ignore", "--", *ancestors],
+            ["git", *_SAFE_GIT, "-C", top, "check-ignore", "--", *ancestors],
             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, stdin=subprocess.DEVNULL,
             env=_git_env(), timeout=5,
         )
@@ -1251,7 +1279,7 @@ def _git_listing(path: str) -> tuple[subprocess.Popen[bytes], bytes] | None:
     """
     try:
         p = subprocess.Popen(
-            ["git", "-C", path, "ls-files", "-z", "--cached", "--others", "--exclude-standard"],
+            ["git", *_SAFE_GIT, "-C", path, "ls-files", "-z", "--cached", "--others", "--exclude-standard"],
             stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, stdin=subprocess.DEVNULL,
             env=_git_env(),
         )

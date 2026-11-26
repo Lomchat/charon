@@ -88,7 +88,10 @@ async function locate(
   client: NonNullable<ReturnType<typeof getAgentClientForVpsId>>, root: string, path: string,
 ): Promise<Located> {
   try {
-    const st = await client.call<FsStatResponse>('fs_stat', { root, path });
+    // `confine` (agent >= 0.148.0): a link leaving the root reads as missing —
+    // the page runs its own scripts and could send what it reads anywhere.
+    // The big-file stream re-checks this stat's inode (expectedVersion).
+    const st = await client.call<FsStatResponse>('fs_stat', { root, path, confine: true });
     if (!st.ok || st.exists === false || !Number.isSafeInteger(st.size) || (st.size ?? -1) < 0) {
       return { kind: 'missing' };
     }
@@ -142,7 +145,7 @@ async function handle(req: Request, headOnly: boolean): Promise<Response> {
   if (found.size <= INLINE_READ_MAX) {
     let r: FsReadResponse & { too_large?: boolean };
     try {
-      r = await client.call('fs_read', { root: claims.root, path: rel });
+      r = await client.call('fs_read', { root: claims.root, path: rel, confine: true });
     } catch (e: unknown) {
       const msg = e instanceof Error ? e.message : String(e);
       return text(502, `The VPS did not answer: ${msg.slice(0, 200)}`);

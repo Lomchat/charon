@@ -411,6 +411,43 @@ class PureHelpersTest(unittest.TestCase):
             self.assertEqual(G._classify(text), want, text)
 
 
+
+@unittest.skipUnless(HAS_GIT, "git binary not available")
+class HostileRepoConfigTest(unittest.TestCase):
+    """A tree unpacked WITH its .git carries a config naming programs git runs
+    by itself. The Git tab's reads must never run them (git.py § SAFE_GIT_ARGS)."""
+
+    def setUp(self):
+        self.dir = tempfile.mkdtemp(prefix="charon-git-hostile-")
+        self.marks = tempfile.mkdtemp(prefix="charon-git-marks-")
+        sh(self.dir, "init", "-q", "-b", "main")
+        sh(self.dir, "config", "commit.gpgsign", "false")
+        write(self.dir, "f.txt", "one\n")
+        write(self.dir, "d.bin", "a\n")
+        sh(self.dir, "add", "-A")
+        sh(self.dir, "commit", "-qm", "init")
+        write(self.dir, "d.bin", "a\nb\n")
+        sh(self.dir, "commit", "-qam", "two")
+        mark = lambda name: f"sh -c 'touch {self.marks}/{name}; cat'"  # noqa: E731
+        sh(self.dir, "config", "core.fsmonitor", f"touch {self.marks}/fsmonitor; false")
+        sh(self.dir, "config", "filter.evil.clean", mark("clean"))
+        sh(self.dir, "config", "filter.evil.process", f"touch {self.marks}/process")
+        sh(self.dir, "config", "diff.evil.textconv", f"sh -c 'touch {self.marks}/textconv; cat \"$0\"'")
+        write(self.dir, ".git/info/attributes", "f.txt filter=evil\nd.bin diff=evil\n")
+        write(self.dir, "f.txt", "one\ntwo\n")
+        G._filter_cache.clear()
+
+    def tearDown(self):
+        shutil.rmtree(self.dir, ignore_errors=True)
+        shutil.rmtree(self.marks, ignore_errors=True)
+
+    def test_reads_run_none_of_its_programs(self):
+        self.assertTrue(G.git_status(self.dir, include_recent=True)["ok"])
+        self.assertTrue(G.git_diff(self.dir, "f.txt")["ok"])
+        self.assertTrue(G.git_log(self.dir)["ok"])
+        self.assertTrue(G.git_show(self.dir, {"sha": "HEAD"})["ok"])
+        self.assertEqual(os.listdir(self.marks), [])
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
 
