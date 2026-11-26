@@ -3,10 +3,13 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { parseInstance } from './agent/agentPaths.js';
 import { isAuthRequired } from './authGate.js';
+import { isPlaceholderSecret } from './masterPasswordRule.js';
 
 // Startup configuration validation (P1.8). WARN-ONLY by design: a
 // misconfigured .env must degrade loudly, never brick the hub (the operator
-// may need the UI to fix things). Runs once from the seed.
+// may need the UI to fix things). Runs once from the seed. The one fatal
+// rule, a weak MASTER_PASSWORD, is server.js's (masterPasswordRule.js): the
+// UI cannot fix it anyway.
 //
 // Checks:
 // - required secrets present, not known placeholders, minimally long;
@@ -14,16 +17,10 @@ import { isAuthRequired } from './authGate.js';
 //   Buffer.from('zz','hex') is EMPTY, weakening the derived key);
 // - DB directory exists/writable and the SQLite file isn't world-readable.
 
-const PLACEHOLDERS = new Set([
-  'changeme', 'change-me', 'secret', 'password', 'test', 'dummy',
-  'build-dummy', 'ci-dummy', 'ci-dummy-session-secret', 'ci-dummy-sync-token',
-  'ci-dummy-salt', 'example', 'xxx',
-]);
-
 function checkSecret(name: string, minLen: number, problems: string[]): void {
   const v = process.env[name];
   if (!v) { problems.push(`${name} is not set`); return; }
-  if (PLACEHOLDERS.has(v.toLowerCase())) problems.push(`${name} is a known placeholder value`);
+  if (isPlaceholderSecret(v)) problems.push(`${name} is a known placeholder value`);
   if (v.length < minLen) problems.push(`${name} is short (${v.length} chars; want >= ${minLen} — try \`openssl rand -hex 32\`)`);
 }
 
@@ -57,7 +54,6 @@ export function validateConfigAtBoot(): void {
   if (process.env.NODE_ENV !== 'production') return; // dev setups are allowed to be sloppy
   const problems: string[] = [];
 
-  checkSecret('MASTER_PASSWORD', 8, problems);
   checkSecret('SESSION_SECRET', 32, problems);
   checkSecret('SYNC_TOKEN', 32, problems);
 

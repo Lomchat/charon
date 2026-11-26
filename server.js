@@ -42,6 +42,20 @@ const dev = process.env.NODE_ENV !== 'production';
 const hostname = process.env.HOST || '127.0.0.1';
 const port = parseInt(process.env.PORT || '10556', 10);
 
+// §12: never start on a weak MASTER_PASSWORD, in any environment. It is the
+// login AND the key of every stored secret, so changing it on an existing hub
+// goes through scripts/rotate-master-password.mjs, which re-encrypts them.
+{
+  const { masterPasswordProblem } = require('./lib/server/masterPasswordRule.js');
+  const problem = masterPasswordProblem(process.env.MASTER_PASSWORD);
+  if (problem) {
+    console.error(`[config] ✖ ${problem}: refusing to start.`);
+    console.error('[config]   New hub: put a long passphrase in .env.');
+    console.error('[config]   Existing hub: stop it, then `node scripts/rotate-master-password.mjs` changes it and keeps the stored secrets.');
+    process.exit(78); // EX_CONFIG
+  }
+}
+
 
 // ── DB (auth + shell metadata) ────────────────────────────────────────────
 const dbPath = process.env.DATABASE_URL || './data/charon.db';

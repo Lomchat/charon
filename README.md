@@ -286,7 +286,7 @@ git clone https://github.com/Lomchat/charon.git
 cd charon
 cp .env.example .env
 # Edit .env:
-#   - MASTER_PASSWORD : a strong passphrase (it's your login)
+#   - MASTER_PASSWORD : a long passphrase, 12+ characters (it's your login)
 #   - generate three secrets:
 #       openssl rand -hex 32   # → MASTER_SALT
 #       openssl rand -hex 32   # → SESSION_SECRET
@@ -448,20 +448,36 @@ contributor map: [`CONTRIBUTING.md`](./CONTRIBUTING.md).
   monotonic `seq`; on reconnect the hub replays exactly what it missed, and gaps
   are reported, never silent.
 - **Security**: `HttpOnly`/`SameSite=Lax` cookies (`Secure` in prod),
-  origin-checked mutations, rate-limited login, `X-Frame-Options: DENY`, HSTS,
-  `Referrer-Policy`, `Permissions-Policy`.
+  origin-checked mutations, rate-limited login (per client and hub-wide),
+  `X-Frame-Options: DENY`, HSTS, `Referrer-Policy`, `Permissions-Policy`.
   File bytes are served from an extension allow-list with `nosniff` and a
   `sandbox` CSP. The agent socket is `chmod 600` and opens no TCP port: your SSH
   key is the authorization boundary.
+- **Permission modes are not a sandbox**: a session runs as the agent's Unix
+  user. One allowed to run commands (bypass mode, or a command you approved)
+  can reach everything that user can, the agent socket included, and so other
+  sessions and their modes. The modes stop honest mistakes, not a session
+  turned by hostile content it read. Give untrusted repositories a session
+  without bypass, on a VPS user that holds nothing else.
 
 ### About `MASTER_PASSWORD`
 
 It is the login password and, with `MASTER_SALT`, the scrypt seed of the
 AES-256-GCM key that encrypts secret settings (Telegram token, Anthropic API
 key, Web Push private key, endpoint credentials) as `enc:v1:` blobs.
-**Changing either without re-entering those secrets loses them**: decryption
-fails closed and they show as unconfigured until re-entered. Transcripts are
-not encrypted — treat the DB and its backups as sensitive.
+**Changing either by hand loses them**: decryption fails closed and they show
+as unconfigured until re-entered. To change the password, stop the hub (and
+`charon-autodeploy`) and run `node scripts/rotate-master-password.mjs`: it
+re-encrypts every stored secret under the new password and a fresh salt,
+rewrites both lines of `.env` and signs every browser out. Transcripts are not
+encrypted — treat the DB and its backups as sensitive.
+
+The hub refuses to start when `MASTER_PASSWORD` is missing, shorter than 12
+characters or still the example value. Failed logins are throttled per client
+address and hub-wide (50 per 15 minutes pause every login). Behind a reverse
+proxy the client address is the one the proxy appends to `X-Forwarded-For` (or
+sets in `X-Real-IP`), trusted only from a loopback or private peer: make the
+proxy set one of them, as in the nginx block above.
 
 ### Running without a password
 

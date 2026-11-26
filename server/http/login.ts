@@ -8,22 +8,23 @@ import { sanitizeNextPath } from '@/lib/nextPath';
 import { readCookie } from '@/lib/server/requestContext';
 import {
   check as rateLimitCheck,
-  keyFromHeaders,
+  clientKey,
   recordFailure as rateLimitFailure,
   recordSuccess as rateLimitSuccess,
 } from '@/lib/server/loginRateLimit';
 import { clearSessionCookie, originAllowed, publicOrigin, sessionCookie } from './gate';
 
 // POST /login (web/login.tsx posts the form with fetch): one MASTER_PASSWORD
-// guards the whole fleet, so the attempt is throttled per IP BEFORE the
-// password is looked at. Answers JSON: `{ ok, next }` with the session cookie,
-// or `{ error }`. Same-origin only (the form is ours; a cross-site POST is a
-// login-CSRF attempt).
+// guards the whole fleet, so the attempt is throttled per client BEFORE the
+// password is looked at (`peer` = the socket's remote address, see
+// loginRateLimit § clientKey). Answers JSON: `{ ok, next }` with the session
+// cookie, or `{ error }`. Same-origin only (the form is ours; a cross-site
+// POST is a login-CSRF attempt).
 
 const json = (body: unknown, status = 200, headers: Record<string, string> = {}) =>
   Response.json(body, { status, headers: { 'Cache-Control': 'no-store', ...headers } });
 
-export async function loginPost(req: Request): Promise<Response> {
+export async function loginPost(req: Request, peer: string | null = null): Promise<Response> {
   if (!originAllowed(req)) return json({ error: 'cross-origin request rejected' }, 403);
   let form: FormData;
   try { form = await req.formData(); } catch { return json({ error: 'bad request' }, 400); }
@@ -36,7 +37,7 @@ export async function loginPost(req: Request): Promise<Response> {
   const password = String(form.get('password') ?? '');
   if (!password) return json({ error: 'password required' }, 400);
 
-  const rlKey = keyFromHeaders(req.headers);
+  const rlKey = clientKey(req.headers, peer);
   const gate = rateLimitCheck(rlKey);
   if (!gate.allowed) {
     return json({ error: `too many attempts, retry in ${Math.ceil(gate.retryAfterMs / 1000)}s` }, 429);

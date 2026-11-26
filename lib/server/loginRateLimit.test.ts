@@ -3,9 +3,11 @@ import {
   check,
   recordFailure,
   recordSuccess,
-  keyFromHeaders,
+  clientKey,
   lockoutForFailures,
   FREE_ATTEMPTS,
+  GLOBAL_MAX_FAILURES,
+  GLOBAL_WINDOW_MS,
   MAX_LOCKOUT_MS,
   _resetAll,
 } from './loginRateLimit';
@@ -153,45 +155,38 @@ describe('loginRateLimit', () => {
     expect(a).toBe(b);
   });
 
-  describe('keyFromHeaders', () => {
+  describe('clientKey', () => {
     const mk = (h: Record<string, string>) => ({
       get: (n: string) => h[n.toLowerCase()] ?? null,
     });
 
-    it('uses the left-most x-forwarded-for hop', () => {
-      expect(keyFromHeaders(mk({ 'x-forwarded-for': '1.2.3.4, 5.6.7.8' }))).toBe('1.2.3.4');
+    // The brute-force bypass: a client writing its own X-Forwarded-For got a
+    // fresh bucket per attempt.
+    it('ignores the forwarding headers of a public peer', () => {
+      expect(clientKey(mk({ 'x-forwarded-for': '1.2.3.4', 'x-real-ip': '5.6.7.8' }), '203.0.113.9')).toBe('203.0.113.9');
+      expect(clientKey(mk({ 'x-forwarded-for': '1.2.3.4' }), '::ffff:203.0.113.9')).toBe('203.0.113.9');
     });
 
-    it('trims whitespace around the forwarded IP', () => {
-      expect(keyFromHeaders(mk({ 'x-forwarded-for': '  9.9.9.9  ' }))).toBe('9.9.9.9');
+    it('behind a proxy, takes only the hop the proxy appended', () => {
+      // nginx $proxy_add_x_forwarded_for: the client's own value stays left.
+      expect(clientKey(mk({ 'x-forwarded-for': '6.6.6.6, 198.51.100.7' }), '127.0.0.1')).toBe('198.51.100.7');
+      expect(clientKey(mk({ 'x-real-ip': '198.51.100.8' }), '172.18.0.1')).toBe('198.51.100.8');
+      expect(clientKey(mk({}), '::1')).toBe('0:0:0:0::/64');
+      expect(clientKey(null, null)).toBe('global');
     });
 
-    it('falls back to x-real-ip when no x-forwarded-for', () => {
-      expect(keyFromHeaders(mk({ 'x-real-ip': '8.8.8.8' }))).toBe('8.8.8.8');
+    it('puts a whole IPv6 /64 in one bucket', () => {
+      expect(clientKey(null, '2001:db8:aa:1::5')).toBe(clientKey(null, '2001:db8:aa:1:ffff:1:2:3'));
+      expect(clientKey(null, '2001:db8:aa:1::5')).not.toBe(clientKey(null, '2001:db8:aa:2::5'));
     });
+  });
 
-    it('prefers x-forwarded-for over x-real-ip', () => {
-      expect(
-        keyFromHeaders(mk({ 'x-forwarded-for': '1.1.1.1', 'x-real-ip': '8.8.8.8' })),
-      ).toBe('1.1.1.1');
-    });
-
-    it('falls back to a single global bucket when no IP header present', () => {
-      expect(keyFromHeaders(mk({}))).toBe('global');
-      expect(keyFromHeaders(null)).toBe('global');
-      expect(keyFromHeaders(undefined)).toBe('global');
-    });
-
-    it('falls back to global when x-forwarded-for is empty / whitespace', () => {
-      expect(keyFromHeaders(mk({ 'x-forwarded-for': '   ' }))).toBe('global');
-    });
-
-    it('produces a shared global lockout for header-stripping attackers', () => {
-      const clk = makeClock();
-      const k = keyFromHeaders(mk({}));
-      for (let i = 0; i < FREE_ATTEMPTS + 1; i++) recordFailure(k, clk.now());
-      // Any later anonymous attempt hits the same locked global bucket.
-      expect(check(keyFromHeaders(null), clk.now()).allowed).toBe(false);
-    });
+  // Addresses are cheap: fresh keys must not buy fresh guesses forever.
+  it('pauses every login once the hub-wide failure budget is spent', () => {
+    const clk = makeClock();
+    for (let i = 0; i < GLOBAL_MAX_FAILURES; i++) recordFailure(`spray-${i}`, clk.now());
+    expect(check('never-seen', clk.now()).allowed).toBe(false);
+    clk.advance(GLOBAL_WINDOW_MS);
+    expect(check('never-seen', clk.now()).allowed).toBe(true);
   });
 });

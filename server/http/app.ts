@@ -75,7 +75,9 @@ export function createHttpApp(opts: HttpAppOptions): Hono {
   app.get('/desk', (c) => deskPage(opts.templates, c.req.raw));
   app.get('/view', (c) => viewPage(opts.templates, c.req.raw));
   app.get('/login', (c) => loginPage(opts.templates, c.req.raw));
-  app.post('/login', (c) => loginPost(c.req.raw));
+  // The socket peer (@hono/node-server's `incoming`): the login throttle's
+  // ground truth, never a header the client writes.
+  app.post('/login', (c) => loginPost(c.req.raw, (c.env as { incoming?: { socket?: { remoteAddress?: string } } } | undefined)?.incoming?.socket?.remoteAddress ?? null));
   app.post('/logout', (c) => logoutPost(c.req.raw));
   app.get('/m', (c) => mobileRedirect(c.req.raw));
   app.get('/m/*', (c) => mobileRedirect(c.req.raw));

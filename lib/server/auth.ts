@@ -33,11 +33,10 @@ export function deriveMasterKey(): Buffer {
   return crypto.scryptSync(masterPassword(), masterSalt(), 32);
 }
 
+// Fixed-length digests: the comparison leaks neither content nor length.
 export function checkPassword(input: string): boolean {
-  const expected = Buffer.from(masterPassword(), 'utf8');
-  const actual = Buffer.from(input, 'utf8');
-  if (expected.length !== actual.length) return false;
-  return crypto.timingSafeEqual(expected, actual);
+  const digest = (s: string) => crypto.createHash('sha256').update(s, 'utf8').digest();
+  return crypto.timingSafeEqual(digest(masterPassword()), digest(input));
 }
 
 export function newSessionId(): string {
