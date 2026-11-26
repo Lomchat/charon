@@ -15,7 +15,7 @@ export const serverBuildOptions = {
   outfile: 'dist/server/index.cjs',
   bundle: true,
   platform: 'node',
-  target: 'node22',
+  target: 'node24',
   format: 'cjs',
   packages: 'external',
   alias: { 'server-only': './server/http/serverOnly.ts' },

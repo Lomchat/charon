@@ -31,7 +31,7 @@
     "hono"
   ],
   "engines": {
-    "node": ">=20"
+    "node": ">=24"
   },
   "scripts": {
     "dev": "node scripts/dev.mjs",
@@ -82,7 +82,7 @@
     "@types/better-sqlite3": "^7.6.12",
     "@types/diff": "^7.0.2",
     "@types/leaflet": "^1.9.22",
-    "@types/node": "^22.10.6",
+    "@types/node": "^24.19.4",
     "@types/react": "^19.3.0",
     "@types/react-dom": "^19.3.0",
     "@types/three": "^0.187.0",
@@ -91,9 +91,9 @@
     "babel-plugin-react-compiler": "1.0.0",
     "drizzle-kit": "^0.31.11",
     "esbuild": "^0.28.2",
-    "typescript": "^5.7.3",
+    "typescript": "^7.0.2",
     "vite": "^7.3.8",
-    "vitest": "^3.2.6"
+    "vitest": "^5.1.2"
   },
   "overrides": {
     "postcss": "^8.5.18",
