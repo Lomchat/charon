@@ -1,7 +1,10 @@
 'use client';
 import { attentionForRow, isWaitingAttention, rowStatus } from '@/lib/sessionAttention';
-import { useMemo } from 'react';
+import { useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties } from 'react';
 import { useReorder } from './useReorder';
+import { setHiddenTabRows, useHiddenTabRows, type HiddenTabRows } from './chromeFolds';
+import { useHoverPanels } from './HeaderSessionNav';
+import { useLatest } from './useStable';
 import type { Vps, VpsFolder } from '@/lib/db/schema';
 import type { SessionListItem, ShellInfo, InstallInfo, AgentKind, TabDTO } from '@/lib/types/api';
 import { IconTerminal, IconTools } from './icons';
@@ -29,8 +32,15 @@ import { groupShown, mergeVisibleOrder, visibleTabs } from './pausedTabs';
 //
 // One level per line, but ONE SIZE for the three: they were drawn at three
 // different scales and paddings, which read as three unrelated bars stacked by
-// accident rather than as one hierarchy. Merging them onto a single line was
-// tried and rejected — a level deserves its own line.
+// accident rather than as one hierarchy.
+//
+// Rows 1 and 2 FOLD (the ≡ button, browser-local, app/chromeFolds.ts): a
+// hidden level becomes a crumb at the head of the first row left — "machine ›
+// folder ›" — whose menu (hover opens, click pins: the header's
+// `useHoverPanels`) lists what the row did, with an orange count when another
+// machine or folder waits on you. Row 3 never folds. Its tabs scroll between
+// the crumbs and the ＋ buttons, which stay put; "+N ▾" lists the whole folder,
+// and the crumbs fold into one ("folder ▾") when the tabs would not fit.
 //
 // The set of tabs comes from the DB (shared across devices) instead of being
 // derived from "every non-sleeping session", which is what it used to be. So a
@@ -277,10 +287,119 @@ export default function TabBar({
     (ids) => activeVpsId && onReorderTabs(
       activeVpsId, activePath ?? '', mergeVisibleOrder(fullOrder.tabs, ids)));
 
+  // ── Folded rows: the trail ──
+  const hidden = useHiddenTabRows();
+  const activeVpsRow = vpsRows.find((r) => r.vpsId === activeVpsId) ?? null;
+  const activePathRow = pathRows.find((g) => g.path === (activePath ?? '')) ?? null;
+  const machines: TrailRow[] = vpsRows.map((r) => ({
+    id: r.vpsId, name: r.vps!.name, title: r.vps!.name, count: r.count, state: r.state,
+  }));
+  const folders: TrailRow[] = pathRows.map((g) => ({
+    id: g.path, name: folderName(g.path), title: g.path || 'no folder', count: g.tabs.length, state: g.state,
+  }));
+  // Fold the crumbs into one when the tabs would not fit beside the full
+  // trail. Keyed by what the trail shows: another machine or folder starts
+  // over from the full trail, which is what gets measured.
+  const trailKey = hidden === 2 ? `${activeVpsId}\n${activePath}\n${activeVpsRow?.vps?.name}` : '';
+  const [compactKey, setCompactKey] = useState<string | null>(null);
+  const compact = hidden === 2 && compactKey === trailKey;
+  const trailWidthsRef = useRef<{ key: string; full: number | null }>({ key: '', full: null });
+
+  // ── Row 3: the scrolling tabs, what is out of view ──
+  const hasRows = vpsRows.length > 0;
+  const rowRef = useRef<HTMLDivElement>(null);
+  const scrollRef = useRef<HTMLDivElement>(null);
+  const [outIds, setOutIds] = useState<readonly string[]>([]);
+  function measureStrip() {
+    const row = rowRef.current, scroller = scrollRef.current;
+    if (!row || !scroller) return;
+    const box = scroller.getBoundingClientRect();
+    const out: string[] = [];
+    for (const el of scroller.querySelectorAll<HTMLElement>('[data-strip-tab]')) {
+      const r = el.getBoundingClientRect();
+      if (r.left < box.left - 1 || r.right > box.right + 1) out.push(el.dataset.stripTab!);
+    }
+    const max = scroller.scrollWidth - scroller.clientWidth;
+    scroller.dataset.fade = `${scroller.scrollLeft > 1 ? 'l' : ''}${scroller.scrollLeft < max - 1 ? 'r' : ''}`;
+    setOutIds((prev) => prev.length === out.length && prev.every((id, i) => id === out[i]) ? prev : out);
+
+    if (hidden !== 2) return;
+    const trail = row.querySelector<HTMLElement>('.tab-trail');
+    if (!trail) return;
+    const width = trail.getBoundingClientRect().width;
+    const memo = trailWidthsRef.current;
+    if (memo.key !== trailKey) { memo.key = trailKey; memo.full = null; }
+    if (!compact) memo.full = width;
+    if (memo.full == null) return;
+    // The room the tabs would have beside the FULL trail: what they have now,
+    // plus the "+N" chip's place and the row's slack, minus what the full
+    // trail takes beyond the folded one. Both states compute the same number,
+    // so the fold never flips back and forth.
+    const style = getComputedStyle(row);
+    const gap = parseFloat(style.columnGap) || 0;
+    const contentRight = row.getBoundingClientRect().right - (parseFloat(style.paddingRight) || 0);
+    const lastRight = row.lastElementChild?.getBoundingClientRect().right ?? contentRight;
+    const slack = Math.max(0, contentRight - lastRight);
+    const chip = row.querySelector<HTMLElement>(':scope > .tab-more');
+    const chipW = chip ? chip.getBoundingClientRect().width + gap : 0;
+    const room = scroller.clientWidth + chipW + slack - (compact ? memo.full - width : 0);
+    const fold = scroller.scrollWidth > room + 1;
+    if (fold !== compact) setCompactKey(fold ? trailKey : null);
+  }
+  // The current tab in view whenever it changes (a pick from the "+N" list,
+  // a click in the sidebar).
+  useLayoutEffect(() => {
+    const scroller = scrollRef.current;
+    const el = scroller?.querySelector<HTMLElement>('.tb-item.selected');
+    if (!scroller || !el) return;
+    const box = scroller.getBoundingClientRect(), r = el.getBoundingClientRect();
+    // Wider than the room left: its START shows (the name reads from there).
+    if (r.left < box.left || r.width >= box.width) scroller.scrollLeft += r.left - box.left - (r.width >= box.width ? 0 : 24);
+    else if (r.right > box.right) scroller.scrollLeft += r.right - box.right + 24;
+  }, [activeTabId, hidden]);
+  const measureRef = useLatest(measureStrip);
+  const stripKey = `${hidden}|${compact}|${trailKey}|${activeTabId}|${tabRows.map((t) => `${t.id}:${t.label}:${t.dirty ? 1 : 0}`).join(',')}`;
+  useLayoutEffect(() => { measureRef.current(); }, [stripKey, measureRef]);
+  useEffect(() => {
+    const row = rowRef.current, scroller = scrollRef.current;
+    if (!row || !scroller) return;
+    let frame = 0;
+    const schedule = () => {
+      if (frame) return;
+      frame = requestAnimationFrame(() => { frame = 0; measureRef.current(); });
+    };
+    // A vertical wheel scrolls the tabs sideways: there is no scrollbar.
+    const onWheel = (e: WheelEvent) => {
+      if (scroller.scrollWidth <= scroller.clientWidth || Math.abs(e.deltaX) > Math.abs(e.deltaY)) return;
+      scroller.scrollLeft += e.deltaY;
+      e.preventDefault();
+    };
+    const observer = new ResizeObserver(schedule);
+    observer.observe(row);
+    scroller.addEventListener('scroll', schedule, { passive: true });
+    scroller.addEventListener('wheel', onWheel, { passive: false });
+    void document.fonts?.ready.then(schedule);
+    return () => {
+      if (frame) cancelAnimationFrame(frame);
+      observer.disconnect();
+      scroller.removeEventListener('scroll', schedule);
+      scroller.removeEventListener('wheel', onWheel);
+    };
+  }, [measureRef, hasRows]);
+
   if (vpsRows.length === 0) return <div className="app-tabbar" />;
 
+  const trail = hidden !== 0 && (
+    <TabTrail level={hidden} compact={compact}
+      machines={machines} folders={folders}
+      vps={activeVpsRow ? machines.find((m) => m.id === activeVpsRow.vpsId) ?? null : null}
+      folder={activePathRow ? folders.find((f) => f.id === activePathRow.path) ?? null : null}
+      onPickVps={onVpsClick}
+      onPickPath={(path) => activeVpsId && onPathClick(activeVpsId, path)} />
+  );
+
   return (
-    <div className="app-tabbar">
+    <div className={`app-tabbar${hidden ? ` hides-${hidden}` : ''}`}>
       {/* The three rows share one shape (`tb-item`) AND one size — what tells
           them apart is their line and their content, nothing else. Giving row 2
           its own scale made it read as a filter bar bolted on rather than as
@@ -289,7 +408,7 @@ export default function TabBar({
           Same shape as row 3 for that reason: the item is a DIV holding a
           `tb-main` button and a `tb-close` button — a button inside a button
           is invalid HTML, and the close has to be its own click target. */}
-      <div className="tab-row tab-row-vps">
+      {hidden < 1 && <div className="tab-row tab-row-vps">
         {vpsRows.map((r) => (
           <div
             key={r.vpsId}
@@ -316,9 +435,11 @@ export default function TabBar({
             >✕</button>
           </div>
         ))}
-      </div>
+      </div>}
 
-      <div className="tab-row tab-row-paths">
+      {hidden < 2 && <div className="tab-row tab-row-paths">
+        {hidden === 1 && trail}
+        <div className="tab-row-items">
         {pathRows.map((g) => (
           <div
             key={g.path}
@@ -335,7 +456,7 @@ export default function TabBar({
               })}
             >
               <span className="tb-dot" />
-              <span className="tb-name">{g.path ? (g.path.split('/').filter(Boolean).pop() || g.path) : '—'}</span>
+              <span className="tb-name">{folderName(g.path)}</span>
               <span className="tb-count">{g.tabs.length}</span>
             </button>
             <button
@@ -345,14 +466,23 @@ export default function TabBar({
             >✕</button>
           </div>
         ))}
-      </div>
+        </div>
+      </div>}
 
-      <div className="tab-row tab-row-entities">
+      <div className="tab-row tab-row-entities" ref={rowRef}>
+        <button type="button" className="tab-rows-toggle"
+          onClick={() => setHiddenTabRows(((hidden + 1) % 3) as HiddenTabRows)}
+          aria-label={ROWS_TOGGLE_LABEL[hidden]} title={ROWS_TOGGLE_LABEL[hidden]}>
+          <RowsIcon hidden={hidden} />
+        </button>
+        {hidden === 2 && trail}
+        <div className="tab-scroll" ref={scrollRef}>
         {tabRows.length === 0 ? (
           <span className="tab-row-empty">nothing open in this folder</span>
         ) : tabRows.map((t) => (
           <div
             key={t.id}
+            data-strip-tab={t.id}
             className={`tb-item tb-tab${t.id === activeTabId ? ' selected' : ''}${t.pinned ? '' : ' temporary'}`
               + ` state-${t.state}${t.orphan ? ' orphan' : ''}`}
             onContextMenu={(e) => onTabContext(e, t)}
@@ -390,12 +520,7 @@ export default function TabBar({
               })}
             >
               {t.live && <span className="tb-dot" />}
-              <span className="tb-glyph">
-                {t.kind === 'session' ? <AgentLogo kind={t.agentKind ?? 'claude'} profileNumber={t.profileNumber} size={12} title="" />
-                  : t.kind === 'shell' ? <IconTerminal />
-                  : t.kind === 'install' ? <IconTools />
-                  : <FileIcon name={t.label} />}
-              </span>
+              <span className="tb-glyph"><TabGlyph tab={t} /></span>
               <span className="tb-name">{t.label}</span>
               {t.dirty && <span className="tb-dirty" title="unsaved changes">●</span>}
             </button>
@@ -406,6 +531,9 @@ export default function TabBar({
             >✕</button>
           </div>
         ))}
+        </div>
+
+        <TabOverflow tabs={tabRows} activeTabId={activeTabId} outIds={outIds} onPick={onTabClick} />
 
         {activeVpsId && (
           <span className="tab-row-actions">
@@ -445,6 +573,211 @@ export default function TabBar({
           </span>
         )}
       </div>
+    </div>
+  );
+}
+
+/** A folder's label: its last segment ("—" for no folder). */
+function folderName(path: string): string {
+  return path ? (path.split('/').filter(Boolean).pop() || path) : '—';
+}
+
+function TabGlyph({ tab: t }: { tab: ResolvedTab }) {
+  return t.kind === 'session' ? <AgentLogo kind={t.agentKind ?? 'claude'} profileNumber={t.profileNumber} size={12} title="" />
+    : t.kind === 'shell' ? <IconTerminal />
+    : t.kind === 'install' ? <IconTools />
+    : <FileIcon name={t.label} />;
+}
+
+const ROWS_TOGGLE_LABEL: Record<HiddenTabRows, string> = {
+  0: 'Fold the machine row',
+  1: 'Fold the folder row too',
+  2: 'Show the three rows',
+};
+
+/** Three bars, the folded ones faint. */
+function RowsIcon({ hidden }: { hidden: HiddenTabRows }) {
+  return (
+    <svg viewBox="0 0 14 14" aria-hidden="true">
+      <rect x="1.5" y="2" width="11" height="2" rx="1" fill="currentColor" opacity={hidden >= 1 ? 0.3 : 1} />
+      <rect x="1.5" y="6" width="11" height="2" rx="1" fill="currentColor" opacity={hidden >= 2 ? 0.3 : 1} />
+      <rect x="1.5" y="10" width="11" height="2" rx="1" fill="currentColor" />
+    </svg>
+  );
+}
+
+type TrailRow = { id: string; name: string; title: string; count: number; state: TabState };
+
+/** A menu hanging under `el`, in viewport coordinates: the rows scroll
+ *  sideways and would clip an absolutely placed one. */
+function placeUnder(el: HTMLElement | null, align: 'left' | 'right', width = 240): CSSProperties | null {
+  if (!el) return null;
+  const r = el.getBoundingClientRect();
+  const top = r.bottom + 4;
+  const maxHeight = Math.max(120, window.innerHeight - top - 12);
+  return align === 'right'
+    ? { top, right: Math.max(8, window.innerWidth - r.right), maxHeight }
+    : { top, left: Math.max(8, Math.min(r.left, window.innerWidth - width - 8)), maxHeight };
+}
+
+/** Machines and folders still waiting on you, outside the current one. */
+const othersWaiting = (rows: TrailRow[], current: string | null | undefined) =>
+  rows.filter((r) => r.id !== current && r.state === 'waiting').length;
+
+function WaitBadge({ n }: { n: number }) {
+  if (!n) return null;
+  return <span className="tab-wait" title={`${n} waiting for your answer`}>{n}</span>;
+}
+
+/** The folded rows as crumbs: "machine ▾ › folder ▾ ›", or ONE "folder ▾"
+ *  when the tabs need the room. Each opens what its row listed. */
+function TabTrail({ level, compact, machines, folders, vps, folder, onPickVps, onPickPath }: {
+  level: 1 | 2; compact: boolean;
+  machines: TrailRow[]; folders: TrailRow[];
+  vps: TrailRow | null; folder: TrailRow | null;
+  onPickVps: (vpsId: string) => void;
+  onPickPath: (path: string) => void;
+}) {
+  const {
+    openPanel: open, setOpenPanel, wrapRef, onPointerEnter, onPointerLeave, onTriggerLeave, onPanelEnter, onTriggerClick,
+  } = useHoverPanels<'vps' | 'path' | 'both'>({ keepPinned: true });
+  const vpsBtnRef = useRef<HTMLButtonElement>(null);
+  const pathBtnRef = useRef<HTMLButtonElement>(null);
+  const bothBtnRef = useRef<HTMLButtonElement>(null);
+  const [place, setPlace] = useState<{ panel: string; style: CSSProperties } | null>(null);
+  useLayoutEffect(() => {
+    if (!open) return;
+    const btn = open === 'vps' ? vpsBtnRef.current : open === 'path' ? pathBtnRef.current : bothBtnRef.current;
+    const style = placeUnder(btn, 'left', open === 'both' ? 480 : 240);
+    if (style) setPlace({ panel: open, style });
+  }, [open]);
+
+  const trigger = (panel: 'vps' | 'path' | 'both') => ({
+    'aria-haspopup': 'menu' as const,
+    'aria-expanded': open === panel,
+    onMouseEnter: () => onPointerEnter(panel),
+    onMouseLeave: onTriggerLeave,
+    onClick: () => { onTriggerClick(panel); },
+  });
+  const items = (rows: TrailRow[], current: string | null | undefined, pick: (id: string) => void, keepOpen = false) =>
+    rows.map((r) => (
+      <button key={r.id} type="button" role="menuitem" title={r.title}
+        className={`tab-menu-item state-${r.state}${r.id === current ? ' is-current' : ''}`}
+        onClick={() => { pick(r.id); if (!keepOpen) setOpenPanel(null); }}>
+        <span className="tb-dot" /><span className="tb-name">{r.name}</span><span className="tb-count">{r.count}</span>
+      </button>
+    ));
+  const showRow = (rows: HiddenTabRows, label: string) => (
+    <button type="button" role="menuitem" className="tab-menu-item tab-menu-show"
+      onClick={() => { setOpenPanel(null); setHiddenTabRows(rows); }}>
+      <RowsIcon hidden={rows} />{label}
+    </button>
+  );
+  const crumb = (panel: 'vps' | 'path' | 'both', row: TrailRow | null, waiting: number, title: string) => (
+    <button ref={panel === 'vps' ? vpsBtnRef : panel === 'path' ? pathBtnRef : bothBtnRef} type="button"
+      className={`tab-crumb state-${row?.state ?? 'sleeping'}`} title={open ? undefined : title} {...trigger(panel)}>
+      <span className="tb-dot" />
+      <span className="tb-name">{row?.name ?? '—'}</span>
+      <WaitBadge n={waiting} />
+      <span className="tab-crumb-caret" aria-hidden="true">▾</span>
+    </button>
+  );
+  const vpsName = vps?.name ?? '—';
+  const style = open && place?.panel === open ? place.style : { visibility: 'hidden' as const };
+
+  return (
+    <div className="tab-trail" ref={wrapRef} onMouseLeave={onPointerLeave}>
+      {compact ? (
+        <>
+          {crumb('both', folder, othersWaiting(machines, vps?.id) + othersWaiting(folders, folder?.id), `${vpsName} › ${folder?.title ?? '—'}`)}
+          <span className="tab-crumb-sep" aria-hidden="true">›</span>
+        </>
+      ) : (
+        <>
+          {crumb('vps', vps, othersWaiting(machines, vps?.id), vpsName)}
+          <span className="tab-crumb-sep" aria-hidden="true">›</span>
+          {level === 2 && <>
+            {crumb('path', folder, othersWaiting(folders, folder?.id), folder?.title ?? '—')}
+            <span className="tab-crumb-sep" aria-hidden="true">›</span>
+          </>}
+        </>
+      )}
+      {open === 'vps' && (
+        <div className="tab-menu pop-kit" role="menu" style={style} onMouseEnter={onPanelEnter}>
+          <div className="tab-menu-head">machines</div>
+          {items(machines, vps?.id, onPickVps)}
+          <div className="tab-menu-sep" />
+          {showRow(0, 'show the machine row')}
+        </div>
+      )}
+      {open === 'path' && (
+        <div className="tab-menu pop-kit" role="menu" style={style} onMouseEnter={onPanelEnter}>
+          <div className="tab-menu-head">folders · {vpsName}</div>
+          {items(folders, folder?.id, onPickPath)}
+          <div className="tab-menu-sep" />
+          {showRow(1, 'show the folder row')}
+        </div>
+      )}
+      {open === 'both' && (
+        <div className="tab-menu tab-menu-cols pop-kit" role="menu" style={style} onMouseEnter={onPanelEnter}>
+          <div>
+            <div className="tab-menu-head">machines</div>
+            {/* A machine picked here keeps the menu open: its folders are next. */}
+            {items(machines, vps?.id, onPickVps, true)}
+          </div>
+          <div>
+            <div className="tab-menu-head">folders · {vpsName}</div>
+            {items(folders, folder?.id, onPickPath)}
+          </div>
+          <div className="tab-menu-sep tab-menu-span" />
+          <div className="tab-menu-span">{showRow(0, 'show the three rows')}</div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+/** "+N ▾": how many of this folder's tabs are out of view, and the whole
+ *  folder as a list — hover opens it, a click pins it. Orange when one of the
+ *  hidden ones waits on you. */
+function TabOverflow({ tabs, activeTabId, outIds, onPick }: {
+  tabs: ResolvedTab[]; activeTabId: string | null; outIds: readonly string[];
+  onPick: (tab: ResolvedTab) => void;
+}) {
+  const {
+    openPanel, setOpenPanel, wrapRef, onPointerEnter, onPointerLeave, onTriggerLeave, onPanelEnter, onTriggerClick,
+  } = useHoverPanels<'tabs'>({ keepPinned: true });
+  const open = openPanel === 'tabs';
+  const btnRef = useRef<HTMLButtonElement>(null);
+  const [style, setStyle] = useState<CSSProperties | null>(null);
+  useLayoutEffect(() => {
+    if (open) setStyle(placeUnder(btnRef.current, 'right'));
+  }, [open]);
+  if (outIds.length === 0 && !open) return null;
+  const waitingOut = tabs.some((t) => t.state === 'waiting' && outIds.includes(t.id));
+  return (
+    <div className="tab-more" ref={wrapRef} onMouseLeave={onPointerLeave}>
+      <button ref={btnRef} type="button" className="tab-more-btn" aria-haspopup="menu" aria-expanded={open}
+        aria-label={`${outIds.length} more tabs`} title={open ? undefined : `${tabs.length} tabs in this folder`}
+        onMouseEnter={() => onPointerEnter('tabs')} onMouseLeave={onTriggerLeave}
+        onClick={() => { onTriggerClick('tabs'); }}>
+        {waitingOut && <span className="tab-more-wait" />}+{outIds.length}<span className="tab-crumb-caret" aria-hidden="true">▾</span>
+      </button>
+      {open && (
+        <div className="tab-menu pop-kit" role="menu" style={style ?? { visibility: 'hidden' }} onMouseEnter={onPanelEnter}>
+          <div className="tab-menu-head">{tabs.length} tabs</div>
+          {tabs.map((t) => (
+            <button key={t.id} type="button" role="menuitem" title={t.title}
+              className={`tab-menu-item state-${t.state}${t.id === activeTabId ? ' is-current' : ''}${t.pinned ? '' : ' temporary'}`}
+              onClick={() => { setOpenPanel(null); onPick(t); }}>
+              {t.live ? <span className="tb-dot" /> : <span className="tab-menu-nodot" />}
+              <span className="tb-glyph"><TabGlyph tab={t} /></span>
+              <span className="tb-name">{t.label}</span>
+              {t.dirty && <span className="tb-dirty">●</span>}
+            </button>
+          ))}
+        </div>
+      )}
     </div>
   );
 }

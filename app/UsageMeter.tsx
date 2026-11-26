@@ -464,3 +464,24 @@ export function UsageRings({ usage, vpsName, onRefresh, kind, accountLabel, lead
     </div>
   );
 }
+
+/** The same rings, display-only, each followed by its percentage written out:
+ *  the reduced session header's summary (app/RuntimeSummary.tsx), whose own
+ *  click opens the full panel. Nothing for a provider with no usage API (the
+ *  panel carries its dashboard link). */
+export function UsageRingsInline({ usage, kind }: { usage: AccountUsage | null; kind: AgentKind }) {
+  const now = useMinuteClock();
+  if (!usage && PROVIDERS[asSessionProvider(kind)].usageDashboardUrl) return null;
+  const cells = usageCells(usage?.ok ? usage : null);
+  const labels = ringLabels(cells);
+  return (
+    <span className="ur-inline">
+      {cells.map((c, i) => (
+        <span key={c.k} className="ur-inline-cell" title={cellTitle(c, paceFraction(c.resetsAt, c.windowMs, now))}>
+          <Ring cell={c} label={labels[i]} now={now} />
+          <b className={`ur-inline-pct um-${c.pct == null ? 'none' : sevClass(c.sev, c.pct)}`}>{fmtPct(c.pct)}</b>
+        </span>
+      ))}
+    </span>
+  );
+}

@@ -3874,8 +3874,8 @@ html[data-density='small'] .cs-sub-fold { font-size: 8.5px; }
 .aside-error button { margin-left: auto; background: transparent; border: 0; color: inherit; cursor: pointer; font-size: 14px; }
 .aside-error.is-ok { color: var(--success); }
 .app-input-bar .send:disabled { opacity: 0.35; cursor: not-allowed; }
-/* Phone-only pieces (the ≤820px block shows them): the one-chip mode picker
-   and the send icon. */
+/* Shown where a layout places them: the one-chip mode picker (desktop and
+   phone blocks, the desk's compact composer) and the send icon (phone). */
 .app-input-bar .mode-switch.ci-mode,
 .app-input-bar .send-icon { display: none; }
 
@@ -6198,6 +6198,47 @@ html[data-density='small'] .cs-sub-fold { font-size: 8.5px; }
   .app-input-bar .send-icon { width: 18px; height: 18px; }
   .app-input-bar .ci-chip-name { max-width: 150px; }
   .app-input-bar .ci-drop-card { padding: 20px 22px; font-size: 11px; }
+}
+
+/* ── Desktop composer: two columns around the text ──────────────────────────
+   Left, the mode as ONE chip (the phone's picker, `.ci-mode`) over 📎; right,
+   send — the larger — over aside. The four-radio column cost the bar four rows
+   for one choice. CSS only, on the same DOM: the phone (≤820px) and the desk's
+   compact composer keep their own layouts. The text spans both rows; a grip
+   size grows it, and the first row's `1fr` takes the growth so the buttons
+   stay at the bottom, where the hand already is. */
+.app-input-bar .attach-label { display: none; }
+@media (min-width: 821px) {
+  .app-input-bar:not(.is-compact):not(.is-collapsed) {
+    display: grid;
+    grid-template-columns: 168px minmax(0, 1fr) 88px;
+    grid-template-rows: 1fr auto;
+    grid-template-areas: "mode text send" "attach text aside";
+    column-gap: 8px; row-gap: 4px;
+  }
+  .app-input-bar:not(.is-compact):not(.is-collapsed):has(> .ci-pending) {
+    grid-template-rows: auto 1fr auto;
+    grid-template-areas: "pending pending pending" "mode text send" "attach text aside";
+  }
+  .app-input-bar:not(.is-compact):not(.is-collapsed) > .ci-pending { grid-area: pending; }
+  .app-input-bar:not(.is-compact):not(.is-collapsed) .mode-switch:not(.ci-mode) { display: none; }
+  .app-input-bar:not(.is-compact):not(.is-collapsed) .mode-switch.ci-mode { display: flex; grid-area: mode; align-self: end; min-width: 0; }
+  .app-input-bar:not(.is-compact):not(.is-collapsed) .ci-mode .m-btn { flex: 1 1 auto; width: 100%; min-width: 0; height: 30px; padding: 0 9px; gap: 7px; letter-spacing: 0.1em; }
+  .app-input-bar:not(.is-compact):not(.is-collapsed) .ci-mode .m-label { letter-spacing: 0.1em; }
+  .app-input-bar:not(.is-compact):not(.is-collapsed) .ci-mode .picker-chevron { margin-left: auto; opacity: 0.75; }
+  .app-input-bar:not(.is-compact):not(.is-collapsed) textarea { grid-area: text; height: 64px; min-height: 0; }
+  .app-input-bar:not(.is-compact):not(.is-collapsed) .ci-send-col { display: contents; }
+  .app-input-bar:not(.is-compact):not(.is-collapsed) .ci-attach {
+    grid-area: attach; height: 26px; min-height: 0; padding: 0; gap: 6px;
+    font-family: var(--display); font-size: 10px; letter-spacing: 0.14em; text-transform: uppercase;
+  }
+  .app-input-bar:not(.is-compact):not(.is-collapsed) .ci-attach svg { width: 13px; height: 13px; }
+  .app-input-bar:not(.is-compact):not(.is-collapsed) .attach-label { display: inline; }
+  .app-input-bar:not(.is-compact):not(.is-collapsed) .send { grid-area: send; align-self: end; height: 34px; min-height: 0; padding: 0 12px; font-size: 11.5px; }
+  .app-input-bar:not(.is-compact):not(.is-collapsed) .aside { grid-area: aside; height: 26px; min-height: 0; padding: 0 8px; gap: 5px; font-size: 9px; }
+  .app-input-bar:not(.is-compact):not(.is-collapsed) .aside svg { width: 11px; height: 11px; }
+  /* No aside (a provider without it): send takes both rows. */
+  .app-input-bar:not(.is-compact):not(.is-collapsed) .ci-send-col:not(:has(.aside)) .send { grid-row: send-start / aside-end; height: auto; align-self: stretch; }
 }
 
 /* ── ≤820px : navigation polish (TabBar + context menu) — Étape 3 ───────────
@@ -9270,6 +9311,81 @@ html:not([data-file-icons='mono']) .tt-row:not(.ignored) > .tt-ico.fi { opacity:
 .tb-tab.temporary .tb-name { font-style: italic; opacity: 0.9; }
 .tb-tab.orphan .tb-name { opacity: 0.45; text-decoration: line-through; }
 
+/* ── Folded rows, the trail, the scrolling tabs (TabBar § trail) ─────────────
+   The ≡ toggle folds rows 1 then 2 into crumbs at the head of the first row
+   left; row 3 keeps its tabs in their OWN scroller between the crumbs and the
+   ＋ cluster, so neither ever scrolls away. No scrollbar there: the wheel
+   scrolls it sideways, a fade says there is more, "+N ▾" lists it all. */
+.tab-row-paths, .tab-row-entities { overflow: hidden; }
+.tab-row-items, .tab-scroll {
+  display: flex; align-items: stretch; gap: inherit;
+  flex: 0 1 auto; min-width: 0;
+  overflow-x: auto; overflow-y: hidden;
+}
+.tab-scroll { scrollbar-width: none; }
+.tab-scroll::-webkit-scrollbar { display: none; }
+.tab-scroll[data-fade='r'] { mask-image: linear-gradient(90deg, #000 calc(100% - 28px), transparent); }
+.tab-scroll[data-fade='l'] { mask-image: linear-gradient(90deg, transparent, #000 28px); }
+.tab-scroll[data-fade='lr'] { mask-image: linear-gradient(90deg, transparent, #000 28px, #000 calc(100% - 28px), transparent); }
+.tab-rows-toggle {
+  flex: none; align-self: center; display: grid; place-items: center;
+  width: 20px; height: 20px; margin-right: -3px; padding: 0;
+  border: 1px solid transparent; border-radius: var(--radius-sm);
+  background: none; color: var(--text-muted); cursor: pointer;
+}
+.tab-rows-toggle:hover { color: var(--accent-strong); border-color: var(--border); }
+.tab-rows-toggle svg { width: 13px; height: 13px; display: block; }
+.tab-trail { flex: none; display: inline-flex; align-items: stretch; gap: 2px; min-width: 0; }
+.tab-crumb {
+  display: inline-flex; align-items: center; gap: 6px; max-width: 220px;
+  padding: 0 7px; border: 0; border-radius: var(--radius-md);
+  background: none; color: var(--text-muted); font: 10.5px var(--mono); cursor: pointer;
+}
+.tab-crumb .tb-name { max-width: 160px; }
+.tab-crumb:hover, .tab-crumb[aria-expanded='true'] {
+  color: var(--accent-strong); background: color-mix(in srgb, var(--accent) 8%, transparent);
+}
+.tab-crumb-caret { flex: none; font-size: 8px; color: var(--text-faint); }
+.tab-crumb-sep { align-self: center; padding: 0 2px; color: var(--text-faint); font: 11px var(--mono); }
+/* Another machine or folder waits on you: what the folded row's dot said. */
+.tab-wait { flex: none; display: inline-flex; align-items: center; gap: 3px; font: 9px var(--mono); color: var(--warning); }
+.tab-wait::before, .tab-more-wait {
+  content: ''; flex: none; width: 6px; height: 6px; border-radius: 50%;
+  background: var(--warning); box-shadow: 0 0 5px color-mix(in srgb, var(--warning) 80%, transparent);
+}
+.tab-more { flex: none; display: inline-flex; align-items: center; }
+.tab-more-btn {
+  display: inline-flex; align-items: center; gap: 5px; height: 20px; padding: 0 7px;
+  border: 1px solid var(--border); border-radius: var(--radius-md);
+  background: var(--bg-raised); color: var(--text-muted); font: 10px var(--mono); cursor: pointer;
+}
+.tab-more-btn:hover, .tab-more-btn[aria-expanded='true'] { color: var(--text); border-color: var(--border-strong); }
+/* The crumbs' and the list's menus: the popover kit's surface, as a compact
+   list, viewport-placed (the rows clip). */
+.tab-menu {
+  position: fixed; z-index: 300;
+  min-width: 200px; max-width: min(560px, calc(100vw - 16px)); overflow-y: auto;
+}
+.pop-kit.tab-menu { display: block; gap: 0; padding: 4px; border-radius: var(--radius-lg); font: 11.5px/1.3 var(--body); }
+.pop-kit.tab-menu-cols { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 0 8px; min-width: 460px; }
+.tab-menu-span { grid-column: 1 / -1; }
+.tab-menu-head { padding: 5px 8px 3px; font: 9.5px var(--body); letter-spacing: 0.14em; text-transform: uppercase; color: var(--text-faint); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.tab-menu-item {
+  display: flex; align-items: center; gap: 8px; width: 100%; min-width: 0;
+  padding: 5px 8px; border: 0; border-radius: var(--radius-sm);
+  background: none; color: inherit; font: inherit; text-align: left; white-space: nowrap; cursor: pointer;
+}
+.tab-menu-item:hover { background: var(--bg-high); }
+.tab-menu-item.is-current { color: var(--accent-strong); background: color-mix(in srgb, var(--accent) 12%, transparent); }
+.tab-menu-item.state-waiting:not(.is-current) { color: var(--warning); }
+.tab-menu-item.temporary .tb-name { font-style: italic; }
+.tab-menu-item .tb-count { margin-left: auto; }
+.tab-menu-item .tb-glyph svg { width: 12px; height: 12px; }
+.tab-menu-nodot { flex: none; width: 6px; }
+.tab-menu-show { color: var(--text-muted); }
+.tab-menu-show svg { width: 13px; height: 13px; flex: none; }
+.tab-menu-sep { height: 1px; margin: 4px 2px; background: var(--border); }
+
 /* Drag & drop feedback, shared by the three rows and the sidebar. The bar
    sits on the SIDE the row would land on — that is the whole point of the
    before/after split, and it is what makes the end of a list a visible
@@ -10009,6 +10125,96 @@ html:not([data-file-icons='mono']) .tt-row:not(.ignored) > .tt-ico.fi { opacity:
      count cut to "277k / …": the reading is the percentage, and the full
      numerator/denominator is one tap away in Tools (and in the title). */
   .app-bar .session-runtime-panel .bar-context-tokens { display: none; }
+}
+
+/* ── Reduced session header (desktop, app/chromeFolds.ts) ───────────────────
+   The header's grip folds it to ONE line: name · cwd | the runtime panel summed
+   up (app/RuntimeSummary.tsx) | the actions. The @handle goes (the parent crumb
+   and the update sign stay); the panel itself opens under the summary, every
+   picker intact. The phone keeps its own fold (`is-expanded`), so all of it is
+   gated above 820px and the summary and grip exist nowhere else. */
+.app-bar .bar-grip, .runtime-summary { display: none; }
+@media (min-width: 821px) {
+  .app-bar { position: relative; }
+  /* The composer's grip, on the header's lower edge. */
+  .app-bar .bar-grip {
+    position: absolute; left: 50%; bottom: -6px; z-index: 3; transform: translateX(-50%);
+    display: flex; align-items: center; justify-content: center;
+    width: 96px; height: 12px; padding: 0; border: 0; background: none; cursor: pointer;
+  }
+  .app-bar .bar-grip:hover .ci-grip-pill,
+  .app-bar .bar-grip:focus-visible .ci-grip-pill { background: var(--text-muted); width: 48px; }
+  .app-bar .bar-grip:focus-visible { outline: none; }
+
+  .app-bar.is-reduced { padding-top: 4px; padding-bottom: 4px; min-height: 0; }
+  .app-bar.is-reduced .session-header-layout {
+    position: relative; grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr); gap: 12px;
+  }
+  .app-bar.is-reduced .session-header-layout > .bar-ident {
+    grid-column: 1; grid-row: 1; flex-direction: row; align-items: baseline; gap: 10px;
+  }
+  .app-bar.is-reduced .bar-ident .bar-name { flex: 0 1 auto; min-width: 48px; }
+  .app-bar.is-reduced .bar-handle { display: none; }
+  .app-bar.is-reduced .bar-handle-line { flex: 0 1000 auto; }
+  .app-bar.is-reduced .bar-handle-line:not(:has(.bar-parent, .bar-outdated)) { display: none; }
+  .app-bar.is-reduced .bar-sub { flex: 0 1 auto; }
+  .app-bar.is-reduced .session-header-controls { grid-column: 3; grid-row: 1; justify-self: end; }
+  .app-bar.is-reduced .session-header-actions { gap: 1px; }
+  .app-bar.is-reduced .session-action { width: 26px; height: 26px; padding: 5px; }
+  .app-bar.is-reduced .session-runtime-panel { display: none; }
+  /* Open: the real panel, floated under the summary on an opaque surface. */
+  .app-bar.is-reduced.summary-open .session-runtime-panel {
+    display: grid; position: absolute; z-index: 20;
+    top: calc(100% + 8px); left: 0; right: 0; margin-inline: auto;
+    grid-column: auto; grid-row: auto;
+    background: linear-gradient(145deg, color-mix(in srgb, var(--accent) 8.5%, var(--bg-raised)), color-mix(in srgb, var(--accent) 2.5%, var(--bg-raised)));
+    box-shadow: 0 12px 32px color-mix(in srgb, var(--shadow-color) 55%, transparent);
+  }
+
+  .app-bar.is-reduced .runtime-summary {
+    display: inline-flex; grid-column: 2; grid-row: 1; justify-self: center;
+    align-items: center; gap: 8px; height: 26px; min-width: 0; max-width: 100%;
+    padding: 0 9px; border: 1px solid color-mix(in srgb, var(--accent) 18%, transparent); border-radius: 13px;
+    background: linear-gradient(145deg, color-mix(in srgb, var(--accent) 8.5%, transparent), color-mix(in srgb, var(--accent) 2.5%, transparent));
+    color: var(--text-muted); font: 11.5px/1 var(--body); letter-spacing: 0; text-transform: none; white-space: nowrap;
+    --um-surface: color-mix(in srgb, var(--bg-raised) 50%, var(--bg));
+  }
+  .app-bar.is-reduced .runtime-summary:is(:hover, .is-open):not(:disabled) {
+    color: var(--text-muted); border-color: color-mix(in srgb, var(--accent) 45%, transparent);
+  }
+  .runtime-summary > span { display: inline-flex; align-items: center; gap: 6px; min-width: 0; }
+  /* One hairline between the groups, the panel's cell separators. */
+  .runtime-summary > span + span:not(.rs-caret) { padding-left: 8px; border-left: 1px solid color-mix(in srgb, var(--accent) 20%, transparent); }
+  .runtime-summary .rs-model .agent-logo { flex: none; }
+  .runtime-summary .rs-model-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; color: var(--text-strong); font-weight: 600; }
+  .runtime-summary .rs-effort-symbol { color: var(--violet); }
+  .runtime-summary .rs-ctx { gap: 4px; font: 10px var(--mono); }
+  .runtime-summary .rs-ctx b { color: var(--text-strong); font-weight: 600; font-size: 10.5px; }
+  .runtime-summary .rs-ctx .bar-context-cache { display: inline-flex; align-items: center; gap: 2px; margin-left: 2px; }
+  .rs-ctx-ring { flex: none; width: 13px; height: 13px; color: var(--accent); }
+  .rs-ctx-ring.hot { color: var(--warning); }
+  .rs-ctx-track { fill: none; stroke: color-mix(in srgb, currentColor 22%, transparent); stroke-width: 2; }
+  .rs-ctx-ring.is-empty .rs-ctx-track { stroke: var(--text-faint); stroke-dasharray: 1.6 1.8; stroke-width: 1.2; }
+  .rs-ctx-arc { fill: none; stroke: currentColor; stroke-width: 2; }
+  .runtime-summary .rs-caret { font-size: 8px; color: var(--text-faint); }
+  .ur-inline { display: inline-flex; align-items: center; gap: 9px; }
+  .ur-inline-cell { display: inline-flex; align-items: center; gap: 4px; }
+  .ur-inline .ur-ring { width: 22px; height: 22px; }
+  .ur-inline-pct { font: 600 10.5px var(--mono); }
+  .ur-inline-pct.um-ok { color: var(--text-strong); }
+  .ur-inline-pct.um-none { color: var(--text-muted); }
+
+  /* A narrow chat column: the cwd and the model's NAME give way (the logo
+     stays), the percentages never. */
+  @container session-header (max-width: 760px) {
+    .app-bar.is-reduced .bar-sub { display: none; }
+  }
+  @container session-header (max-width: 640px) {
+    .app-bar.is-reduced .runtime-summary .rs-model-name,
+    .app-bar.is-reduced .runtime-summary .bar-context-cache { display: none; }
+    .app-bar.is-reduced .session-header-layout { grid-template-columns: minmax(0, 1fr) auto auto; gap: 8px; }
+    .app-bar.is-reduced .session-action { width: 23px; padding: 4px; }
+  }
 }
 
 /* Placement only: the surface is the popover kit's (§ Popover kit). */

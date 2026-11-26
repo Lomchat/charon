@@ -88,6 +88,8 @@ import { COMPOSER_MAX_VIEWPORT_SHARE, DEFAULT_COMPOSER_SIZE, revealComposer, use
 import { formatQuote, insertQuoteBlock } from './chatQuote';
 import QuoteSelectionButton from './QuoteSelectionButton';
 import ComposerGrip from './ComposerGrip';
+import RuntimeSummary from './RuntimeSummary';
+import { setHeaderReduced, useHeaderReduced } from './chromeFolds';
 import PendingZone from './PendingZone';
 import { isPathDrag, readPathDrag } from './pathDrag';
 import { toolPanelLeft, uploadZoneOf } from './fileDropZones';
@@ -543,8 +545,27 @@ export default function SessionView({
     return () => clearTimeout(t);
   }, [slashNote]);
   const [runtimeOpen, setRuntimeOpen] = useState<{ which: 'model' | 'effort'; nonce: number } | null>(null);
+  // Desktop: the header reduced to ONE line by its grip (app/chromeFolds.ts).
+  // Its runtime panel then opens under the summary pill, on demand. The desk's
+  // compact view keeps its own header.
+  const reduced = useHeaderReduced() && !compact;
+  const [summaryOpen, setSummaryOpen] = useState(false);
+  const headerLayoutRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (!summaryOpen) return;
+    const onDown = (e: MouseEvent) => {
+      const t = e.target as Element | null;
+      if (t && headerLayoutRef.current?.contains(t) && t.closest('.session-runtime-panel, .runtime-summary')) return;
+      setSummaryOpen(false);
+    };
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') setSummaryOpen(false); };
+    document.addEventListener('mousedown', onDown);
+    window.addEventListener('keydown', onKey);
+    return () => { document.removeEventListener('mousedown', onDown); window.removeEventListener('keydown', onKey); };
+  }, [summaryOpen]);
   const openRuntimePicker = useCallback((which: 'model' | 'effort') => {
     setBarExpanded(true);   // the phone's folded header hides the pickers
+    setSummaryOpen(true);   // so does the reduced desktop one
     setRuntimeOpen({ which, nonce: Date.now() });
   }, []);
   // `/diff`, `/mcp`: the Tools panel on that tab (a one-shot request).
@@ -1453,8 +1474,8 @@ export default function SessionView({
       {sessionSettingsOpen && <SessionSettingsModal session={selected} onClose={closeSessionSettings} />}
       <main className={`app-main${compact ? ' is-compact' : ''}`}
         onPointerDownCapture={readOnAction} onKeyDownCapture={readOnAction} onWheelCapture={readOnAction}>
-        <div className={`app-bar${barExpanded || compact ? ' is-expanded' : ''}`}>
-          <div className="session-header-layout">
+        <div className={`app-bar${barExpanded || compact ? ' is-expanded' : ''}${reduced ? ' is-reduced' : ''}${reduced && summaryOpen ? ' summary-open' : ''}`}>
+          <div className="session-header-layout" ref={headerLayoutRef}>
           {/* Session identity: title, then cwd. The path is the fastest
               "where am I?" cue when several sessions share a name (or have
               none). Context occupancy used to be this block's third line; it
@@ -1516,6 +1537,18 @@ export default function SessionView({
             {!endpoint.active && <LiveUsageRings vpsId={vpsId} profile={usageProfile} vpsName={selectedVps?.name}
               onRefresh={onUsageRefresh} kind={sessionKind} accountLabel={usageAccountLabel} switchTarget={accountSwitch} />}
           </div>
+          {/* The reduced header's one line (desktop, CSS-gated): the panel
+              below, summed up; a click shows the panel itself under it. */}
+          {reduced && (
+            <RuntimeSummary kind={sessionKind} profileNumber={profileNumber}
+              modelLabel={(model ?? effectiveModel ?? 'Default').replace(/^claude-/, '')}
+              endpointName={endpoint.active?.name}
+              effort={effort} showEffort={hasEffortAxis(sessionKind) && !endpoint.active}
+              context={endpoint.active && !endpoint.active.checks?.[sessionKind as 'claude' | 'codex']?.contextWindow ? null : sessionContext}
+              showContext={supportsSessionCapability(sessionKind, 'contextUsage')}
+              cache={promptCache} vpsId={vpsId} accountProfile={usageProfile} showUsage={!endpoint.active}
+              open={summaryOpen} onToggle={() => setSummaryOpen((v) => !v)} />
+          )}
           <SessionRuntimePanel
             tokenUsage={tokenUsage} vpsName={selectedVps?.name} onUsageRefresh={onUsageRefresh}
             usageAccountLabel={usageAccountLabel} accountSwitch={accountSwitch}
@@ -1581,6 +1614,16 @@ export default function SessionView({
             </div>
           </div>
           </div>
+          {/* Desktop: the header's grip, the composer's twin — a click folds
+              the header to one line and back (app/chromeFolds.ts). */}
+          {!compact && (
+            <button type="button" className="bar-grip"
+              onClick={() => { setSummaryOpen(false); setHeaderReduced(!reduced); }}
+              aria-label={reduced ? 'Expand the session header' : 'Reduce the session header to one line'}
+              title={reduced ? 'Expand the header' : 'Reduce the header'}>
+              <span className="ci-grip-pill" />
+            </button>
+          )}
         </div>
 
         {status === 'reconnecting' && (
@@ -2630,29 +2673,11 @@ const ChatInputBar = memo(function ChatInputBar({
     >
       {!compact && <ComposerGrip footerRef={footerRef} textRef={taRef} size={composerSize}
         onPreview={setSizePreview} onCommit={setComposerSize} />}
-      {/* The provider registry owns the mode ladder; providerText owns labels
-          and glyphs (§14.102). */}
-      <div className={`mode-switch ${kind}`} role="radiogroup" aria-label={providerText.modeSwitchAria(kind)}>
-        {sessionModes(kind).map((m) => {
-          const meta = MODE_SWITCH_META[m];
-          if (!meta) return null;
-          return (
-            <button
-              key={m}
-              type="button" role="radio"
-              aria-checked={permissionMode === m}
-              className={`m-btn ${m}${permissionMode === m ? ' on' : ''}`}
-              onClick={() => onSetMode(m)}
-              title={meta.title}
-            >
-              <span className="m-glyph">{meta.glyph}</span><span className="m-label">{meta.label}</span>
-            </button>
-          );
-        })}
-      </div>
-      {/* The same ladder for a phone: ONE chip that opens a picker, beside 📎
-          and send under the text (app.css shows one of the two by width).
-          It wears the active radio's colours, so a dangerous mode stays loud. */}
+      {/* The mode ladder as ONE chip that opens a picker: left of the text on
+          a desktop (over 📎), under it on a phone (app.css places it). It wears
+          the active mode's colours, so a dangerous mode stays loud. The
+          provider registry owns the ladder; providerText owns labels and
+          glyphs (§14.102). */}
       <div className={`mode-switch ci-mode ${kind}`}>
         <PickerControl
           value={permissionMode}
@@ -2827,7 +2852,7 @@ const ChatInputBar = memo(function ChatInputBar({
           title="attach a file — it is uploaded to the session workspace and its path inserted here"
           aria-label="attach a file"
         >
-          <IconPaperclip />
+          <IconPaperclip /><span className="attach-label">attach</span>
         </button>
         {onAside && (
           <button type="button" className="aside" onClick={() => void aside()} disabled={!input.trim()}
