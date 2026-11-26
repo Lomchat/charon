@@ -2,7 +2,7 @@
 
 [![CI](https://github.com/Lomchat/charon/actions/workflows/ci.yml/badge.svg)](https://github.com/Lomchat/charon/actions/workflows/ci.yml)
 [![License: Apache 2.0](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](./LICENSE)
-[![Node](https://img.shields.io/badge/node-%E2%89%A520-339933?logo=node.js&logoColor=white)](https://nodejs.org)
+[![Node](https://img.shields.io/badge/node-%E2%89%A524-339933?logo=node.js&logoColor=white)](https://nodejs.org)
 [![Python](https://img.shields.io/badge/python-%E2%89%A53.10-3776AB?logo=python&logoColor=white)](https://www.python.org)
 [![Vite](https://img.shields.io/badge/Vite-7-646CFF?logo=vite)](https://vite.dev) [![Hono](https://img.shields.io/badge/Hono-4-E36002?logo=hono)](https://hono.dev)
 
@@ -265,7 +265,7 @@ fails CI if a theme misses a token or a stylesheet hard-codes a colour.
 
 ## Requirements
 
-**Hub:** Node.js ≥ 20, `openssl`, an `ssh` client. SQLite is bundled
+**Hub:** Node.js ≥ 24, `openssl`, an `ssh` client. SQLite is bundled
 (`better-sqlite3`).
 
 **Each VPS:** SSH **by key**, Python ≥ 3.10, and `git` for source control. The

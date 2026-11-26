@@ -8,7 +8,7 @@
 # Node/architecture). The image stays under ~250 MB after the runner stage
 # below trims it down.
 # -----------------------------------------------------------------------------
-FROM node:20-bookworm-slim AS builder
+FROM node:24-bookworm-slim AS builder
 WORKDIR /app
 
 # better-sqlite3 native build deps. Removed after npm ci via apt purge in the
@@ -48,7 +48,7 @@ RUN npm prune --omit=dev --no-audit --no-fund
 # Includes: Node 20, openssh-client (Charon spawns ssh), the built dist/,
 # the agent zipapp (charon-agent.pyz), and node_modules pruned to production.
 # -----------------------------------------------------------------------------
-FROM node:20-bookworm-slim AS runner
+FROM node:24-bookworm-slim AS runner
 WORKDIR /app
 # HOST=0.0.0.0 is the only value that makes sense INSIDE a container (the
 # published port is what controls exposure — compose binds it to 127.0.0.1).

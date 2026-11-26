@@ -44,7 +44,7 @@ The same Mac-inspired layout in a dark palette.
 
 ## Recreate the screenshots
 
-Run from the repository root on a Linux demo host with Node 20+, Python 3.10+,
+Run from the repository root on a Linux demo host with Node 24+, Python 3.10+,
 SSH and Chromium through Playwright. Install the repository dependencies first.
 The setup script resets `/srv/checkout-service` and the dedicated `charondemo`
 user's agent state; reserve both for this demonstration.
