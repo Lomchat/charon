@@ -10147,8 +10147,12 @@ html:not([data-file-icons='mono']) .tt-row:not(.ignored) > .tt-ico.fi { opacity:
   .app-bar .bar-grip:focus-visible { outline: none; }
 
   .app-bar.is-reduced { padding-top: 4px; padding-bottom: 4px; min-height: 0; }
+  /* Centred while there is room. The actions' track never drops under
+     their width, so when room runs out the slack on the NAME's side gives
+     first and the summary slides left, then sheds its model name: nothing
+     ever overlaps the buttons. */
   .app-bar.is-reduced .session-header-layout {
-    position: relative; grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr); gap: 12px;
+    position: relative; grid-template-columns: minmax(72px, 1fr) minmax(0, max-content) minmax(max-content, 1fr); gap: 12px;
   }
   .app-bar.is-reduced .session-header-layout > .bar-ident {
     grid-column: 1; grid-row: 1; flex-direction: row; align-items: baseline; gap: 10px;
@@ -10182,7 +10186,10 @@ html:not([data-file-icons='mono']) .tt-row:not(.ignored) > .tt-ico.fi { opacity:
   .app-bar.is-reduced .runtime-summary:is(:hover, .is-open):not(:disabled) {
     color: var(--text-muted); border-color: color-mix(in srgb, var(--accent) 45%, transparent);
   }
-  .runtime-summary > span { display: inline-flex; align-items: center; gap: 6px; min-width: 0; }
+  .app-bar.is-reduced .runtime-summary { overflow: hidden; }
+  .runtime-summary > span { flex: none; display: inline-flex; align-items: center; gap: 6px; min-width: 0; }
+  /* Only the model's name gives way (ellipsis); the readings never do. */
+  .runtime-summary > .rs-model { flex: 0 1 auto; }
   /* One hairline between the groups, the panel's cell separators. */
   .runtime-summary > span + span:not(.rs-caret) { padding-left: 8px; border-left: 1px solid color-mix(in srgb, var(--accent) 20%, transparent); }
   .runtime-summary .rs-model .agent-logo { flex: none; }
@@ -10212,7 +10219,7 @@ html:not([data-file-icons='mono']) .tt-row:not(.ignored) > .tt-ico.fi { opacity:
   @container session-header (max-width: 640px) {
     .app-bar.is-reduced .runtime-summary .rs-model-name,
     .app-bar.is-reduced .runtime-summary .bar-context-cache { display: none; }
-    .app-bar.is-reduced .session-header-layout { grid-template-columns: minmax(0, 1fr) auto auto; gap: 8px; }
+    .app-bar.is-reduced .session-header-layout { grid-template-columns: minmax(56px, 1fr) minmax(0, max-content) max-content; gap: 8px; }
     .app-bar.is-reduced .session-action { width: 23px; padding: 4px; }
   }
 }
