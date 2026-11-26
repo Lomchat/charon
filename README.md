@@ -265,8 +265,10 @@ fails CI if a theme misses a token or a stylesheet hard-codes a colour.
 
 ## Requirements
 
-**Hub:** Node.js ≥ 24, `openssl`, an `ssh` client. SQLite is bundled
-(`better-sqlite3`).
+**Hub:** Node.js ≥ 24, `openssl`, an `ssh` client, and a C/C++ toolchain
+(`build-essential` on Debian/Ubuntu): SQLite is bundled (`better-sqlite3`), which
+has no prebuilt binary for Node 24 and compiles during `npm ci`. The Docker image
+brings its own.
 
 **Each VPS:** SSH **by key**, Python ≥ 3.10, and `git` for source control. The
 bootstrap installer handles the rest on Ubuntu/Debian (apt), Fedora/RHEL (dnf),
