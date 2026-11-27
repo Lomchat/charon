@@ -9,18 +9,18 @@ import type { AccountList } from './accountsStore';
  *  a signed-out account, a sign-in ending soon. A backend with NO account is
  *  not a problem — a box may serve its own model (§8 custom endpoints) — and
  *  its launcher already leads to sign-in. */
-type Need = { key: string; text: string; action: string; provider: SessionProvider; accountId: string | null };
+type Need = { key: string; who: string; text: string; action: string; provider: SessionProvider; accountId: string | null };
 
 function needs(data: AccountList, enabled: Record<SessionProvider, boolean>): Need[] {
   const out: Need[] = [];
   for (const a of data.accounts) {
     if (!enabled[a.provider]) continue;
-    const label = providerAccountLabel(providerName(a.provider), a);
-    if (a.status === 'expired') out.push({ key: `x:${a.id}`, text: `${label} is signed out.`, action: 'Sign in again', provider: a.provider, accountId: a.id });
+    const who = providerAccountLabel(providerName(a.provider), a);
+    if (a.status === 'expired') out.push({ key: `x:${a.id}`, who, text: 'Signed out', action: 'Sign in again', provider: a.provider, accountId: a.id });
     else {
       const days = loginDaysLeft(a);
-      if (days != null && days <= LOGIN_EXPIRY_WARN_DAYS) out.push({ key: `e:${a.id}:${days}`,
-        text: `${label}: its sign-in ends ${days <= 0 ? 'today' : `in ${days} day${days > 1 ? 's' : ''}`}.`, action: 'Sign in again', provider: a.provider, accountId: a.id });
+      if (days != null && days <= LOGIN_EXPIRY_WARN_DAYS) out.push({ key: `e:${a.id}:${days}`, who,
+        text: days <= 0 ? 'Expires today' : `Expires in ${days} day${days > 1 ? 's' : ''}`, action: 'Sign in again', provider: a.provider, accountId: a.id });
     }
   }
   return out;
@@ -30,8 +30,8 @@ export function accountsNeedAttention(data: AccountList, enabled: Record<Session
   return needs(data, enabled).length > 0;
 }
 
-/** A sidebar notice shaped like a VPS update bar (`.cs-agent-bar update`):
- *  one line, one action, a dismiss. */
+/** A sidebar notice in a VPS update bar's colours (`.cs-agent-bar update`):
+ *  the account (one line, ellipsis) + dismiss, the status, then the action. */
 export default function AccountsBanner({ data, loaded, enabled, hasVps, onLogin }: {
   data: AccountList; loaded: boolean; enabled: Record<SessionProvider, boolean>; hasVps: boolean;
   onLogin: (provider: SessionProvider, accountId: string | null) => void;
@@ -43,10 +43,11 @@ export default function AccountsBanner({ data, loaded, enabled, hasVps, onLogin 
   const first = list[0];
   return (
     <div className="cs-agent-bar update cs-notice" role="status">
-      <span className="cs-agent-meta">{first.text}{list.length > 1 ? ` (+${list.length - 1})` : ''}</span>
-      <button type="button" className="cs-agent-btn update" onClick={() => onLogin(first.provider, first.accountId)}>{first.action}</button>
+      <span className="cs-notice-who" title={first.who}>{first.who}</span>
       <button type="button" className="cs-notice-close" aria-label="dismiss" title="dismiss"
         onClick={() => setDismissed(new Set([...dismissed, first.key]))}>✕</button>
+      <span className="cs-agent-meta cs-notice-text">{first.text}{list.length > 1 ? ` (+${list.length - 1})` : ''}</span>
+      <button type="button" className="cs-agent-btn update cs-notice-act" onClick={() => onLogin(first.provider, first.accountId)}>{first.action}</button>
     </div>
   );
 }

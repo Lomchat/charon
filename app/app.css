@@ -11101,8 +11101,13 @@ button.dv-folder-select { max-width: 170px; padding: 4px 7px; font-size: 11px; }
 }
 
 /* Hub-wide notice (AccountsBanner) in the sidebar's fixed top: a VPS update
-   bar's look, without its in-box margin. */
+   bar's look, without its in-box margin. Account + ✕, status, then the
+   action under the text (a long email never runs into the button). */
 .cs-top .cs-notice { margin: 0; }
+.cs-agent-bar.cs-notice { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 2px 8px; }
+.cs-notice-who { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text); }
+.cs-notice-text { grid-column: 1 / -1; }
+.cs-notice-act { grid-column: 1 / -1; justify-self: start; margin-top: 4px; }
 .cs-notice-close { all: unset; cursor: pointer; padding: 0 2px; color: var(--text-muted); }
 .cs-notice-close:hover { color: var(--text); }
 
