@@ -67,6 +67,7 @@ function sanitizeForResponse(all: Record<string, string>): Record<string, string
   // JSON the UI gets live over SSE / GET /api/vps/[id]/usage instead.
   delete all['usage.snapshots'];
   delete all['accounts.default_keys'];
+  delete all['accounts.reset_notices_seen'];
   return maskSecrets(all);
 }
 

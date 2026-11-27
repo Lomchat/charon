@@ -579,6 +579,9 @@ export const api = {
   /** Spend one banked limit reset (§14.126) — irreversible at the provider. */
   claimAccountReset: (id: string, grantId: string) =>
     send<{ outcome: AccountResetOutcome; reason: string | null; usage: AccountUsage | null }>('POST', `/api/accounts/${encodeURIComponent(id)}/resets`, { grantId }, { timeoutMs: 90_000 }),
+  /** OK on the calendar's reset notices (§14.126): hub-wide. */
+  ackResetNotices: (keys: string[]) =>
+    send<OkResponse & { seen: string[] }>('POST', '/api/accounts/reset-notices', { keys }),
   switchSessionAccount: (sessionId: string, accountId: string) =>
     send<OkResponse & { restarted: boolean } & ActionSyncStamp>('POST', `/api/sessions/${encodeURIComponent(sessionId)}/account`, { accountId }, { timeoutMs: 120_000 }),
   getAccountProfiles: (vpsId?: string) => send<AccountProfilesResponse>('GET', `/api/account-profiles${vpsId ? `?vpsId=${encodeURIComponent(vpsId)}` : ''}`),

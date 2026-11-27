@@ -11398,6 +11398,14 @@ button.rcal-ev:focus-visible { outline: 1px solid var(--accent); outline-offset:
 
 .rcal-key { display: flex; justify-content: center; gap: 16px; margin-top: -2px; padding: 0 6px 2px; font-size: 10px; color: var(--text-faint); }
 .rcal-key span { display: inline-flex; align-items: center; gap: 5px; }
+/* A banked reset ending within 48h: Settings' new-model notice, at the
+   popover's scale; the swatch names the account's colour on the month. */
+.rcal-notices { display: grid; gap: 6px; }
+.model-release-notice.rcal-notice { padding: 8px 10px; gap: 6px 10px; font-size: 11.5px; }
+.rcal-notice .model-release-cli { min-width: 0; gap: 6px; }
+.rcal-notice-who { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.rcal-notice-in { white-space: nowrap; }
+.rcal-notice-when { color: var(--text-muted); font-variant-numeric: tabular-nums; white-space: nowrap; }
 
 /* The resets modal: one card per grant, what it refills as gauges → 0. */
 .app-modal.rst-modal { max-width: 470px; }

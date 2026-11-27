@@ -58,6 +58,8 @@ export type AccountsResponse = {
   /** Sessions still on a pre-§14.115 local login: `waiting` = their account
    *  exists (moving at a quiet moment), `unmatched` = add their account. */
   migration: { waiting: number; unmatched: number };
+  /** The calendar's acknowledged reset notices (`lib/resetNotices.ts`). */
+  resetNoticesSeen: string[];
 };
 
 /** Strip the API client's "POST /api/x → 400: " prefix for display. */

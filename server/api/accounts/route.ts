@@ -2,6 +2,7 @@ import { requireApiSession } from '@/lib/server/session';
 import { isSessionProvider } from '@/lib/sessionCapabilities';
 import { listProviderAccounts, removeAccount, renameAccount, reorderAccounts, accountUsage } from '@/lib/server/accounts/engine';
 import { migrationBacklog } from '@/lib/server/accounts/migration';
+import { seenResetNotices } from '@/lib/server/accounts/resetNotices';
 
 // Hub-owned provider accounts (CLAUDE.md §14.115). Never a credential here.
 
@@ -12,6 +13,7 @@ export async function GET() {
     accounts,
     usage: Object.fromEntries(accounts.map((a) => [a.id, accountUsage(a.id)])),
     migration: migrationBacklog(),
+    resetNoticesSeen: seenResetNotices(),
   });
 }
 

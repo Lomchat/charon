@@ -5,28 +5,31 @@
 // routines' runs (a neutral diamond, §14.120). Below: the picked day (none
 // on open), then one row per account (next refill, banked resets → the
 // resets modal). Only what the providers said and the routines' own
-// schedules; nothing guessed.
+// schedules; nothing guessed. A banked reset ending within 48h lights the
+// button's dot and heads the popover as a notice; its OK clears it hub-wide.
+// The phone's menu toggle carries the same dot (`ResetNoticeDot`).
 import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from 'react';
 import { PROVIDERS, type SessionProvider } from '@/lib/sessionCapabilities';
 import { providerName } from '@/lib/providerText';
-import type { ProviderAccount } from '@/lib/providerAccounts';
+import type { AccountsResponse, ProviderAccount } from '@/lib/providerAccounts';
 import { api } from '@/lib/api';
 import { describeSchedule } from '@/lib/routineSchedule';
 import type { RoutineView } from '@/lib/types/api';
 import AgentLogo from './AgentLogo';
 import { IconArrowCounterclockwise, IconArrowRepeat, IconCalendar3 } from './icons';
-import { useAccounts } from './accountsStore';
+import { putResetNoticesSeen, useAccounts } from './accountsStore';
 import { openAccountResets } from './resetsStore';
 import { claimHeaderPopover, releaseHeaderPopover } from './HeaderSessionNav';
 import {
   accountEvents, accountShortName, accountTone, dayKey, fmtDay, fmtIn, fmtMonth, fmtShortDay, fmtTime, monthDays,
-  resetExpiresSoon, routineRuns, type ResetEvent,
+  resetNotices, routineRuns, type ResetEvent, type ResetNotice,
 } from './accountResets';
 import { fmtPct, sevClass } from './usageGauges';
 
 const WEEKDAYS = ['M', 'T', 'W', 'T', 'F', 'S', 'S'];
 
 type Row = { account: ProviderAccount; tone: string; events: ResetEvent[] };
+type Notice = { n: ResetNotice; row: Row };
 /** One thing on a day: an account's fact, or a routine's run. */
 type Item = { at: number; e: ResetEvent; row: Row; routine?: undefined } | { at: number; routine: RoutineView; e?: undefined; row?: undefined };
 
@@ -35,6 +38,41 @@ const toneStyle = (tone: string) => ({ ['--tone' as string]: tone }) as CSSPrope
 function whoOf(a: ProviderAccount): string {
   const n = accountShortName(a);
   return `${providerName(a.provider)}${a.number > 1 ? ` ${a.number}` : ''}${n ? ` · ${n}` : ''}`;
+}
+
+/** Accounts with a usage API (Cursor publishes none), in account order: the
+ *  colour follows the account, whatever month is shown. */
+function calendarRows(data: AccountsResponse, enabled: Readonly<Record<SessionProvider, boolean>>, now: number): Row[] {
+  return data.accounts
+    .filter((a) => enabled[a.provider] && !PROVIDERS[a.provider].usageDashboardUrl)
+    .map((account, i) => ({ account, tone: accountTone(i), events: accountEvents(account.id, data.usage[account.id] ?? null, now) }));
+}
+
+/** Every account's un-OK'd notices, soonest first. */
+function rowNotices(rows: Row[], data: AccountsResponse, now: number): Notice[] {
+  const seen = data.resetNoticesSeen ?? [];
+  return rows.flatMap((row) => resetNotices(row.account.id, data.usage[row.account.id] ?? null, seen, now).map((n) => ({ n, row })))
+    .sort((a, b) => a.n.expiresAt - b.n.expiresAt);
+}
+
+/** A clock that moves once a minute: a notice lights up on its own. */
+function useMinuteClock(): [number, (t: number) => void] {
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    const t = setInterval(() => setNow(Date.now()), 60_000);
+    return () => clearInterval(t);
+  }, []);
+  return [now, setNow];
+}
+
+/** The phone's menu toggle: the calendar lives in its drawer, so the dot
+ *  rides the toggle too. Its own component: a usage reading re-renders it,
+ *  never the hub root (§14.115). */
+export function ResetNoticeDot({ enabled }: { enabled: Readonly<Record<SessionProvider, boolean>> }) {
+  const { data } = useAccounts();
+  const [now] = useMinuteClock();
+  const any = useMemo(() => rowNotices(calendarRows(data, enabled, now), data, now).length > 0, [data, enabled, now]);
+  return any ? <span className="model-notice-dot" aria-hidden="true" /> : null;
 }
 
 function itemLine(it: Item): string {
@@ -55,11 +93,15 @@ export default function ResetCalendar({ enabled, onOpen, onOpenRoutine }: {
 }) {
   const { data } = useAccounts();
   const [open, setOpen] = useState(false);
-  const [now, setNow] = useState(() => Date.now());
+  const [now, setNow] = useMinuteClock();
   const [view, setView] = useState(() => { const d = new Date(); return { y: d.getFullYear(), m: d.getMonth() }; });
   const [picked, setPicked] = useState<string | null>(null);
   // null = never read; kept between openings (a stale list beats a blank).
   const [routines, setRoutines] = useState<RoutineView[] | null>(null);
+  // The notice whose OK is in flight / failed (pessimistic, like Settings'
+  // new-model notices: gone only once the hub saved it).
+  const [acking, setAcking] = useState<string | null>(null);
+  const [ackFailed, setAckFailed] = useState<string | null>(null);
   const wrapRef = useRef<HTMLDivElement>(null);
   const id = useRef({}).current;
 
@@ -67,7 +109,6 @@ export default function ResetCalendar({ enabled, onOpen, onOpenRoutine }: {
   useEffect(() => {
     if (!open) return;
     claimHeaderPopover(id, close);
-    const t = setInterval(() => setNow(Date.now()), 60_000);
     let live = true;
     api.listRoutines()
       .then((r) => { if (live) setRoutines(r.routines); })
@@ -85,19 +126,14 @@ export default function ResetCalendar({ enabled, onOpen, onOpenRoutine }: {
     window.addEventListener('keydown', onKey);
     return () => {
       live = false;
-      clearInterval(t);
       document.removeEventListener('click', onClick);
       window.removeEventListener('keydown', onKey);
       releaseHeaderPopover(id);
     };
   }, [open, id, close]);
 
-  // Accounts with a usage API (Cursor publishes none), in account order: the
-  // colour follows the account, whatever month is shown.
-  const rows: Row[] = useMemo(() => data.accounts
-    .filter((a) => enabled[a.provider] && !PROVIDERS[a.provider].usageDashboardUrl)
-    .map((account, i) => ({ account, tone: accountTone(i), events: accountEvents(account.id, data.usage[account.id] ?? null, now) })),
-  [data, enabled, now]);
+  const rows: Row[] = useMemo(() => calendarRows(data, enabled, now), [data, enabled, now]);
+  const notices = useMemo(() => rowNotices(rows, data, now), [rows, data, now]);
   // Routine runs from now to the end of the month shown (its 6 weeks).
   const runs: Item[] = useMemo(() => {
     const grid = monthDays(view.y, view.m);
@@ -112,7 +148,16 @@ export default function ResetCalendar({ enabled, onOpen, onOpenRoutine }: {
     for (const list of m.values()) list.sort((a, b) => a.at - b.at);
     return m;
   }, [rows, runs]);
-  const soon = rows.some((r) => resetExpiresSoon(data.usage[r.account.id] ?? null, now));
+  const soon = notices.length > 0;
+
+  function acknowledge(key: string) {
+    setAcking(key);
+    setAckFailed(null);
+    api.ackResetNotices([key]).then(
+      (r) => { putResetNoticesSeen(r.seen); setAcking(null); },
+      () => { setAckFailed(key); setAcking(null); },
+    );
+  }
 
   function toggle() {
     if (open) { setOpen(false); return; }
@@ -139,8 +184,8 @@ export default function ResetCalendar({ enabled, onOpen, onOpenRoutine }: {
         className={`head-btn model-notice-anchor rcal-trigger${open ? ' is-on' : ''}`}
         onClick={toggle}
         aria-expanded={open}
-        title={soon ? 'calendar — a reset expires soon' : 'calendar'}
-        aria-label={soon ? 'calendar, a reset expires soon' : 'calendar'}
+        title={soon ? 'calendar — a reset expires within 48h' : 'calendar'}
+        aria-label={soon ? 'calendar, a reset expires within 48h' : 'calendar'}
         data-label="calendar"
       >
         <IconCalendar3 />
@@ -157,6 +202,31 @@ export default function ResetCalendar({ enabled, onOpen, onOpenRoutine }: {
             <button type="button" className="pop-icon-btn" onClick={() => shift(-1)} title="previous month" aria-label="previous month">‹</button>
             <button type="button" className="pop-icon-btn" onClick={() => shift(1)} title="next month" aria-label="next month">›</button>
           </div>
+
+          {notices.length > 0 && (
+            <div className="rcal-notices" aria-label="Expiring resets">
+              {notices.map(({ n, row }) => (
+                <div key={n.key} className="model-release-notice rcal-notice" role="status" style={toneStyle(row.tone)}>
+                  <span className="model-release-text">
+                    <span className="model-release-cli" title={whoOf(row.account)}>
+                      <i className="rcal-swatch" aria-hidden />
+                      <AgentLogo kind={row.account.provider} profileNumber={row.account.number} size={13} title="" />
+                      <span className="rcal-notice-who">{accountShortName(row.account) || providerName(row.account.provider)}</span>
+                    </span>
+                    <span>
+                      <strong>{n.title}{n.count > 1 ? ` ×${n.count}` : ''}</strong> <span className="rcal-notice-in">expires {fmtIn(n.expiresAt, now)}</span>
+                      <span className="rcal-notice-when"> · {fmtDay(n.expiresAt, now)} {fmtTime(n.expiresAt)}</span>
+                    </span>
+                  </span>
+                  <button type="button" disabled={acking !== null} onClick={() => acknowledge(n.key)}
+                    aria-label={`Acknowledge: ${n.title} expires ${fmtIn(n.expiresAt, now)}`}>
+                    {acking === n.key ? 'Saving…' : 'OK'}
+                  </button>
+                  {ackFailed === n.key && <span className="model-release-error">Could not save. Try again.</span>}
+                </div>
+              ))}
+            </div>
+          )}
 
           <div className="pop-tile rcal-month">
             <div className="rcal-week" aria-hidden>{WEEKDAYS.map((d, i) => <span key={i}>{d}</span>)}</div>

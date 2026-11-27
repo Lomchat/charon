@@ -15,9 +15,9 @@ import { newestAccountUsage } from './accountUsageState';
 type Snapshot = { loaded: boolean; data: AccountsResponse };
 /** The accounts WITHOUT their gauges: what the hub root reads, so a usage
  *  reading never re-renders it (§14.115, app/usageStore.ts). */
-export type AccountList = Omit<AccountsResponse, 'usage'>;
+export type AccountList = Omit<AccountsResponse, 'usage' | 'resetNoticesSeen'>;
 type ListSnapshot = { loaded: boolean; data: AccountList };
-const EMPTY: AccountsResponse = { accounts: [], usage: {}, migration: { waiting: 0, unmatched: 0 } };
+const EMPTY: AccountsResponse = { accounts: [], usage: {}, migration: { waiting: 0, unmatched: 0 }, resetNoticesSeen: [] };
 let snapshot: Snapshot = { loaded: false, data: EMPTY };
 let listSnapshot: ListSnapshot = { loaded: false, data: { accounts: EMPTY.accounts, migration: EMPTY.migration } };
 let listKey = '';
@@ -61,6 +61,12 @@ export function refreshAccounts(): Promise<void> {
  *  when its SSE frame lands. Newest still wins. */
 export function putAccountUsage(u: AccountUsage): void {
   ingestUsage(u);
+}
+
+/** The hub's acknowledged reset notices an OK returned (§14.126): hidden now,
+ *  not when the refetch its frame triggers lands. */
+export function putResetNoticesSeen(seen: string[]): void {
+  publish({ ...snapshot, data: { ...snapshot.data, resetNoticesSeen: seen } });
 }
 
 function ingestUsage(u: AccountUsage): void {

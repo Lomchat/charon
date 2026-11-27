@@ -3,6 +3,7 @@
 import type { AccountResetGrant, AccountUsage } from '@/lib/server/hub/types';
 import type { ProviderAccount } from '@/lib/providerAccounts';
 import { nextRunAt, type RoutineSchedule } from '@/lib/routineSchedule';
+import { RESET_NOTICE_WINDOW_MS, resetNoticeKey } from '@/lib/resetNotices';
 
 const DAY_MS = 86_400_000;
 
@@ -178,10 +179,27 @@ export function routineRuns(r: RoutineSchedule & { enabled: boolean }, from: num
   return out;
 }
 
-/** A banked reset ends within `days`: the calendar button's dot. */
-export function resetExpiresSoon(usage: AccountUsage | null, now = Date.now(), days = 3): boolean {
-  return (usage?.resets?.grants ?? []).some((g) => {
-    const at = g.expiresAt ? Date.parse(g.expiresAt) : NaN;
-    return Number.isFinite(at) && at > now && at - now <= days * DAY_MS;
-  });
+export type ResetNotice = {
+  /** `lib/resetNotices.ts § resetNoticeKey`: what an OK acknowledges. */
+  key: string;
+  accountId: string;
+  /** The grant's title ('Full reset'). */
+  title: string;
+  expiresAt: number;
+  /** Resets lost with it. */
+  count: number;
+};
+
+/** An account's banked resets ending within 48h, not yet OK'd: the
+ *  calendar's dot and its notices. Soonest first. */
+export function resetNotices(accountId: string, usage: AccountUsage | null, seen: readonly string[], now = Date.now()): ResetNotice[] {
+  const out: ResetNotice[] = [];
+  for (const g of usage?.resets?.grants ?? []) {
+    if (!g.expiresAt) continue;
+    const at = Date.parse(g.expiresAt);
+    if (!Number.isFinite(at) || at <= now || at - now > RESET_NOTICE_WINDOW_MS) continue;
+    const key = resetNoticeKey(accountId, g.id, g.expiresAt);
+    if (!seen.includes(key)) out.push({ key, accountId, title: g.title, expiresAt: at, count: g.left });
+  }
+  return out.sort((a, b) => a.expiresAt - b.expiresAt);
 }

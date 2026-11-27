@@ -63,7 +63,7 @@ import SessionView from './SessionView';
 import { subSessionsDeletedWith } from './sidebarSubSessions';
 import HeaderSessionNav from './HeaderSessionNav';
 import AccountNav from './AccountNav';
-import ResetCalendar from './ResetCalendar';
+import ResetCalendar, { ResetNoticeDot } from './ResetCalendar';
 import { outcome } from './outcome';
 import ResetsModalHost from './ResetsModalHost';
 import { accountGroupRepresentative, buildAccountGroups, type AccountGroup } from '@/lib/accountGroups';
@@ -2244,8 +2244,9 @@ export default function HubPanel({ vpsList: initialVpsList, vpsFolders: initialF
             <IconPanelRight />
           </button>
         )}
-        {/* The phone's settings live in this drawer, so the new-models dot
-            rides its toggle — the drawer's own copy is invisible until opened. */}
+        {/* The phone's settings and calendar live in this drawer, so their
+            dots ride its toggle — the drawer's own copies are invisible until
+            opened. */}
         <button
           className="head-btn m-only menu-toggle model-notice-anchor"
           onClick={() => { setMenuOpen(true); setNavOpen(false); setToolsOpen(false); }}
@@ -2253,7 +2254,7 @@ export default function HubPanel({ vpsList: initialVpsList, vpsFolders: initialF
           aria-label={hasNewModels ? 'open menu — new models available' : 'open menu'}
         >
           <IconThreeDotsVertical />
-          {hasNewModels && <span className="model-notice-dot" aria-hidden="true" />}
+          {hasNewModels ? <span className="model-notice-dot" aria-hidden="true" /> : <ResetNoticeDot enabled={backends} />}
         </button>
         </div>
       </header>

@@ -257,6 +257,10 @@ const DEFAULTS = {
   // in their row). A display hint while the VPS is unprobed (offline, cold
   // start), so one login stays one header button; the live probe wins.
   'accounts.default_keys': '',
+  // Internal, written by accounts/resetNotices only (stripped from the
+  // settings GET): JSON array of the calendar's acknowledged "a banked reset
+  // ends within 48h" notices, `<expiresAt>|<accountId>|<grantId>` (§14.126).
+  'accounts.reset_notices_seen': '',
 } as const;
 export type SettingKey = keyof typeof DEFAULTS | 'vapid.public' | 'vapid.private';
 
